@@ -1,0 +1,598 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    BackgroundTasks,
+)
+from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.orm import Session
+
+from app.api.payloads import (
+    LoginPayload,
+    ChangePasswordPayload,
+    PasswordResetRequestPayload,
+    PasswordResetConfirmPayload,
+)
+from app.core.config import settings
+from app.db.models import Session as SessionRow, User, PasswordResetToken
+from app.db.session import get_db
+from app.security.auth import (
+    ROLE_ADMIN,
+    authenticate_user,
+    clear_session_cookie,
+    set_session_cookie,
+    get_current_user,
+    get_password_hash,
+    get_user_by_email,
+)
+from app.security.passwords import verify_password
+
+from app.security.csrf import clear_csrf_cookie, generate_csrf_token, set_csrf_cookie
+from app.security.roles import ROLE_PENDING, attach_effective_role
+from app.security.sessions import (
+    create_session,
+    delete_session,
+    delete_all_sessions_for_user,
+)
+from app.security.oidc import (
+    any_sso_enabled,
+    build_authorize_redirect,
+    configured_sso_providers,
+    get_sso_provider,
+    handle_callback,
+)
+from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
+from app.security.audit import (
+    log_login_success,
+    log_login_failure,
+    log_logout,
+    log_password_reset_request,
+    log_password_reset_confirm,
+    log_security_alert,
+)
+from app.services.mailer import send_password_reset_email
+from app.services.notification_recipients import notification_email_for_user
+
+router = APIRouter()
+
+
+@router.get("/v1/auth/methods")
+def auth_methods():
+    """Public endpoint describing which login methods are enabled."""
+    providers = configured_sso_providers()
+    oidc_provider = get_sso_provider("oidc")
+    oidc_enabled = bool(
+        oidc_provider and any(provider.key == "oidc" for provider in providers)
+    )
+    allowed_hosts_raw = (
+        getattr(settings, "login_redirect_allowed_hosts", "") or ""
+    ).strip()
+    allowed_hosts = (
+        [h.strip().lower() for h in allowed_hosts_raw.split(",") if h.strip()]
+        if allowed_hosts_raw
+        else []
+    )
+
+    sso_providers = [provider.public_dict() for provider in providers]
+
+    return {
+        "local_enabled": bool(getattr(settings, "local_auth_enabled", True)),
+        "remote_user_enabled": bool(getattr(settings, "trust_remote_user", False)),
+        # Backwards-compatible fields for the original single OIDC button.
+        "oidc_enabled": oidc_enabled,
+        "oidc": (
+            {
+                "label": oidc_provider.label if oidc_provider else "Single sign-on",
+                "start_url": (
+                    oidc_provider.public_dict()["start_url"]
+                    if oidc_provider
+                    else "/v1/auth/oidc/start"
+                ),
+            }
+            if oidc_enabled
+            else None
+        ),
+        # New multi-provider SSO contract for the login page.
+        "sso_enabled": bool(sso_providers),
+        "sso_providers": sso_providers,
+        # Used by the UI to safely handle ?next= after login.
+        # Same-origin relative paths are always allowed; this list only applies
+        # to absolute cross-origin URLs.
+        "redirect_allowed_hosts": allowed_hosts,
+        "password_reset_enabled": (
+            bool(getattr(settings, "local_auth_enabled", True))
+            and not any_sso_enabled()
+            and bool((getattr(settings, "smtp_host", "") or "").strip())
+            and bool((getattr(settings, "smtp_from_email", "") or "").strip())
+        ),
+        "password_reset": {
+            "request_url": "/v1/auth/request-password-reset",
+            "page_url": "/forgot-password.html",
+        },
+    }
+
+
+def _get_client_ip(request: Request) -> str:
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _get_user_agent(request: Request) -> str | None:
+    return request.headers.get("User-Agent") or None
+
+
+@router.post("/v1/auth/login")
+def login(
+    payload: LoginPayload, request: Request, db: Session = Depends(get_db)
+) -> Response:
+    if not bool(getattr(settings, "local_auth_enabled", True)):
+        raise HTTPException(status_code=404, detail="Local auth disabled")
+
+    client_ip = _get_client_ip(request)
+    user_agent = _get_user_agent(request)
+    username = (payload.username or "").strip()
+    rate_id = f"login:{client_ip}"
+
+    allowed, info = check_rate_limit(db, rate_id, max_attempts=10, window_seconds=300)
+    if not allowed:
+        log_security_alert(
+            db,
+            "rate_limit_exceeded",
+            {"action": "login", "username": username},
+            None,
+            client_ip,
+            user_agent,
+        )
+        return JSONResponse(
+            {"detail": "Too many login attempts", "retry_after": info["retry_after"]},
+            status_code=429,
+            headers={"Retry-After": str(info["retry_after"] // 1000)},
+        )
+
+    record_rate_limit_attempt(db, rate_id)
+
+    client_ip = _get_client_ip(request)
+    user_agent = _get_user_agent(request)
+
+    user = authenticate_user(db, payload.username, payload.password)
+    if not user:
+        record_rate_limit_attempt(db, f"login_fail:{username}")
+        log_login_failure(db, username, "invalid_credentials", client_ip, user_agent)
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    delete_all_sessions_for_user(db, user.id)
+
+    sid = create_session(
+        db,
+        user_id=user.id,
+        ttl_seconds=int(settings.session_ttl_seconds),
+        auth_method="local",
+    )
+
+    try:
+        user.last_login_at = datetime.utcnow()
+        db.add(user)
+        db.commit()
+        request.state.user = user
+
+        log_login_success(db, user.id, "local", client_ip, user_agent)
+    except Exception:
+        db.rollback()
+
+    eff = attach_effective_role(db, user)
+    csrf_token = generate_csrf_token()
+
+    resp = JSONResponse(
+        {
+            "user": user.username,
+            "role": user.role,
+            "effective_role": eff,
+            "is_admin": (eff or "") == ROLE_ADMIN,
+            "csrf_token": csrf_token,
+        }
+    )
+    set_session_cookie(resp, sid)
+    set_csrf_cookie(resp, csrf_token)
+    return resp
+
+
+@router.get("/v1/auth/oidc/start")
+async def oidc_start(request: Request, db: Session = Depends(get_db)):
+    # Stable URL alias for the generic OpenID Connect provider.
+    next_url = request.query_params.get("next")
+    url = await build_authorize_redirect(
+        request, db, next_url=next_url, provider_key="oidc"
+    )
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/v1/auth/oidc/callback")
+async def oidc_callback(request: Request, db: Session = Depends(get_db)):
+    # Stable URL alias for the generic OpenID Connect callback.
+    return await _complete_sso_callback(request, db, provider_key="oidc")
+
+
+@router.get("/v1/auth/sso/{provider_key}/start")
+async def sso_start(provider_key: str, request: Request, db: Session = Depends(get_db)):
+    next_url = request.query_params.get("next")
+    url = await build_authorize_redirect(
+        request, db, next_url=next_url, provider_key=provider_key
+    )
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/v1/auth/sso/{provider_key}/callback")
+async def sso_callback(
+    provider_key: str, request: Request, db: Session = Depends(get_db)
+):
+    return await _complete_sso_callback(request, db, provider_key=provider_key)
+
+
+async def _complete_sso_callback(
+    request: Request, db: Session, *, provider_key: str
+) -> Response:
+    user, next_url, id_token, provider = await handle_callback(
+        request, db, provider_key=provider_key
+    )
+    request.state.user = user
+
+    delete_all_sessions_for_user(db, user.id)
+
+    log_login_success(
+        db, user.id, provider.key, _get_client_ip(request), _get_user_agent(request)
+    )
+
+    sid = create_session(
+        db,
+        user_id=user.id,
+        ttl_seconds=int(settings.session_ttl_seconds),
+        auth_method=provider.key,
+        oidc_id_token=id_token,
+    )
+    csrf_token = generate_csrf_token()
+
+    effective_role = attach_effective_role(db, user)
+    dest = (
+        "/pending.html"
+        if effective_role == ROLE_PENDING
+        else (next_url or "/index.html")
+    )
+    resp = RedirectResponse(dest, status_code=302)
+    set_session_cookie(resp, sid)
+    set_csrf_cookie(resp, csrf_token)
+    return resp
+
+
+@router.post("/v1/auth/logout")
+def logout(request: Request, db: Session = Depends(get_db)) -> Response:
+    sid = request.cookies.get(settings.session_cookie_name) or ""
+    if sid:
+        delete_session(db, sid)
+
+    user = getattr(request.state, "user", None)
+    if user and isinstance(user, User):
+        delete_all_sessions_for_user(db, user.id)
+        log_logout(db, user.id, _get_client_ip(request), _get_user_agent(request))
+
+    resp = Response(status_code=204)
+    clear_session_cookie(resp)
+    clear_csrf_cookie(resp)
+    return resp
+
+
+def _local_password_features_enabled() -> bool:
+    # Explicitly disable local password flows when any external SSO provider is enabled.
+    return bool(getattr(settings, "local_auth_enabled", True)) and not any_sso_enabled()
+
+
+def _hash_reset_token(token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _derive_public_base_url(request: Request) -> str:
+    configured = (getattr(settings, "public_base_url", "") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    try:
+        return str(request.base_url).rstrip("/")
+    except Exception:
+        return ""
+
+
+@router.post("/v1/auth/change-password")
+def change_password(
+    payload: ChangePasswordPayload,
+    request: Request,
+    me: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    if not _local_password_features_enabled():
+        raise HTTPException(status_code=404, detail="Password change disabled")
+
+    # Only allow password change for local sessions.
+    sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
+    row = (
+        db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
+        if sid
+        else None
+    )
+    if row and str(getattr(row, "auth_method", "") or "") != "local":
+        raise HTTPException(
+            status_code=400,
+            detail="Password changes are not available for SSO sessions",
+        )
+
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+
+    if not verify_password(payload.current_password, me.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    me.password_hash = get_password_hash(payload.new_password)
+    db.add(me)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/v1/auth/request-password-reset")
+def request_password_reset(
+    payload: PasswordResetRequestPayload,
+    request: Request,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> Response:
+    if not _local_password_features_enabled():
+        # Don't leak configuration details.
+        return Response(status_code=204)
+
+    smtp_host = (getattr(settings, "smtp_host", "") or "").strip()
+    from_email = (getattr(settings, "smtp_from_email", "") or "").strip()
+    if not smtp_host or not from_email:
+        # Still avoid account enumeration.
+        return Response(status_code=204)
+
+    ident = (payload.identifier or "").strip()
+    if not ident:
+        return Response(status_code=204)
+
+    user = None
+    if "@" in ident:
+        ident_l = ident.lower()
+        user = (
+            get_user_by_email(db, ident_l)
+            or db.query(User).filter(User.username == ident).one_or_none()
+        )
+    else:
+        user = db.query(User).filter(User.username == ident).one_or_none()
+
+    # Always return 204 to avoid enumeration.
+    if not user or not bool(getattr(user, "is_active", False)):
+        log_password_reset_request(
+            db, None, _get_client_ip(request), _get_user_agent(request)
+        )
+        return Response(status_code=204)
+
+    # Always send account mail to the address the user has explicitly marked
+    # primary. The resolver retains legacy fallbacks for pre-migration accounts.
+    recipient = notification_email_for_user(db, user=user) or ""
+    if not recipient:
+        # Fallback: if username is an email.
+        if "@" in (user.username or ""):
+            recipient = user.username.strip()
+    if not recipient:
+        log_password_reset_request(
+            db, user.id, _get_client_ip(request), _get_user_agent(request)
+        )
+        return Response(status_code=204)
+
+    import secrets
+    from datetime import datetime, timedelta
+
+    token = secrets.token_urlsafe(32)
+    token_hash = _hash_reset_token(token)
+
+    expires = datetime.utcnow() + timedelta(
+        minutes=int(getattr(settings, "password_reset_token_ttl_minutes", 60))
+    )
+
+    row = PasswordResetToken(
+        user_id=user.id, token_hash=token_hash, expires_at=expires, used_at=None
+    )
+    db.add(row)
+    db.commit()
+
+    base = _derive_public_base_url(request)
+    reset_link = (
+        f"{base}/reset-password.html?token={token}"
+        if base
+        else f"/reset-password.html?token={token}"
+    )
+
+    log_password_reset_request(
+        db, user.id, _get_client_ip(request), _get_user_agent(request)
+    )
+
+    # Send email in the background to keep response quick.
+    background.add_task(
+        send_password_reset_email,
+        to_email=recipient,
+        username=user.username,
+        reset_link=reset_link,
+        expires_minutes=int(getattr(settings, "password_reset_token_ttl_minutes", 60)),
+    )
+
+    return Response(status_code=204)
+
+
+@router.post("/v1/auth/reset-password")
+def reset_password(
+    payload: PasswordResetConfirmPayload,
+    db: Session = Depends(get_db),
+) -> Response:
+    if not _local_password_features_enabled():
+        raise HTTPException(status_code=404, detail="Password reset disabled")
+
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+
+    token = (payload.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid token")
+
+    from datetime import datetime, timedelta
+
+    token_hash = _hash_reset_token(token)
+    row = (
+        db.query(PasswordResetToken)
+        .filter(PasswordResetToken.token_hash == token_hash)
+        .one_or_none()
+    )
+    if not row:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    now = datetime.utcnow()
+    if row.used_at is not None or row.expires_at <= now:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    user = db.query(User).filter(User.id == row.user_id).one_or_none()
+    if not user or not bool(getattr(user, "is_active", False)):
+        raise HTTPException(status_code=400, detail="Invalid token")
+
+    user.password_hash = get_password_hash(payload.new_password)
+    row.used_at = now
+
+    db.add(user)
+    db.add(row)
+    db.commit()
+
+    log_password_reset_confirm(db, user.id, None, None)
+    return Response(status_code=204)
+
+
+def _safe_next(next_url: str | None) -> str | None:
+    raw = (next_url or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("/") and not raw.startswith("//") and "://" not in raw:
+        return raw
+    return None
+
+
+def _derive_absolute_post_logout_redirect(request: Request, auth_method: str) -> str:
+    provider = get_sso_provider(auth_method)
+    configured = (provider.post_logout_redirect_uri or "").strip() if provider else ""
+    if configured:
+        return configured
+
+    # Derive from the incoming request. If behind TLS termination and the
+    # scheme/host is incorrect, set the provider-specific post-logout URI.
+    try:
+        base = str(request.base_url).rstrip("/")
+    except Exception:
+        base = ""
+    if not base:
+        return ""
+    return f"{base}/login.html"
+
+
+@router.get("/v1/auth/logout")
+def logout_redirect(request: Request, db: Session = Depends(get_db)) -> Response:
+    """Browser-friendly logout endpoint.
+
+    - Always clears the local session + CSRF cookies.
+    - If the current session was created via OIDC and an end-session endpoint is
+      configured, performs RP-initiated logout by redirecting to the provider.
+    """
+
+    sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
+    auth_method = ""
+    oidc_id_token = ""
+
+    if sid:
+        row = db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
+        if row:
+            auth_method = str(getattr(row, "auth_method", "") or "")
+            oidc_id_token = str(getattr(row, "oidc_id_token", "") or "")
+            try:
+                db.delete(row)
+                db.commit()
+            except Exception:
+                db.rollback()
+
+    next_url = _safe_next(request.query_params.get("next")) or "/login.html"
+    dest = next_url
+
+    provider = get_sso_provider(auth_method)
+    end_session = (provider.end_session_endpoint if provider else "").strip()
+    client_id = (provider.client_id if provider else "").strip()
+
+    if auth_method != "local" and end_session:
+        from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
+
+        post_logout = _derive_absolute_post_logout_redirect(request, auth_method)
+        params = dict(parse_qsl(urlsplit(end_session).query, keep_blank_values=True))
+
+        # Spec parameters
+        if oidc_id_token:
+            params.setdefault("id_token_hint", oidc_id_token)
+        if post_logout:
+            params.setdefault("post_logout_redirect_uri", post_logout)
+
+        # Some providers accept/require client_id when id_token_hint is absent.
+        if client_id:
+            params.setdefault("client_id", client_id)
+
+        parts = urlsplit(end_session)
+        dest = urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                urlencode(params, doseq=True),
+                parts.fragment,
+            )
+        )
+
+    resp = RedirectResponse(dest, status_code=302)
+    clear_session_cookie(resp)
+    clear_csrf_cookie(resp)
+    return resp
+
+
+@router.get("/v1/auth/check")
+def auth_check(request: Request) -> Response:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, User):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    resp = Response(status_code=204)
+    resp.headers["X-Project-User"] = user.username
+    resp.headers["X-Project-Role"] = getattr(user, "effective_role", None) or user.role
+    return resp
+
+
+@router.get("/v1/auth/check-admin")
+def auth_check_admin(request: Request) -> Response:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, User):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    eff = getattr(user, "effective_role", None) or user.role
+    if (eff or "") != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+    resp = Response(status_code=204)
+    resp.headers["X-Project-User"] = user.username
+    resp.headers["X-Project-Role"] = eff
+    return resp

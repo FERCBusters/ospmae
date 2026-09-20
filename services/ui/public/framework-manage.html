@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Framework administration • OSPMAE</title>
+
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/mosp-ui-config.js"></script>
+    <script type="module" src="/mosp-shell.js"></script>
+</head>
+
+<body data-page="frameworks">
+  <div id="navbar"></div>
+
+  <main class="container py-4">
+    <div class="mb-3">
+      <nav aria-label="Breadcrumb" class="mb-2">
+        <ol class="breadcrumb mb-0">
+          <li class="breadcrumb-item"><a href="/index.html">Home</a></li>
+          <li class="breadcrumb-item active" aria-current="page">Frameworks</li>
+        </ol>
+      </nav>
+      <h1 class="h3 mb-1">Framework administration</h1>
+      <div class="text-secondary">Create frameworks and manage their taxonomy trees.</div>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-12 col-xl-5">
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap mb-2">
+              <h2 class="h5 mb-0">Frameworks</h2>
+              <button id="refreshFrameworksBtn" class="btn btn-sm btn-outline-secondary" type="button">Refresh</button>
+            </div>
+
+            <div id="frameworkList" class="small text-secondary">Loading…</div>
+
+            <hr />
+
+            <h3 class="h6">Create framework</h3>
+            <div class="row g-2">
+              <div class="col-12 col-md-6">
+                <label class="form-label small mb-1" for="fwCreateMachine">Machine name</label>
+                <input id="fwCreateMachine" class="form-control" type="text" placeholder="uwra" />
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label small mb-1" for="fwCreateDisplay">Display name</label>
+                <input id="fwCreateDisplay" class="form-control" type="text" placeholder="Universal Wallet Reference Architecture" />
+              </div>
+              <div class="col-12">
+                <label class="form-label small mb-1" for="fwCreateDescription">Description</label>
+                <textarea id="fwCreateDescription" class="form-control" rows="2" placeholder="Optional description"></textarea>
+              </div>
+              <div class="col-12 d-flex justify-content-end">
+                <button id="fwCreateBtn" class="btn btn-primary" type="button">Create framework</button>
+              </div>
+              <div class="col-12">
+                <div id="fwCreateMsg" class="small"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-xl-7">
+        <div class="card">
+          <div class="card-body">
+            <div id="selectedFrameworkEmpty" class="text-secondary small">Select a framework from the left to edit its metadata and taxonomy.</div>
+
+            <div id="selectedFrameworkPanel" style="display:none;">
+              <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap mb-2">
+                <div>
+                  <h2 id="fwTitle" class="h5 mb-1">Framework</h2>
+                  <div id="fwMeta" class="small text-secondary"></div>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                  <button id="fwReloadNodesBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload taxonomy</button>
+                  <button id="fwSaveBtn" class="btn btn-sm btn-primary" type="button">Save</button>
+                  <button id="fwDeleteBtn" class="btn btn-sm btn-outline-danger" type="button" style="display:none;">Delete framework</button>
+                </div>
+              </div>
+
+              <div class="row g-2">
+                <div class="col-12 col-md-6">
+                  <label class="form-label small mb-1" for="fwMachine">Machine name</label>
+                  <input id="fwMachine" class="form-control" type="text" />
+                </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label small mb-1" for="fwDisplay">Display name</label>
+                  <input id="fwDisplay" class="form-control" type="text" />
+                </div>
+                <div class="col-12">
+                  <label class="form-label small mb-1" for="fwDescription">Description</label>
+                  <textarea id="fwDescription" class="form-control" rows="2"></textarea>
+                </div>
+                <div class="col-12">
+                  <div id="fwSaveMsg" class="small"></div>
+                </div>
+              </div>
+
+              <hr />
+
+              <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap mb-2">
+                <h3 class="h6 mb-0">Taxonomy</h3>
+                <div class="d-flex gap-2 flex-wrap">
+                  <button id="nodeExpandAllBtn" class="btn btn-sm btn-outline-secondary" type="button">Expand all</button>
+                  <button id="nodeCollapseAllBtn" class="btn btn-sm btn-outline-secondary" type="button">Collapse all</button>
+                  <button id="nodeNewBtn" class="btn btn-sm btn-outline-secondary" type="button">New node</button>
+                  <button id="nodeSaveBtn" class="btn btn-sm btn-primary" type="button">Save node</button>
+                  <button id="nodeDeleteBtn" class="btn btn-sm btn-outline-danger" type="button">Delete</button>
+                </div>
+              </div>
+
+              <div class="card mb-3" data-mosp-filter-section="framework-node-filters" data-mosp-filter-title="Filters">
+                <div class="card-body" data-mosp-filter-body>
+                  <div class="row g-2">
+                    <div class="col-12">
+                      <label class="form-label small mb-1" for="nodeSearch">Search categories</label>
+                      <input id="nodeSearch" class="form-control" type="text" placeholder="Search by name, key, path" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="row g-3 align-items-start">
+                <div class="col-12 col-lg-6">
+                  <div id="nodeTree" class="capability-tree-root"></div>
+                </div>
+                <div class="col-12 col-lg-6">
+                  <div class="small text-secondary mb-2">Editing node</div>
+                  <div class="row g-2">
+                    <div class="col-12">
+                      <label class="form-label small mb-1" for="nodeKey">Node key</label>
+                      <input id="nodeKey" class="form-control" type="text" placeholder="admin_ui" />
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label small mb-1" for="nodeDisplay">Display name</label>
+                      <input id="nodeDisplay" class="form-control" type="text" placeholder="Admin UI" />
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label small mb-1" for="nodeDescription">Description</label>
+                      <textarea id="nodeDescription" class="form-control" rows="3" placeholder="Optional description"></textarea>
+                    </div>
+                    <div class="col-12 col-md-8">
+                      <label class="form-label small mb-1" for="nodeParent">Parent</label>
+                      <select id="nodeParent" class="form-select"></select>
+                    </div>
+                    <div class="col-12 col-md-4">
+                      <label class="form-label small mb-1" for="nodeSort">Sort order</label>
+                      <input id="nodeSort" class="form-control" type="text" placeholder="0" />
+                    </div>
+                    <div class="col-12">
+                      <div id="nodePath" class="small text-secondary"></div>
+                      <div id="nodeMsg" class="small mt-1"></div>
+                      <div class="small text-secondary mt-2">
+                        Tip: keep node keys stable; they are referenced in mappings, manifests, and colour preferences.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/framework-manage.js"></script>
+</body>
+</html>

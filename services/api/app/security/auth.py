@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+import secrets
+from datetime import datetime
+from collections.abc import Mapping
+
+from fastapi import Depends, HTTPException, Request, Response
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.db.models import User, UserEmail
+from app.db.session import get_db
+from app.security.passwords import hash_password, verify_password
+from app.security.roles import (
+    ROLE_ADMIN,
+    ROLE_ARCHITECT,
+    ROLE_CONTRIBUTOR,
+    ROLE_ENGINEER,
+    ROLE_INHERIT,
+    ROLE_FRAMEWORK_ADMIN,
+    ROLE_MAINTAINER,
+    ROLE_PENDING,
+    ROLE_PRODUCT_OWNER,
+    ROLE_VIEWER,
+    attach_effective_role,
+    canonicalize_role,
+)
+from app.security.sessions import create_session, get_session, refresh_session
+
+ALLOWED_USER_ROLES = {
+    ROLE_ADMIN,
+    ROLE_FRAMEWORK_ADMIN,
+    ROLE_MAINTAINER,
+    ROLE_CONTRIBUTOR,
+    ROLE_ENGINEER,
+    ROLE_PRODUCT_OWNER,
+    ROLE_ARCHITECT,
+    ROLE_VIEWER,
+    ROLE_PENDING,
+    ROLE_INHERIT,
+}
+
+
+def get_password_hash(password: str) -> str:
+    return hash_password(password)
+
+
+def get_user_by_username(db: Session, username: str) -> User | None:
+    return db.query(User).filter(User.username == username).one_or_none()
+
+
+def get_user_by_email(db: Session, email: str) -> User | None:
+    e = (email or "").strip().lower()
+    if not e:
+        return None
+    user = db.query(User).filter(User.email == e).one_or_none()
+    if user:
+        return user
+    row = db.query(UserEmail).filter(UserEmail.email_lower == e).one_or_none()
+    if not row:
+        return None
+    return db.query(User).filter(User.id == row.user_id).one_or_none()
+
+
+def authenticate_user(db: Session, username: str, password: str) -> User | None:
+    user = get_user_by_username(db, username)
+    if not user:
+        return None
+    if not user.is_active:
+        return None
+    if not verify_password(password, user.password_hash):
+        return None
+    user.last_login_at = datetime.utcnow()
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def _remote_user_from_headers(headers: Mapping[str, str]) -> str | None:
+    if not bool(settings.trust_remote_user):
+        return None
+
+    candidates: list[str] = []
+
+    configured = (settings.remote_user_header_name or "").strip()
+    if configured:
+        candidates.append(configured)
+
+    candidates.extend(
+        [
+            "REMOTE_USER",
+            "X-Remote-User",
+            "X-Vouch-User",
+            "X-Forwarded-User",
+        ]
+    )
+
+    seen = set()
+    ordered: list[str] = []
+    for h in candidates:
+        k = h.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        ordered.append(h)
+
+    for header_name in ordered:
+        raw = headers.get(header_name)
+        if raw is None:
+            continue
+        value = str(raw).strip()
+        if value:
+            return value
+
+    return None
+
+
+def _extract_remote_user(request: Request) -> str | None:
+    return _remote_user_from_headers(request.headers)
+
+    candidates: list[str] = []
+
+    configured = (settings.remote_user_header_name or "").strip()
+    if configured:
+        candidates.append(configured)
+
+    candidates.extend(
+        [
+            "REMOTE_USER",
+            "X-Remote-User",
+            "X-Vouch-User",
+            "X-Forwarded-User",
+        ]
+    )
+
+    seen = set()
+    ordered = []
+    for h in candidates:
+        k = h.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        ordered.append(h)
+
+    for header_name in ordered:
+        raw = request.headers.get(header_name)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if value:
+            return value
+
+    return None
+
+
+def _normalize_role(raw: str | None) -> str:
+    canonical = canonicalize_role(raw)
+    if canonical is None:
+        return ROLE_PENDING
+    return canonical
+
+
+def _auto_provision_remote_user(db: Session, username: str) -> User | None:
+    if not bool(getattr(settings, "remote_user_auto_provision", False)):
+        return None
+
+    role = _normalize_role(
+        getattr(settings, "remote_user_auto_provision_role", ROLE_PENDING)
+    )
+
+    existing = get_user_by_username(db, username)
+    if existing:
+        return existing
+
+    u = User(
+        username=username,
+        password_hash=get_password_hash(secrets.token_urlsafe(24)),
+        role=role,
+        is_active=True,
+        last_login_at=datetime.utcnow(),
+    )
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+
+    try:
+        from app.services.mailer import send_new_user_admin_notification_email
+
+        base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+        send_new_user_admin_notification_email(
+            username=u.username,
+            email=getattr(u, "email", None),
+            provider_label="trusted remote-user",
+            role=role,
+            admin_url=(f"{base_url}/admin.html" if base_url else None),
+        )
+    except Exception:
+        # Admin notification failures must not break trusted-SSO login.
+        pass
+
+    return u
+
+
+def get_current_user_from_headers_cookies(
+    headers: Mapping[str, str],
+    cookies: Mapping[str, str],
+    db: Session,
+) -> User | None:
+    """Return the current user, or None if not authenticated.
+
+    Used by both HTTP requests and WebSocket handshakes.
+    """
+    remote_user = _remote_user_from_headers(headers)
+    if remote_user:
+        user = get_user_by_username(db, remote_user)
+        if not user:
+            user = _auto_provision_remote_user(db, remote_user)
+        if user and user.is_active:
+            user.last_login_at = datetime.utcnow()
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            return user
+        return None
+
+    session_cookie = cookies.get(settings.session_cookie_name)
+    if not session_cookie:
+        return None
+
+    session_row = get_session(db, session_cookie)
+    if not session_row:
+        return None
+
+    user = (
+        db.query(User)
+        .filter(User.id == session_row.user_id, User.is_active == True)
+        .one_or_none()
+    )  # noqa: E712
+    if not user:
+        return None
+
+    refresh_session(db, session_row, settings.session_ttl_seconds)
+    return user
+
+
+def get_current_user_from_request(request: Request, db: Session) -> User | None:
+    return get_current_user_from_headers_cookies(request.headers, request.cookies, db)
+
+
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    user = getattr(request.state, "user", None)
+    if user:
+        return user
+
+    user = get_current_user_from_request(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+def require_admin(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    eff = attach_effective_role(db, user)
+    if (eff or "") != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return user
+
+
+def set_session_cookie(response: Response, session_id: str) -> None:
+    samesite = (settings.cookie_samesite or "lax").lower()
+    if samesite not in ("lax", "strict", "none"):
+        samesite = "lax"
+
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=session_id,
+        httponly=True,
+        secure=bool(settings.cookie_secure),
+        samesite=samesite,
+        domain=(settings.cookie_domain or "").strip() or None,
+        path="/",
+        max_age=int(settings.session_ttl_seconds),
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=settings.session_cookie_name,
+        domain=(settings.cookie_domain or "").strip() or None,
+        path="/",
+    )
+
+
+def create_login_session(db: Session, user: User) -> str:
+    return create_session(db, user_id=user.id, ttl_seconds=settings.session_ttl_seconds)
+
+
+def create_user(
+    db: Session,
+    *,
+    username: str,
+    password: str,
+    email: str | None = None,
+    role: str = ROLE_VIEWER,
+    is_active: bool = True,
+) -> User:
+    uname = (username or "").strip()
+    if not uname:
+        raise ValueError("username is required")
+    if get_user_by_username(db, uname):
+        raise ValueError("username already exists")
+
+    email_norm = None
+    if email is not None:
+        email_norm = (email or "").strip().lower() or None
+        if email_norm and get_user_by_email(db, email_norm):
+            raise ValueError("email already exists")
+    if not password or len(password) < 8:
+        raise ValueError("password must be at least 8 chars")
+
+    normalized = canonicalize_role(role) or ROLE_VIEWER
+    if normalized not in ALLOWED_USER_ROLES:
+        raise ValueError(
+            "role must be one of: admin, maintainer, contributor, engineer, product_owner, architect, viewer, pending, inherit"
+        )
+
+    u = User(
+        username=uname,
+        email=email_norm,
+        password_hash=get_password_hash(password),
+        role=normalized,
+        is_active=bool(is_active),
+    )
+    db.add(u)
+    db.flush()
+    if email_norm:
+        db.add(
+            UserEmail(
+                user_id=u.id,
+                email=email_norm,
+                email_lower=email_norm,
+                source="user",
+                is_primary=True,
+                is_verified=True,
+            )
+        )
+    db.commit()
+    db.refresh(u)
+    return u

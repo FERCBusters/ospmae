@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSPMAE - Find projects</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+
+  <script src="/mosp-ui-config.js"></script>
+    <script type="module" src="/mosp-shell.js"></script>
+</head>
+
+<body data-page="find">
+  <div id="navbar"></div>
+
+  <main class="container py-4">
+    <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap mb-3">
+      <div>
+        <h1 class="h3 mb-1">Find projects</h1>
+        <div class="text-secondary">Search and filter projects by framework capability taxonomy.</div>
+      </div>
+
+      <div class="d-flex align-items-center gap-2">
+        <button id="btnNewProject" class="btn btn-primary" style="display:none;">New project</button>
+      </div>
+    </div>
+
+    
+    <div class="row g-3">
+      <!-- Filters -->
+      <div class="col-12">
+        <div class="keen-sticky-topblock">
+        <div class="card" data-mosp-filter-section="project-search-filters">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-semibold">Filters</span>
+            <button id="toggleFiltersBtn" class="btn btn-sm btn-outline-secondary" type="button" data-mosp-filter-toggle><i class="bi bi-chevron-up" aria-hidden="true"></i><span data-mosp-filter-toggle-label>Hide filters</span></button>
+          </div>
+
+          <div class="card-body" id="filtersBody" data-mosp-filter-body>
+            <div class="row g-2 align-items-end mb-2">
+              <div class="col-12 col-lg-6">
+                <label class="form-label small mb-1" for="q">Search projects</label>
+                <input id="q" class="form-control" type="text" placeholder="Name, machine name, organisation" />
+              </div>
+
+              <div class="col-12 col-lg-6">
+                <label class="form-label small mb-1" for="capabilitySearch">Search categories</label>
+                <input id="capabilitySearch" class="form-control" type="text" placeholder="Enrollment, Key Storage, Connectors…" />
+              </div>
+
+              <div class="col-12 col-lg-6">
+                <label class="form-label small mb-1" for="languageFilter">Programming languages</label>
+                <select id="languageFilter" class="form-select" multiple size="6">
+                  <option value="Python">Python</option>
+                  <option value="TypeScript">TypeScript</option>
+                  <option value="JavaScript">JavaScript</option>
+                  <option value="NodeJS">NodeJS</option>
+                  <option value="React">React</option>
+                  <option value="PHP">PHP</option>
+                  <option value="Go">Go (Golang)</option>
+                  <option value="Rust">Rust</option>
+                  <option value="C">C</option>
+                  <option value="C++">C++</option>
+                  <option value="C#">C#</option>
+                  <option value="Java">Java</option>
+                  <option value="Kotlin">Kotlin</option>
+                  <option value="Swift">Swift</option>
+                  <option value="Ruby">Ruby</option>
+                </select>
+              </div>
+
+              <div class="col-12 col-lg-6">
+                <label class="form-label small mb-1" for="statusFilter">Version status</label>
+                <select id="statusFilter" class="form-select" multiple size="6">
+                  <option value="stable">stable</option>
+                  <option value="beta">beta</option>
+                  <option value="alpha">alpha</option>
+                  <option value="unstable">unstable</option>
+                  <option value="testing">testing</option>
+                  <option value="deprecated">deprecated</option>
+                  <option value="obsolete">obsolete</option>
+                </select>
+              </div>
+
+              <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
+                <button id="applyFiltersBtn" class="btn btn-primary">Apply</button>
+                <button id="resetFiltersBtn" class="btn btn-outline-secondary">Reset</button>
+
+                <label class="form-check form-switch ms-auto mb-0" style="white-space:nowrap;">
+                  <input id="autoApplyFilters" class="form-check-input" type="checkbox" checked />
+                  <span class="form-check-label small">Auto apply</span>
+                </label>
+              </div>
+            </div>
+
+            <div id="activeFiltersSummary" class="small text-secondary mb-2"></div>
+
+            <div id="capabilityTreemapMeta" class="small text-secondary mb-2"></div>
+
+            <div id="capabilityTreemapDetails" class="small mb-2 p-2 rounded border bg-body-tertiary" style="display:none;"></div>
+
+            <div id="capabilityTreemap" class="graph-panel" style="height:640px;"></div>
+          </div>
+        </div>
+        </div>
+      </div>
+
+      <!-- Matching projects -->
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-semibold">Matching projects</span>
+            <span id="projectsCount" class="small text-secondary"></span>
+          </div>
+          <div class="card-body">
+            <section id="projects" class="project-grid"></section>
+          </div>
+        </div>
+      </div>
+
+      <!-- Manifest builder -->
+      <div id="manifestBuilderCard" class="col-12">
+        <div class="card">
+          <div class="card-header">
+            <span class="fw-semibold">Manifest builder</span>
+          </div>
+          <div class="card-body">
+            <div class="small text-secondary">Select projects from the results (click cards), then export that exact set. If nothing is selected, exports use all currently filtered results.</div>
+            <div id="manifestSelectionInfo" class="small text-secondary mt-2"></div>
+
+            <div id="manifestControls" class="row g-2 align-items-end mt-2" style="display:none;">
+              <div class="col-12 d-flex flex-wrap gap-2">
+                <button id="selectVisibleBtn" class="btn btn-outline-secondary btn-sm">Select visible</button>
+                <button id="clearSelectionBtn" class="btn btn-outline-secondary btn-sm">Clear selection</button>
+              </div>
+
+              <div class="col-12 col-md-6">
+                <label class="form-label small mb-1" for="manifestName">Manifest name</label>
+                <input id="manifestName" class="form-control" type="text" value="project-manifest" />
+              </div>
+
+              <div class="col-12 col-md-6">
+                <label class="form-label small mb-1" for="manifestDescription">Description</label>
+                <input id="manifestDescription" class="form-control" type="text" placeholder="Optional description" />
+              </div>
+
+              <div class="col-12 d-flex flex-wrap gap-2">
+                <button id="exportJsonBtn" class="btn btn-outline-secondary btn-sm">Export JSON</button>
+                <button id="exportXlsxBtn" class="btn btn-outline-secondary btn-sm">Export Spreadsheet</button>
+                <button id="exportMdBtn" class="btn btn-outline-secondary btn-sm">Export Markdown</button>
+                <button id="saveManifestBtn" class="btn btn-primary btn-sm">Save manifest</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script src="/vendor/d3/d3.min.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/index.js"></script>
+</body>
+</html>

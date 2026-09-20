@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login • OSPMAE</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <main class="container">
+    <div class="row justify-content-center align-items-center" style="min-height:100vh;">
+      <div class="col-12 col-md-7 col-lg-5 col-xl-4">
+        <div class="card">
+          <div class="card-body">
+            <div class="text-center mb-3">
+              <img src="/favicon.svg" width="52" height="52" alt="OSPMAE" />
+              <h1 class="h4 mt-2 mb-0">Sign in</h1>
+              <div class="text-secondary small">OSPMAE</div>
+            </div>
+
+            <div id="msg" class="text-secondary small mb-2"></div>
+
+            <div id="ssoSection" class="d-none">
+              <div id="ssoButtons" class="d-grid gap-2"></div>
+              <div class="text-center text-secondary small my-3">or</div>
+            </div>
+
+            <form id="loginForm" novalidate>
+              <div class="mb-2">
+                <label for="username" class="form-label">Username</label>
+                <input id="username" class="form-control" autocomplete="username" required />
+              </div>
+
+              <div class="mb-3">
+                <label for="password" class="form-label">Password</label>
+                <input id="password" class="form-control" type="password" autocomplete="current-password" required />
+              </div>
+
+              <button id="loginBtn" class="btn btn-primary w-100" type="submit">Sign in</button>
+              <div id="forgotWrap" class="mt-2 text-center d-none">
+                <a class="small" href="/forgot-password.html">Forgot your password?</a>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/login.js"></script>
+</body>
+</html>

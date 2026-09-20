@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.DS_Store
+.pgdata/
+*.sql
+*.pgdump
+*.dump
+*.bak
+services/ui/public/vendor
+node_modules

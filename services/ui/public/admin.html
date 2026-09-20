@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSPMAE - Admin</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/mosp-ui-config.js"></script>
+</head>
+<body data-page="admin">
+  <div id="navbar"></div>
+
+  <main class="container container-tight py-4">
+    <div class="d-flex flex-wrap gap-2 align-items-start justify-content-between mb-3">
+      <div>
+        <h1 class="h3 mb-1">Admin</h1>
+        <div class="text-muted">Manage users, groups, permissions, request audit logs, and semantic entity changelogs.</div>
+      </div>
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-primary btn-sm" href="/index.html"><i class="bi bi-arrow-left"></i> Back to projects</a>
+      </div>
+    </div>
+
+    <div class="admin-tab-layout d-flex flex-column flex-lg-row gap-3">
+      <ul class="nav nav-pills flex-column admin-tab-nav" id="adminTabs" role="tablist" aria-orientation="vertical">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="tab-access" data-bs-toggle="tab" data-bs-target="#pane-access" type="button" role="tab" aria-controls="pane-access" aria-selected="true">
+            Users, groups &amp; permissions
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-audit" data-bs-toggle="tab" data-bs-target="#pane-audit" type="button" role="tab" aria-controls="pane-audit" aria-selected="false">
+            Audit trail &amp; entity changelog
+          </button>
+        </li>
+      </ul>
+
+      <div class="tab-content flex-grow-1" id="adminTabContent">
+        <section class="tab-pane fade show active" id="pane-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0">
+          <div class="card mb-3">
+            <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="fw-bold">User &amp; group administration</div>
+                <div class="text-muted small">Roles: pending, viewer, engineer, contributor, product_owner, architect, maintainer, admin, and inherit.</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <h2 class="h6">Create user</h2>
+              <form id="createUserForm" class="row g-2 align-items-end mb-4">
+                <div class="col-md-3">
+                  <label class="form-label" for="cu-username">Username</label>
+                  <input id="cu-username" class="form-control" name="username" placeholder="username" required />
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label" for="cu-email">Email</label>
+                  <input id="cu-email" class="form-control" name="email" placeholder="email (optional)" />
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label" for="cu-password">Password</label>
+                  <input id="cu-password" class="form-control" name="password" type="password" placeholder="min 8 chars" required />
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label" for="cu-role">Role</label>
+                  <select id="cu-role" class="form-select" name="role">
+                    <option value="pending">pending</option>
+                    <option value="viewer">viewer</option>
+                    <option value="engineer">engineer</option>
+                    <option value="contributor">contributor</option>
+                    <option value="product_owner">product_owner</option>
+                    <option value="architect">architect</option>
+                    <option value="maintainer">maintainer</option>
+                    <option value="admin">admin</option>
+                    <option value="inherit">inherit</option>
+                  </select>
+                </div>
+                <div class="col-md-1 d-grid">
+                  <button type="submit" class="btn btn-primary"><i class="bi bi-person-plus"></i> Create</button>
+                </div>
+              </form>
+
+              <h2 class="h6">Users</h2>
+              <div id="usersTable" class="mb-4"></div>
+
+              <h2 class="h6">Create group</h2>
+              <form id="createGroupForm" class="row g-2 align-items-end mb-4">
+                <div class="col-md-6">
+                  <label class="form-label" for="cg-name">Name</label>
+                  <input id="cg-name" class="form-control" name="name" placeholder="group name" required />
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label" for="cg-role">Role</label>
+                  <select id="cg-role" class="form-select" name="role">
+                    <option value="">(no role)</option>
+                    <option value="pending">pending</option>
+                    <option value="viewer">viewer</option>
+                    <option value="engineer">engineer</option>
+                    <option value="contributor">contributor</option>
+                    <option value="product_owner">product_owner</option>
+                    <option value="architect">architect</option>
+                    <option value="maintainer">maintainer</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </div>
+                <div class="col-md-1 d-grid">
+                  <button type="submit" class="btn btn-primary"><i class="bi bi-people"></i> Create</button>
+                </div>
+              </form>
+
+              <h2 class="h6">Groups</h2>
+              <div id="groupsTable"></div>
+
+              <div id="msg" class="small text-muted mt-3"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="pane-audit" role="tabpanel" aria-labelledby="tab-audit" tabindex="0">
+          <div class="card mb-3">
+            <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="fw-bold">Audit trail</div>
+                <div class="text-muted small">Request-level UI/API audit logs.</div>
+              </div>
+              <button type="button" id="refreshAuditBtn" class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+            </div>
+            <div class="card-body">
+              <form id="auditFilters" class="row g-2 align-items-end mb-3">
+                <div class="col-md-3">
+                  <label class="form-label" for="audit-username">Username</label>
+                  <input id="audit-username" class="form-control form-control-sm" name="username" placeholder="any user" />
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label" for="audit-path">Path</label>
+                  <input id="audit-path" class="form-control form-control-sm" name="path" placeholder="/v1/projects" />
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label" for="audit-method">Method</label>
+                  <select id="audit-method" class="form-select form-select-sm" name="method">
+                    <option value="">Any</option>
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
+                  </select>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label" for="audit-status-min">Status from</label>
+                  <input id="audit-status-min" class="form-control form-control-sm" name="status_min" type="number" min="100" max="599" placeholder="100" />
+                </div>
+                <div class="col-md-2 d-grid">
+                  <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-filter"></i> Apply</button>
+                </div>
+              </form>
+              <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-2">
+                <div id="auditMsg" class="small text-muted">Loading…</div>
+                <div class="d-flex gap-2">
+                  <button type="button" id="auditPrevBtn" class="btn btn-sm btn-outline-primary">Prev</button>
+                  <button type="button" id="auditNextBtn" class="btn btn-sm btn-outline-primary">Next</button>
+                </div>
+              </div>
+              <div id="auditTable"></div>
+            </div>
+          </div>
+
+          <div class="card mb-3">
+            <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="fw-bold">Entity changelog</div>
+                <div class="text-muted small">Semantic before/after changes for projects and project versions.</div>
+              </div>
+              <button type="button" id="refreshEntityChangelogBtn" class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+            </div>
+            <div class="card-body">
+              <form id="entityChangelogFilters" class="row g-2 align-items-end mb-3">
+                <div class="col-md-3">
+                  <label class="form-label" for="entity-type">Entity type</label>
+                  <select id="entity-type" class="form-select form-select-sm" name="entity_type">
+                    <option value="">All</option>
+                    <option value="project">Project</option>
+                    <option value="project_version">Project version</option>
+                  </select>
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label" for="entity-id">Entity ID</label>
+                  <input id="entity-id" class="form-control form-control-sm" name="entity_id" type="number" min="1" placeholder="optional" />
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label" for="entity-username">Changed by</label>
+                  <input id="entity-username" class="form-control form-control-sm" name="username" placeholder="any user" />
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label" for="entity-q">Search</label>
+                  <input id="entity-q" class="form-control form-control-sm" name="q" placeholder="project, summary" />
+                </div>
+                <div class="col-md-2 d-grid">
+                  <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-filter"></i> Apply</button>
+                </div>
+              </form>
+              <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-2">
+                <div id="entityChangelogMsg" class="small text-muted">Loading…</div>
+                <div class="d-flex gap-2">
+                  <button type="button" id="entityChangelogPrevBtn" class="btn btn-sm btn-outline-primary">Prev</button>
+                  <button type="button" id="entityChangelogNextBtn" class="btn btn-sm btn-outline-primary">Next</button>
+                </div>
+              </div>
+              <div id="entityChangelogList"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script type="module" src="/mosp-shell.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/admin.js"></script>
+</body>
+</html>

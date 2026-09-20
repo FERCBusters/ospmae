@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSPMAE - Manage projects</title>
+
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/mosp-ui-config.js"></script>
+    <script type="module" src="/mosp-shell.js"></script>
+</head>
+<body data-page="projects">
+  <div id="navbar"></div>
+
+  <main class="container container-tight py-4">
+    <section class="card" id="projectBrowserCard" style="margin-bottom:14px;" data-mosp-filter-section="manage-project-filters" data-mosp-filter-title="Filters">
+      <div class="card-body">
+      <div data-mosp-filter-body style="margin-bottom:12px;">
+      <div class="d-flex flex-wrap" style="justify-content:space-between; align-items:flex-end; gap:10px;">
+        <div>
+          <h2 style="margin:0;">Projects</h2>
+          <div class="small">Browse existing projects, then click Edit to update. Use New project to create one.</div>
+        </div>
+        <div class="d-flex flex-wrap" style="gap:8px; align-items:flex-end;">
+          <label>
+            <span class="small">Search</span>
+            <input id="manageSearchInput" type="text" placeholder="Name, machine name, organisation" style="min-width:260px;" />
+          </label>
+          <button id="manageSearchBtn" class="btn btn-outline-secondary" type="button">Search</button>
+          <button id="manageResetBtn" class="btn btn-outline-secondary" type="button">Reset</button>
+          <button id="btnCreateProject" class="btn btn-primary" type="button"><i class="bi bi-plus"></i> New project</button>
+        </div>
+      </div>
+      </div>
+      <div id="manageList"></div>
+      </div>
+    </section>
+
+    <section class="card" id="projectEditorCard" style="display:none; margin-bottom:14px;">
+      <div class="card-body">
+      <div class="d-flex flex-wrap" style="justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
+        <h2 id="formTitle" style="margin:0;">Create project</h2>
+        <div class="d-flex flex-wrap" style="gap:8px;">
+          <button id="btnBackToList" class="btn btn-outline-secondary" type="button">← Back</button>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-bottom:10px;">
+        <label>
+          <span>Machine name *</span>
+          <input id="machine_name" placeholder="sd-jwt-js" />
+        </label>
+        <label>
+          <span>Display name *</span>
+          <input id="display_name" placeholder="SD-JWT-JS" />
+        </label>
+        <label>
+          <span>Organisation</span>
+          <input id="organisation" placeholder="OpenWallet Foundation" />
+        </label>
+        <label>
+          <span>Project type</span>
+          <input id="project_type" placeholder="library / service / spec" />
+        </label>
+        <label>
+          <span>Programming languages</span>
+          <select id="programming_languages" class="form-select" multiple size="6">
+            <option value=""></option>
+            <option value="Python">Python</option>
+            <option value="TypeScript">TypeScript</option>
+            <option value="JavaScript">JavaScript</option>
+            <option value="NodeJS">NodeJS</option>
+            <option value="React">React</option>
+            <option value="PHP">PHP</option>
+            <option value="Go">Go (Golang)</option>
+            <option value="Rust">Rust</option>
+            <option value="C">C</option>
+            <option value="C++">C++</option>
+            <option value="C#">C#</option>
+            <option value="Java">Java</option>
+            <option value="Kotlin">Kotlin</option>
+            <option value="Swift">Swift</option>
+            <option value="Ruby">Ruby</option>
+          </select>
+        </label>
+
+        <label>
+          <span>License</span>
+          <select id="license" class="form-select">
+            <option value=""></option>
+            <option value="Apache-2.0">Apache-2.0</option>
+            <option value="MIT">MIT</option>
+            <option value="BSD-3-Clause">BSD-3-Clause</option>
+            <option value="BSD-2-Clause">BSD-2-Clause</option>
+            <option value="GPL-3.0-only">GPL-3.0-only</option>
+            <option value="GPL-3.0-or-later">GPL-3.0-or-later</option>
+            <option value="GPL-2.0-only">GPL-2.0-only</option>
+            <option value="GPL-2.0-or-later">GPL-2.0-or-later</option>
+            <option value="LGPL-3.0-only">LGPL-3.0-only</option>
+            <option value="LGPL-3.0-or-later">LGPL-3.0-or-later</option>
+            <option value="LGPL-2.1-only">LGPL-2.1-only</option>
+            <option value="LGPL-2.1-or-later">LGPL-2.1-or-later</option>
+            <option value="AGPL-3.0-only">AGPL-3.0-only</option>
+            <option value="AGPL-3.0-or-later">AGPL-3.0-or-later</option>
+            <option value="MPL-2.0">MPL-2.0</option>
+            <option value="EPL-2.0">EPL-2.0</option>
+            <option value="ISC">ISC</option>
+            <option value="Unlicense">Unlicense</option>
+            <option value="CC0-1.0">CC0-1.0</option>
+            <option value="CDDL-1.0">CDDL-1.0</option>
+            <option value="Artistic-2.0">Artistic-2.0</option>
+            <option value="BSL-1.0">BSL-1.0</option>
+          </select>
+        </label>
+        <label>
+          <span>Homepage / app URL</span>
+          <input id="link_to_app" placeholder="https://..." />
+        </label>
+        <label>
+          <span>Release RSS feed</span>
+          <input id="release_rss_feed_url" placeholder="https://..." />
+          <span class="small muted">Optional: RSS/Atom feed to auto-detect new releases (creates drafts).</span>
+        </label>
+        <label>
+          <span>Release feed ignore patterns</span>
+          <textarea id="release_rss_ignore_patterns" rows="4" placeholder="beta&#10;regex:^v?\\d+\\.\\d+\\.\\d+-rc"></textarea>
+          <span class="small muted">Optional: one per line. Plain lines are case-insensitive substring matches; prefix with regex: for regular expressions.</span>
+        </label>
+        <label>
+          <span>Capability</span>
+          <input id="capability" placeholder="issuer / verifier / wallet / library" />
+        </label>
+      </div>
+
+      <div class="grid cols-2" style="margin-bottom:10px;">
+
+        <label>
+          <span>Supported profiles</span>
+          <select id="supported_profiles" class="form-select" multiple size="4">
+            <option value=""></option>
+            <option value="OpenID4VCI">OpenID4VCI</option>
+            <option value="OpenID4VP">OpenID4VP</option>
+          </select>
+        </label>
+        <label>
+          <span>Supported formats</span>
+          <select id="supported_formats" class="form-select" multiple size="4">
+            <option value=""></option>
+            <option value="JWT VC">JWT VC</option>
+            <option value="SD-JWT">SD-JWT</option>
+          </select>
+        </label>
+        <label>
+          <span>Issuance protocols</span>
+          <select id="supported_issuance_protocols" class="form-select" multiple size="4">
+            <option value=""></option>
+            <option value="openid4vci">openid4vci</option>
+          </select>
+        </label>
+        <label>
+          <span>Presentation protocols</span>
+          <select id="supported_presentation_protocols" class="form-select" multiple size="4">
+            <option value=""></option>
+            <option value="openid4vp">openid4vp</option>
+          </select>
+        </label>
+        <label>
+          <span>Key management</span>
+          <select id="supported_key_managements" class="form-select" multiple size="4">
+            <option value=""></option>
+            <option value="did:key">did:key</option>
+            <option value="jwk">jwk</option>
+          </select>
+        </label>
+        <label>
+          <span>Signing algorithms</span>
+          <select id="supported_signing_algorithms" class="form-select" multiple size="4">
+            <option value=""></option>
+            <option value="ES256">ES256</option>
+            <option value="EdDSA">EdDSA</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="d-flex flex-wrap" style="gap:8px; margin-bottom:12px; justify-content:flex-end;">
+        <button id="saveProjectBtn" class="btn btn-primary" type="button"><i class="bi bi-check2"></i> Save project</button>
+        <button id="deleteProjectBtn" class="btn btn-outline-danger" type="button" style="display:none;"><i class="bi bi-trash"></i> Delete project</button>
+      </div>
+
+      <div class="card p-3" style="margin-bottom:10px;">
+        <div class="d-flex flex-wrap" style="justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+          <h3 style="margin:0;">Versions</h3>
+          <button id="newVersionBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-plus"></i> New version</button>
+        </div>
+        <div id="versionsList" class="small"></div>
+      </div>
+
+      <div id="versionEditor" class="card p-3" style="display:none;">
+        <h3 id="versionFormTitle" style="margin-top:0;">Version</h3>
+        <div id="versionEditContext" class="version-edit-context" aria-live="polite"></div>
+        <div class="grid cols-2" style="margin-bottom:10px;">
+          <label>
+            <span>Version *</span>
+            <input id="version" placeholder="1.0.0" />
+          </label>
+          <label>
+            <span>Status</span>
+            <select id="status" class="form-select">
+              <option value=""></option>
+              <option value="unstable">unstable</option>
+              <option value="stable">stable</option>
+              <option value="beta">beta</option>
+              <option value="alpha">alpha</option>
+              <option value="testing">testing</option>
+              <option value="obsolete">obsolete</option>
+              <option value="deprecated">deprecated</option>
+            </select>
+          </label>
+          <label>
+            <span>Release date</span>
+            <input id="release_date" type="date" />
+          </label>
+          <label>
+            <span>Source code URL</span>
+            <input id="link_to_source_code" placeholder="https://..." />
+          </label>
+          <div class="d-flex flex-column justify-content-end gap-2">
+            <div>
+              <span class="form-label mb-1">Draft</span>
+              <div class="form-check form-switch mt-2 mb-0">
+                <input id="is_draft" class="form-check-input" type="checkbox" />
+                <label class="form-check-label" for="is_draft">Hide from general browsing until published</label>
+              </div>
+            </div>
+            <div>
+              <span class="form-label mb-1">Latest</span>
+              <div class="form-check form-switch mt-2 mb-0">
+                <input id="is_latest" class="form-check-input" type="checkbox" />
+                <label class="form-check-label" for="is_latest">Explicitly mark this published version as Latest</label>
+              </div>
+              <div class="form-text">Leave unchecked to let OSPMAE promote only newer semantic versions automatically.</div>
+            </div>
+            <div id="versionDraftNotice" class="alert alert-warning mt-3 mb-0" style="display:none;" role="status"></div>
+          </div>
+        </div>
+        <label style="display:block; margin-bottom:10px;">
+          <span>Notes</span>
+          <textarea id="notes" rows="3" placeholder="Release notes"></textarea>
+        </label>
+
+        <div class="card p-3" style="margin-bottom:10px;">
+          <h4 style="margin-top:0;">Framework mapping</h4>
+          <div class="small" style="margin-bottom:6px;">Select categories applicable to this version. A project version can be mapped against multiple frameworks.</div>
+          <label style="display:block; margin-bottom:8px;">
+            <span class="small">Framework</span>
+            <select id="frameworkSelect" style="min-width:240px;"></select>
+          </label>
+          <label style="display:block; margin-bottom:8px;">
+            <span class="small">Search categories</span>
+            <input id="capabilitySearch" type="text" placeholder="Enrollment, Key Storage, Connectors..." />
+          </label>
+          <div id="capabilityTree" class="capability-tree"></div>
+        </div>
+
+        <div class="d-flex flex-wrap" style="gap:8px;">
+          <button id="saveVersionBtn" class="btn btn-primary" type="button"><i class="bi bi-check2"></i> Save version</button>
+          <button id="deleteVersionBtn" class="btn btn-outline-danger" type="button" style="display:none;"><i class="bi bi-trash"></i> Delete version</button>
+          <button id="cancelVersionBtn" class="btn btn-outline-secondary" type="button">Cancel</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/project-manage.js"></script>
+</body>
+</html>

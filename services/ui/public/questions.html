@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Questions • OSPMAE</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/mosp-ui-config.js"></script>
+</head>
+
+<body>
+  <div id="navbar"></div>
+
+  <main class="container py-4">
+    <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap mb-3">
+      <div>
+        <h1 class="h3 mb-1">Questions</h1>
+        <div class="text-secondary">Open questions across projects.</div>
+      </div>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <a class="btn btn-outline-secondary" href="/my-questions.html"><i class="bi bi-chat-left-text"></i> My Questions</a>
+        <span id="questionsCount" class="badge text-bg-secondary">0</span>
+        <button id="refreshBtn" class="btn btn-outline-secondary" type="button">Refresh</button>
+      </div>
+    </div>
+
+    <div id="notPermitted" class="alert alert-warning" style="display:none;">
+      You do not have permission to view questions.
+    </div>
+
+    <span id="whoami" class="d-none"></span>
+    <div id="questionsList"></div>
+  </main>
+
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/questions.js"></script>
+  <script type="module" src="/mosp-shell.js"></script>
+</body>
+</html>

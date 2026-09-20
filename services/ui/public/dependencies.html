@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dependency • OSPMAE</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/mosp-ui-config.js"></script>
+</head>
+
+<body data-page="dependency">
+  <div id="navbar"></div>
+
+  <main class="container py-4">
+    <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap mb-3">
+      <div>
+        <h1 id="depTitle" class="h3 mb-1">Dependency</h1>
+        <div id="depSubtitle" class="text-secondary">Loading…</div>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <a class="btn btn-outline-secondary" href="/comparisons.html?lens=dependencies"><i class="bi bi-diagram-3"></i> Project Comparisons</a>
+        <button id="refreshBtn" class="btn btn-primary" type="button"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+      </div>
+    </div>
+
+    <div id="notFound" class="alert alert-warning" style="display:none;">
+      Dependency not found.
+    </div>
+
+    <div class="row g-3">
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-semibold">Overview</span>
+            <div id="depBadges" class="d-flex flex-wrap gap-2"></div>
+          </div>
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-12 col-lg-6">
+                <div class="small text-secondary">Dependency</div>
+                <div id="depName" class="fw-semibold"></div>
+                <div id="depMeta" class="text-secondary small mt-1"></div>
+              </div>
+              <div class="col-12 col-lg-6">
+                <div class="small text-secondary">Vulnerabilities</div>
+                <div id="vulnSummary" class="mt-1"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12">
+        <div class="card" data-mosp-viz-section="dependency-usage" data-mosp-viz-title="Used by projects visualisation">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-semibold">Used by projects</span>
+            <span id="usedByCount" class="badge text-bg-secondary">0</span>
+          </div>
+          <div class="card-body" data-mosp-viz-body>
+            <div id="depUsageGraph" class="graph graph-tall mb-3"></div>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>Version</th>
+                    <th class="text-center">Latest</th>
+                    <th class="text-center">Draft</th>
+                    <th class="text-center">Indirect</th>
+                  </tr>
+                </thead>
+                <tbody id="usedByBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-semibold">Vulnerabilities</span>
+            <span id="vulnCount" class="badge text-bg-secondary">0</span>
+          </div>
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-sm align-middle">
+                <thead>
+                  <tr>
+                    <th>Severity</th>
+                    <th>ID</th>
+                    <th>Title</th>
+                    <th>Fixed version</th>
+                    <th>Scanner</th>
+                  </tr>
+                </thead>
+                <tbody id="vulnBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12" id="namespaceCard" style="display:none;">
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-semibold">Namespace</span>
+            <span id="namespaceBadge" class="badge text-bg-secondary"></span>
+          </div>
+          <div class="card-body">
+            <div id="namespaceHelp" class="text-secondary small mb-2"></div>
+            <div class="row g-2" id="namespaceList"></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script src="/vendor/d3/d3.min.js"></script>
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/dependencies.js"></script>
+  <script type="module" src="/mosp-shell.js"></script>
+</body>
+</html>

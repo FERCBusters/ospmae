@@ -1,0 +1,209 @@
+@import url('/vendor/mosp-design-system/styles.css');
+
+/* OSPMAE legacy helpers (kept small): */
+
+/* Project grid used on the Find projects page */
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 12px;
+}
+
+/* ---- Shared colour tokens (used by legacy helpers) ---- */
+:root {
+  --border: var(--bs-border-color, #E5E7EB);
+  --border-strong: var(--bs-border-color, #E5E7EB);
+  --panel-2: var(--bs-body-bg, #fff);
+  --muted: var(--bs-secondary-color, #6B7280);
+  --accent-700: var(--mosp-accent-700, #4C2A85);
+  --accent-500: var(--mosp-accent, var(--keen-accent, #6F3CC3));
+  --accent-100: var(--mosp-accent-100, #F2E9FF);
+}
+
+/* -------- Cards / tags used in Find projects -------- */
+.project-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bs-body-bg, #fff);
+  padding: 12px;
+  position: relative;
+}
+
+.project-card.selectable {
+  cursor: pointer;
+}
+
+.project-card.selectable:hover {
+  border-color: var(--accent-500);
+  box-shadow: 0 10px 30px rgba(45, 27, 87, 0.12);
+}
+
+.project-card.selected {
+  outline: 3px solid rgba(111, 60, 195, 0.25);
+  border-color: var(--accent-500);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* NOTE: capability/tree pill UX styles moved into mosp-design-system so other apps can share them. */
+
+/* -------- Tabs + project details -------- */
+
+.project-metadata {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.metadata-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--bs-body-bg, #fff);
+}
+
+.metadata-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+/* ---- Manage projects page fixes (Bootstrap alignment) ---- */
+#projectBrowserCard.card, #projectEditorCard.card {
+  overflow: hidden; /* so header rounding looks like Keen */
+}
+
+#projectBrowserCard > .card-body,
+#projectEditorCard > .card-body {
+  padding: 1rem;
+}
+
+#projectBrowserCard .card-header,
+#projectEditorCard .card-header {
+  background: color-mix(in srgb, var(--mosp-accent-100, #F2E9FF) 50%, var(--bs-body-bg, #fff));
+  border-bottom: 1px solid var(--bs-border-color, #E5E7EB);
+}
+
+#projectBrowserCard label > span.small,
+#projectEditorCard label > span {
+  display: block;
+  margin-bottom: .25rem;
+  color: var(--bs-secondary-color, #6B7280);
+  font-size: .875rem;
+}
+
+#projectBrowserCard input:not([type="checkbox"]):not([type="radio"]),
+#projectEditorCard input:not([type="checkbox"]):not([type="radio"]),
+#projectEditorCard textarea,
+#projectEditorCard select {
+  width: 100%;
+  display: block;
+  padding: .375rem .75rem;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--bs-body-color, #111827);
+  background-color: var(--bs-body-bg, #fff);
+  background-clip: padding-box;
+  border: 1px solid var(--bs-border-color, #D1D5DB);
+  border-radius: .375rem;
+}
+
+#projectBrowserCard input:not([type="checkbox"]):not([type="radio"]):focus,
+#projectEditorCard input:not([type="checkbox"]):not([type="radio"]):focus,
+#projectEditorCard textarea:focus,
+#projectEditorCard select:focus {
+  outline: 0;
+  border-color: color-mix(in srgb, var(--mosp-accent-500, #6F3CC3) 55%, var(--bs-border-color, #D1D5DB));
+  box-shadow: 0 0 0 .25rem color-mix(in srgb, var(--mosp-accent-500, #6F3CC3) 20%, transparent);
+}
+
+#projectEditorCard textarea {
+  min-height: calc(1.5em * 2 + .75rem + 2px);
+}
+
+#projectEditorCard label {
+  width: 100%;
+}
+
+/* ---- Manage project version editor clarity ---- */
+.version-row {
+  margin-bottom: 8px;
+  padding: 10px;
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+
+.version-row.version-row-selected {
+  border-color: var(--accent-500);
+  box-shadow: 0 0 0 .2rem color-mix(in srgb, var(--accent-500) 18%, transparent);
+  background: color-mix(in srgb, var(--accent-100) 38%, var(--bs-body-bg, #fff));
+}
+
+.version-edit-context {
+  display: none;
+  margin: .25rem 0 1rem;
+  padding: .65rem .75rem;
+  border: 1px solid color-mix(in srgb, var(--accent-500) 30%, var(--bs-border-color, #E5E7EB));
+  border-left: .35rem solid var(--accent-500);
+  border-radius: .5rem;
+  background: color-mix(in srgb, var(--accent-100) 52%, var(--bs-body-bg, #fff));
+}
+
+.version-edit-context.active {
+  display: block;
+}
+
+#versionEditor.version-editor-active {
+  border-color: var(--accent-500);
+  box-shadow: 0 0 0 .25rem color-mix(in srgb, var(--accent-500) 16%, transparent);
+}
+
+@keyframes ospmae-version-editor-pulse {
+  0% { box-shadow: 0 0 0 .1rem color-mix(in srgb, var(--accent-500) 12%, transparent); }
+  40% { box-shadow: 0 0 0 .45rem color-mix(in srgb, var(--accent-500) 24%, transparent); }
+  100% { box-shadow: 0 0 0 .25rem color-mix(in srgb, var(--accent-500) 16%, transparent); }
+}
+
+#versionEditor.version-editor-pulse {
+  animation: ospmae-version-editor-pulse .9s ease-out 1;
+}
+
+/* ---- Keen-style vertical admin tabs ---- */
+.admin-tab-layout {
+  align-items: flex-start;
+}
+
+.admin-tab-nav {
+  width: 100%;
+  min-width: 220px;
+}
+
+.admin-tab-nav .nav-link {
+  text-align: left;
+  white-space: normal;
+}
+
+@media (min-width: 992px) {
+  .admin-tab-nav {
+    width: 260px;
+    position: sticky;
+    top: 1rem;
+  }
+}
+
+/* ---- Admin audit trail wrapping ---- */
+.admin-audit-table .admin-audit-path-cell {
+  max-width: min(48rem, 45vw);
+  white-space: normal;
+}
+
+.admin-audit-table .admin-audit-path-code {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

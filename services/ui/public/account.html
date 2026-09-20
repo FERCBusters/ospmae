@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSPMAE - Account</title>
+
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
+  <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+
+  <script src="/mosp-ui-config.js"></script>
+</head>
+<body data-page="account">
+  <div id="navbar"></div>
+
+  <main class="container container-tight py-4">
+    <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
+      <div>
+        <h1 class="h3 mb-1">Account</h1>
+        <div class="small-muted">Manage your session and UI preferences.</div>
+      </div>
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="/index.html"><i class="bi bi-arrow-left"></i> Back</a>
+      </div>
+    </div>
+
+    <ul class="nav nav-tabs mb-3" id="accountTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="tabBtnProfile" data-bs-toggle="tab" data-bs-target="#tabProfile" type="button" role="tab" aria-controls="tabProfile" aria-selected="true" data-hash="profile">
+          Profile
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tabBtnPreferences" data-bs-toggle="tab" data-bs-target="#tabPreferences" type="button" role="tab" aria-controls="tabPreferences" aria-selected="false" data-hash="preferences">
+          Preferences
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tabBtnSubscriptions" data-bs-toggle="tab" data-bs-target="#tabSubscriptions" type="button" role="tab" aria-controls="tabSubscriptions" aria-selected="false" data-hash="subscriptions">
+          Subscriptions
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tabBtnShortcuts" data-bs-toggle="tab" data-bs-target="#tabShortcuts" type="button" role="tab" aria-controls="tabShortcuts" aria-selected="false" data-hash="shortcuts">
+          Shortcuts
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tabBtnPassword" data-bs-toggle="tab" data-bs-target="#tabPassword" type="button" role="tab" aria-controls="tabPassword" aria-selected="false" data-hash="password">
+          Password
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content" id="accountTabsContent">
+      <div class="tab-pane fade show active" id="tabProfile" role="tabpanel" aria-labelledby="tabBtnProfile" tabindex="0">
+        <div class="card mb-3">
+          <div class="card-header">
+            <div class="fw-bold">Profile</div>
+            <div class="small-muted">Your current session identity.</div>
+          </div>
+          <div class="card-body">
+            <div class="small-muted mb-2">Signed in as <span id="profileUser" class="fw-semibold"></span></div>
+            <div class="row g-2">
+              <div class="col-12 col-lg-6">
+                <div class="small-muted">Username</div>
+                <div id="profileUsername" class="fw-semibold font-monospace">–</div>
+              </div>
+              <div class="col-12 col-lg-6">
+                <div class="small-muted">Role</div>
+                <div id="profileRole" class="fw-semibold font-monospace">–</div>
+              </div>
+              <div class="col-12">
+                <div class="small-muted">Primary email (used for notifications)</div>
+                <div class="d-flex flex-wrap gap-2 align-items-center mt-1">
+                  <input id="profileEmailInput" class="form-control" style="max-width:420px;" type="email" placeholder="name@example.com" />
+                  <button id="saveEmailBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-save"></i> Save email</button>
+                  <span id="profileEmailMsg" class="text-secondary small"></span>
+                </div>
+              </div>
+              <div class="col-12">
+                <hr class="my-3" />
+                <div class="d-flex flex-wrap gap-2 align-items-end justify-content-between">
+                  <div>
+                    <div class="fw-semibold">Linked email addresses</div>
+                    <div class="small-muted">Additional addresses can be used to map Google, GitHub and OpenID Connect sign-ins to this same OSPMAE account.</div>
+                  </div>
+                </div>
+                <div class="row g-2 align-items-end mt-1">
+                  <div class="col-12 col-lg-7">
+                    <label class="form-label small-muted mb-1" for="linkedEmailInput">Add email address</label>
+                    <input id="linkedEmailInput" class="form-control" type="email" placeholder="other@example.com" />
+                  </div>
+                  <div class="col-12 col-lg-3">
+                    <div class="form-check mt-4">
+                      <input id="linkedEmailPrimary" class="form-check-input" type="checkbox" />
+                      <label class="form-check-label" for="linkedEmailPrimary">Make primary</label>
+                    </div>
+                  </div>
+                  <div class="col-12 col-lg-2 d-grid">
+                    <button id="addLinkedEmailBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-plus"></i> Add</button>
+                  </div>
+                </div>
+                <div id="linkedEmailsList" class="mt-3"></div>
+                <div id="linkedEmailMsg" class="text-secondary small mt-2"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tabPreferences" role="tabpanel" aria-labelledby="tabBtnPreferences" tabindex="0">
+        <div class="card mb-3">
+          <div class="card-header">
+            <div class="fw-bold">Preferences</div>
+            <div class="small-muted">Pick a theme, default start page, and manage your palette.</div>
+          </div>
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-12 col-lg-6">
+                <label class="form-label small-muted mb-1" for="prefTheme">Theme</label>
+                <select id="prefTheme" class="form-select"></select>
+                <div class="form-text">Stored in your browser.</div>
+              </div>
+              <div class="col-12 col-lg-6">
+                <label class="form-label small-muted mb-1" for="defaultStartPage">Default start page</label>
+                <select id="defaultStartPage" class="form-select"></select>
+              </div>
+
+                <div class="col-12">
+                  <div class="row g-3">
+                    <div class="col-12 col-lg-6">
+                      <label class="form-label small mb-1">Sticky filters &amp; visuals</label>
+                      <div class="form-check form-switch">
+                        <input id="prefSticky" class="form-check-input" type="checkbox" />
+                        <label class="form-check-label" for="prefSticky">Keep filters/visual controls pinned while scrolling</label>
+                      </div>
+                      <div class="text-secondary small mt-1">When enabled, key filter panels stay visible as you scroll long lists/graphs.</div>
+                    </div>
+
+                    <div class="col-12 col-lg-6">
+                      <label class="form-label small mb-1">Auto-apply</label>
+                      <div class="form-check form-switch">
+                        <input id="prefAutoApply" class="form-check-input" type="checkbox" />
+                        <label class="form-check-label" for="prefAutoApply">Automatically refresh results after changing filters</label>
+                      </div>
+                      <div class="text-secondary small mt-1">If disabled, use the “Apply filters” button instead.</div>
+                    </div>
+                  </div>
+                </div>
+            </div>
+
+            <hr class="my-4" />
+
+            <div class="d-flex flex-wrap gap-3 align-items-end justify-content-between">
+              <div>
+                <div class="fw-semibold">Category colour palette</div>
+                <div class="small-muted">Customise top-level category colours (per framework).</div>
+              </div>
+              <div class="d-flex gap-2">
+                <button id="resetColorsBtn" class="btn btn-outline-secondary" type="button"><i class="bi bi-arrow-counterclockwise"></i> Reset</button>
+                <button id="saveColorsBtn" class="btn btn-primary" type="button"><i class="bi bi-check2"></i> Save</button>
+              </div>
+            </div>
+
+            <div class="row g-3 mt-1">
+              <div class="col-12 col-lg-4">
+                <label class="form-label small-muted mb-1" for="frameworkSelect">Framework</label>
+                <select id="frameworkSelect" class="form-select"></select>
+              </div>
+              <div class="col-12 col-lg-8">
+                <div id="colorRows" class="mt-2"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tabSubscriptions" role="tabpanel" aria-labelledby="tabBtnSubscriptions" tabindex="0">
+        <div class="card mb-3">
+          <div class="card-header">
+            <div class="fw-bold">Subscriptions</div>
+            <div class="small-muted">Manage notifications without visiting each project.</div>
+          </div>
+          <div class="card-body">
+            <div class="small text-secondary mb-3">
+              Subscriptions control which emails you receive. You can also manage subscriptions from each project page.
+            </div>
+            <div id="subscriptionsList"></div>
+            <div id="subscriptionsMsg" class="text-secondary small mt-2"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tabShortcuts" role="tabpanel" aria-labelledby="tabBtnShortcuts" tabindex="0">
+        <div class="card mb-3">
+          <div class="card-header">
+            <div class="fw-bold">Shortcuts</div>
+            <div class="small-muted">Saved shortcuts appear under the <strong>Shortcuts</strong> menu in the navbar.</div>
+          </div>
+          <div class="card-body">
+            <div id="shortcutsList" class="mb-3"></div>
+
+            <div class="row g-2 align-items-end">
+              <div class="col-12 col-lg-4">
+                <label class="form-label small-muted mb-1" for="shortcutName">Name</label>
+                <input id="shortcutName" class="form-control" type="text" placeholder="e.g. My working set" />
+              </div>
+              <div class="col-12 col-lg-6">
+                <label class="form-label small-muted mb-1" for="shortcutUrl">URL</label>
+                <input id="shortcutUrl" class="form-control" type="text" placeholder="/index.html?framework=uwra&amp;q=..." />
+              </div>
+              <div class="col-12 col-lg-2 d-grid">
+                <button id="addShortcutBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-plus"></i> Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tabPassword" role="tabpanel" aria-labelledby="tabBtnPassword" tabindex="0">
+        <div class="card d-none" id="passwordCard">
+          <div class="card-header">
+            <div class="fw-bold">Password</div>
+            <div class="small-muted">Change your password (local accounts only).</div>
+          </div>
+          <div class="card-body">
+            <form id="changePasswordForm" class="row g-2">
+              <div class="col-12 col-lg-4">
+                <label class="form-label small-muted mb-1" for="currentPassword">Current password</label>
+                <input id="currentPassword" class="form-control" type="password" autocomplete="current-password" required />
+              </div>
+              <div class="col-12 col-lg-4">
+                <label class="form-label small-muted mb-1" for="newPassword">New password</label>
+                <input id="newPassword" class="form-control" type="password" autocomplete="new-password" required />
+              </div>
+              <div class="col-12 col-lg-4">
+                <label class="form-label small-muted mb-1" for="confirmPassword">Confirm new password</label>
+                <input id="confirmPassword" class="form-control" type="password" autocomplete="new-password" required />
+              </div>
+              <div class="col-12 d-flex justify-content-end">
+                <button id="changePasswordBtn" class="btn btn-primary" type="submit">
+                  <i class="bi bi-key"></i> Update password
+                </button>
+              </div>
+            </form>
+            <div id="passwordMsg" class="text-secondary small mt-2"></div>
+          </div>
+        </div>
+        <div class="text-secondary small" id="passwordUnavailableMsg"></div>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+  <script type="module" src="/mosp-shell.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pages/account.js"></script>
+</body>
+</html>
