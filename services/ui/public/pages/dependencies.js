@@ -405,8 +405,10 @@
     });
 
     if (!state.id) {
-      el.notFound.style.display = "";
-      el.depSubtitle.textContent = "Missing dependency id.";
+      // No id means the dependency browser owns this page; it rewrites the
+      // whole main after authentication, so the detail view stays quiet
+      // instead of flashing "Dependency not found." as a leftover.
+      el.depSubtitle.textContent = "Opening the dependency browser…";
       return;
     }
 

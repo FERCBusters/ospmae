@@ -33,13 +33,16 @@ function orgName(row) {
 
 function scanLabel(row) {
   if (!row.latest) return "No release yet";
+  // Values come from dependency_discovery_status, written by
+  // app/tasks/dependency_discovery.py: not_run, queued, running, complete
+  // and error.
   const s = row.dependencies?.discovery_status || "not_run";
   const map = {
     not_run: "Not scanned yet",
-    queued: "Scan queued",
-    running: "Scanning",
-    done: "Scan complete",
-    error: "Scan failed",
+    queued: "Discovery queued",
+    running: "Discovering",
+    complete: "Discovery complete",
+    error: "Discovery failed",
   };
   return map[s] || s;
 }
@@ -111,17 +114,23 @@ function renderRows(projects) {
         ? `${escape(row.latest.version)}<span class="text-secondary small"> · ${escape(scanLabel(row))}</span>`
         : '<span class="text-secondary">no release</span>';
       // The column is a single number: how many direct dependencies the
-      // latest release recorded. Anything else is a discovery state, and
-      // saying so beats a bare dash a reader cannot decode.
+      // latest release recorded. The status vocabulary is not_run, queued,
+      // running, complete and error (dependency_discovery.py) — anything
+      // else falls through to the least-assuming label.
       const discovery = row.dependencies;
-      const deps =
-        discovery && discovery.discovery_status === "done"
-          ? String(discovery.count ?? 0)
-          : discovery && discovery.discovery_status === "failed"
-            ? '<span class="badge text-bg-warning" title="${escape("Dependency discovery failed; rerun it from the project page.")}">discovery failed</span>'
-            : '<span class="text-secondary small">not scanned yet</span>';
+      const status = String(discovery?.discovery_status || "not_run");
+      let deps;
+      if (status === "complete") {
+        deps = String(discovery.count ?? 0);
+      } else if (status === "error") {
+        deps = '<span class="badge text-bg-warning">discovery failed</span>';
+      } else if (status === "queued" || status === "running") {
+        deps = '<span class="text-secondary small">discovery running…</span>';
+      } else {
+        deps = '<span class="text-secondary small">not scanned yet</span>';
+      }
       const link = row.latest
-        ? `href="/project.html?project_id=${row.id}&version_id=${row.latest.id}" data-true-pm="${row.name}"`
+        ? `href="/project.html?id=${row.id}&version_id=${row.latest.id}" data-true-pm="${row.name}"`
         : `data-true-pm="${row.name}"`;
       return `<tr>
         <td><a class="text-decoration-none" ${link}>${escape(row.name)}</a></td>
@@ -130,7 +139,7 @@ function renderRows(projects) {
         <td>${escape(scanLabel(row))}</td>
         <td class="text-end">${deps}</td>
         <td>${severityChips(row.vulnerabilities)}</td>
-        <td class="text-nowrap"><a class="btn btn-sm btn-outline-primary" href="/project.html?project_id=${row.id}">Open</a></td>
+        <td class="text-nowrap"><a class="btn btn-sm btn-outline-primary" href="/project.html?id=${row.id}">Open</a></td>
       </tr>`;
     })
     .join("");

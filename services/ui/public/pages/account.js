@@ -193,7 +193,11 @@
                   <td class="text-end">
                     <div class="btn-group btn-group-sm">
                       <button class="btn btn-outline-secondary" type="button" data-action="primary" ${item.is_primary ? "disabled" : ""}>Make primary</button>
-                      <button class="btn btn-outline-secondary" type="button" data-action="verify">Send verification</button>
+                      ${
+                        item.is_verified
+                          ? '<button class="btn btn-outline-secondary" type="button" data-verified="true" disabled title="This address is already trusted; verification mail is only sent for unverified addresses.">Send verification</button>'
+                          : '<button class="btn btn-outline-secondary" type="button" data-action="verify">Send verification</button>'
+                      }
                       <button class="btn btn-outline-danger" type="button" data-action="delete"><i class="bi bi-trash"></i></button>
                     </div>
                   </td>
