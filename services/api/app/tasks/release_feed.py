@@ -23,6 +23,7 @@ from app.db.models import (
     UserGroup,
 )
 from app.db.session import SessionLocal
+from app.security.regex_shape import compile_supplied_pattern
 from app.security.url_safety import (
     contains_xml_dtd_or_entity,
     validate_public_http_url_resolved,
@@ -36,6 +37,9 @@ from app.services.notification_recipients import notification_emails_for_users
 from app.services.versioning import is_semantically_lower
 
 log = get_task_logger(__name__)
+
+# Ignore patterns search at most this much of each feed entry's text.
+_MATCH_WINDOW_CHARS = 1024
 
 
 def _safe_fetch_feed(
@@ -302,7 +306,8 @@ def _release_feed_entry_is_ignored(
         str(entry.get("link") or ""),
         str(entry.get("id") or ""),
     ]
-    candidates = [c for c in candidates if c]
+    # Feed text is upstream-controlled; patterns read a bounded window of it.
+    candidates = [c[:_MATCH_WINDOW_CHARS] for c in candidates if c]
 
     for rule in patterns:
         pattern = str(rule.get("pattern") or "").strip()
@@ -314,8 +319,10 @@ def _release_feed_entry_is_ignored(
         if match_type == "regex":
             flags = 0 if case_sensitive else re.IGNORECASE
             try:
-                compiled = re.compile(pattern, flags=flags)
-            except re.error:
+                # Patterns saved before the shape checks existed are checked
+                # again here; one that fails is skipped, never run.
+                compiled = compile_supplied_pattern(pattern, flags)
+            except (re.error, ValueError):
                 log.warning(
                     "Skipping invalid release-feed ignore regex for project_id=%s",
                     project.id,

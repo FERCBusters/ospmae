@@ -52,6 +52,11 @@
             Release feeds
           </button>
         </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-features" data-bs-toggle="tab" data-bs-target="#pane-features" type="button" role="tab" aria-controls="pane-features" aria-selected="false">
+            Features
+          </button>
+        </li>
       </ul>
 
       <div class="tab-content flex-grow-1" id="adminTabContent">
@@ -296,6 +301,19 @@
             </div>
           </div>
         </section>
+
+        <section class="tab-pane fade" id="pane-features" role="tabpanel" aria-labelledby="tab-features" tabindex="0">
+          <div class="card mb-3">
+            <div class="card-body">
+              <h2 class="h5">Features</h2>
+              <p>Choose the tools available across this OSPMAE installation. Changes save immediately and apply to every user, including administrators. Existing records are retained while a feature is off.</p>
+              <p class="small text-muted">Parent switches control their subsections. User permissions still apply. A feature the deployment turns off (<code>OSPMAE_FEATURE_*</code>) cannot be turned on here.</p>
+              <div id="feature-status" class="small" role="status" aria-live="polite" hidden></div>
+              <div class="d-flex gap-3 align-items-center mt-2"><button id="features-reload" type="button" class="btn btn-outline-secondary btn-sm">Reload settings</button><span id="feature-version" class="small text-muted"></span></div>
+              <div id="feature-settings"></div>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   </main>
@@ -304,5 +322,6 @@
   <script type="module" src="/mosp-shell.js"></script>
   <script defer src="/app.js"></script>
   <script defer src="/pages/admin.js"></script>
+  <script defer src="/pages/admin-features.js"></script>
 </body>
 </html>

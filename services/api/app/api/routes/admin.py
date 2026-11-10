@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
@@ -815,7 +816,7 @@ def admin_discover_all_release_feeds(
     from app.core.features import is_enabled
     from app.db.models import Project
 
-    if not is_enabled("release_feed"):
+    if not is_enabled("release_feed", db):
         raise HTTPException(status_code=404, detail="Feature not available")
 
     projects = (
@@ -842,6 +843,26 @@ def admin_discover_all_release_feeds(
         "enqueued": enqueued,
         "pending_notifications": _pending_notification_count(db),
     }
+
+
+@router.get("/v1/admin/features")
+def admin_features(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Installation feature switches with their stored and deployment settings."""
+    from app.core import features
+
+    return features.state(db).admin()
+
+
+@router.put("/v1/admin/features")
+def update_admin_features(
+    payload: dict[str, Any] = Body(...),
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Save feature switches against the configuration version they started from."""
+    from app.core import features
+
+    return features.update(db, user, payload.get("version"), payload.get("changes"))
 
 
 @router.get("/v1/admin/notifications")

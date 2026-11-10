@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -637,6 +638,18 @@ class Project(Base):
     branch_last_polled_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
     )
+    # A private repository's clones authenticate with one access token, bound
+    # to the host it was saved for (app/security/repo_credentials.py). The
+    # token is write-only: stored Fernet-encrypted and never returned.
+    repo_private: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    repo_token_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    repo_token_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    repo_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    repo_token_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
     supported_profiles: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )
@@ -1153,6 +1166,78 @@ class RateLimitEntry(Base):
     timestamp: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False, index=True
     )
+
+
+class LoginThrottle(Base):
+    """Consecutive password failures from unrecognised browsers, per compared
+    username digest (app/security/sign_in_throttle.py)."""
+
+    __tablename__ = "login_throttles"
+
+    name_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    gate_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_failure_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False, index=True
+    )
+
+
+class LoginDevice(Base):
+    """A browser that has proved an account's password: its hashed device
+    cookie, bound to the username it signed in with."""
+
+    __tablename__ = "login_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
+class ManagedConfiguration(Base):
+    """Versioned administrator setting, such as the installation features.
+
+    Ported from KEEN: each change bumps the version, which saves check against
+    so two administrators cannot silently overwrite one another.
+    """
+
+    __tablename__ = "managed_configurations"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+
+class ManagedConfigurationRevision(Base):
+    """Every saved version of a managed configuration, kept as history."""
+
+    __tablename__ = "managed_configuration_revisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_by: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    __table_args__ = (UniqueConstraint("name", "version"),)
 
 
 class AuditLog(Base):

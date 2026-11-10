@@ -43,7 +43,7 @@ function buildBrowser() {
     <div class="card"><div class="table-responsive"><table class="table table-sm align-middle mb-0">
       <thead class="table-light"><tr>
         <th>Package</th><th>Ecosystem</th><th class="text-end">Versions</th>
-        <th class="text-end">Used by</th><th>Unfixed findings</th><th></th>
+        <th class="text-end" title="Distinct projects using any recorded version of the package">Used by projects</th><th>Unfixed findings</th><th></th>
       </tr></thead>
       <tbody id="depRows"><tr><td colspan="6" class="text-secondary">Loading…</td></tr></tbody>
     </table></div></div>

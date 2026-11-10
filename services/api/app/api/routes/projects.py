@@ -56,6 +56,11 @@ from app.security.permissions import (
     PERM_PROJECT_WRITE,
     has_permission,
 )
+from app.security.repo_credentials import (
+    RepoTokenUnavailable,
+    default_username,
+    encrypt_token,
+)
 from app.security.roles import ROLE_ADMIN, attach_effective_role
 from app.services.branch_tracking import (
     DEFAULT_POLL_INTERVAL_HOURS,
@@ -510,6 +515,11 @@ def _serialize_project(
         "tracked_branch": project.tracked_branch,
         "branch_poll_interval_hours": project.branch_poll_interval_hours,
         "branch_last_polled_at": project.branch_last_polled_at,
+        # The token is write-only: only whether one is saved is reported.
+        "repo_private": bool(project.repo_private),
+        "repo_token_host": project.repo_token_host,
+        "repo_token_username": project.repo_token_username,
+        "repo_token_set": bool(project.repo_token_encrypted),
         "supported_profiles": _clean_tag_list(project.supported_profiles),
         "supported_formats": _clean_tag_list(project.supported_formats),
         "supported_issuance_protocols": _clean_tag_list(
@@ -969,6 +979,65 @@ def _require_branch_tracking_fields(project: Project) -> None:
         )
 
 
+_REPO_ACCESS_FIELDS = (
+    "repo_private",
+    "repo_token",
+    "repo_token_host",
+    "repo_token_username",
+)
+
+
+def _apply_repo_access(project: Project, changes: dict) -> None:
+    """Apply a request's private-repository settings to a project.
+
+    A token is bound to the host it is entered for: changing the host needs
+    the token entered again, so a saved token never follows a host it was
+    not typed for. Making the repository public deletes the token.
+    """
+
+    requested = changes.get("repo_private")
+    private = bool(project.repo_private if requested is None else requested)
+    if not private:
+        project.repo_private = False
+        project.repo_token_host = None
+        project.repo_token_username = None
+        project.repo_token_encrypted = None
+        project.repo_token_updated_at = None
+        return
+
+    token = changes.get("repo_token")
+    host = changes.get("repo_token_host", project.repo_token_host)
+    if not host:
+        raise HTTPException(
+            status_code=422, detail="Enter the host the access token is for"
+        )
+    if host != project.repo_token_host and not token and project.repo_token_encrypted:
+        raise HTTPException(
+            status_code=422,
+            detail="Enter the access token again for the new host",
+        )
+    username = changes.get("repo_token_username", project.repo_token_username)
+    if not username and default_username(host) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Enter the account name the token belongs to on {host}",
+        )
+    if token:
+        try:
+            project.repo_token_encrypted = encrypt_token(token)
+        except RepoTokenUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        project.repo_token_updated_at = datetime.utcnow()
+    if not project.repo_token_encrypted:
+        raise HTTPException(
+            status_code=422,
+            detail="Enter an access token for the private repository",
+        )
+    project.repo_private = True
+    project.repo_token_host = host
+    project.repo_token_username = username or None
+
+
 def _start_branch_scan(
     db: Session, request: Request, user: User, project: Project
 ) -> None:
@@ -995,7 +1064,7 @@ def _start_branch_scan(
             request_path=request.url.path,
         )
     launch = (
-        is_enabled("dependency_scans")
+        is_enabled("dependency_scans", db)
         and settings.dependency_discovery_enabled
         and not scan_in_flight(version, now)
     )
@@ -1072,6 +1141,10 @@ def create_project(
         created_by_user_id=user.id,
     )
     _require_branch_tracking_fields(project)
+    _apply_repo_access(
+        project,
+        payload.model_dump(include=set(_REPO_ACCESS_FIELDS), exclude_unset=True),
+    )
     if is_tracking(project):
         # Committed with the project, so the poller never sees a tracked
         # branch that this request is about to scan as overdue.
@@ -1110,7 +1183,7 @@ def create_project(
         from app.core.features import is_enabled
         from app.tasks.release_feed import discover_project_release_feed
 
-        if is_enabled("release_feed"):
+        if is_enabled("release_feed", db):
             try:
                 discover_project_release_feed.delay(project.id)
             except Exception:
@@ -1413,6 +1486,11 @@ def update_project(
         updates.pop("branch_poll_interval_hours")
     if "track_branch" in updates:
         updates["track_branch"] = bool(updates["track_branch"])
+    repo_access = {
+        key: updates.pop(key) for key in _REPO_ACCESS_FIELDS if key in updates
+    }
+    if repo_access:
+        _apply_repo_access(project, repo_access)
 
     if "organisation" in updates or "organisation_id" in updates:
         org_name, org_id = _resolve_organisation(db, payload)
@@ -1494,7 +1572,7 @@ def update_project(
         from app.core.features import is_enabled
         from app.tasks.release_feed import discover_project_release_feed
 
-        if is_enabled("release_feed"):
+        if is_enabled("release_feed", db):
             try:
                 discover_project_release_feed.delay(project.id)
             except Exception:

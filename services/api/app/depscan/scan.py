@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.core.config import settings
+from app.security.repo_credentials import RepoCredential, git_auth_env
 
 DEFAULT_ALLOWED_HOSTS = {"github.com", "gitlab.com", "codeberg.org"}
 
@@ -142,7 +143,13 @@ def _git_env() -> dict[str, str]:
 _GIT_FLAGS = ["-c", "http.followRedirects=off"]
 
 
-def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
+def _run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = 180,
+    env: dict[str, str] | None = None,
+) -> str:
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -150,7 +157,7 @@ def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
         stderr=subprocess.STDOUT,
         timeout=timeout,
         check=False,
-        env=_git_env(),
+        env=env or _git_env(),
         text=True,
     )
     if proc.returncode != 0:
@@ -219,7 +226,9 @@ def _candidate_refs(*values: str | None) -> list[str]:
     return cands
 
 
-def _remote_has_ref(url: str, ref: str, *, kind: str) -> bool:
+def _remote_has_ref(
+    url: str, ref: str, *, kind: str, env: dict[str, str] | None = None
+) -> bool:
     """Check if remote has a tag/branch ref without cloning the full repo.
 
     The ref is only ever used as a positional pattern prefixed with
@@ -246,14 +255,18 @@ def _remote_has_ref(url: str, ref: str, *, kind: str) -> bool:
         stderr=subprocess.STDOUT,
         timeout=timeout,
         check=False,
-        env=_git_env(),
+        env=env or _git_env(),
         text=True,
     )
     return proc.returncode == 0 and bool((proc.stdout or "").strip())
 
 
 def clone_repo(
-    url: str, version_hint: str | None = None, *, branch: str | None = None
+    url: str,
+    version_hint: str | None = None,
+    *,
+    branch: str | None = None,
+    credential: RepoCredential | None = None,
 ) -> tuple[Path, str | None]:
     """Shallow-clone a repository into a fresh temporary directory.
 
@@ -261,6 +274,8 @@ def clone_repo(
     branch project), and a branch the remote lacks is an error rather than
     a silent fall back to the default branch. Otherwise ``version_hint``
     selects a matching tag, then a matching branch, then the default branch.
+    A private repository's ``credential`` authenticates the remote commands
+    only, and only over HTTPS to the host it was saved for.
     """
 
     # If someone supplied a release/tag URL, derive the actual repo URL and tag.
@@ -268,6 +283,9 @@ def clone_repo(
 
     validate_repo_url(clone_url)
     tracked_branch = validate_git_ref_name(branch) if branch is not None else None
+    env = _git_env()
+    if credential is not None:
+        env.update(git_auth_env(credential, clone_url))
     tmpdir = Path(tempfile.mkdtemp(prefix="ospmae_repo_"))
     try:
         timeout = int(
@@ -276,7 +294,7 @@ def clone_repo(
 
         chosen_ref: str | None = None
         if tracked_branch is not None:
-            if not _remote_has_ref(clone_url, tracked_branch, kind="branch"):
+            if not _remote_has_ref(clone_url, tracked_branch, kind="branch", env=env):
                 raise RuntimeError(
                     f"Branch {tracked_branch} was not found in the repository"
                 )
@@ -291,14 +309,14 @@ def clone_repo(
             )
 
             for ref in ref_candidates:
-                if _remote_has_ref(clone_url, ref, kind="tag"):
+                if _remote_has_ref(clone_url, ref, kind="tag", env=env):
                     chosen_ref = ref
                     break
 
             # If no tag, also allow an exact branch name match.
             if not chosen_ref:
                 for ref in ref_candidates:
-                    if _remote_has_ref(clone_url, ref, kind="branch"):
+                    if _remote_has_ref(clone_url, ref, kind="branch", env=env):
                         chosen_ref = ref
                         break
 
@@ -318,12 +336,14 @@ def clone_repo(
                     str(tmpdir),
                 ],
                 timeout=timeout,
+                env=env,
             )
         else:
             # default branch as before
             _run(
                 ["git", *_GIT_FLAGS, "clone", "--depth", "1", clone_url, str(tmpdir)],
                 timeout=timeout,
+                env=env,
             )
 
         commit = None

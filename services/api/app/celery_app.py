@@ -49,7 +49,10 @@ celery_app.conf.update(
 
 # Periodically dispatch queued dependency discovery jobs. The schedule and
 # the tasks themselves are disabled when the dependency-scan feature is off.
-from app.core.features import is_enabled as _feature_on
+# The schedule follows the deployment ceiling (OSPMAE_FEATURE_*); each task
+# checks the administrator setting when it runs, so switching a feature off on
+# the Administration page stops its work without restarting beat.
+from app.core.features import deployment_allows as _feature_on
 
 if bool(getattr(settings, "dependency_discovery_enabled", True)) and _feature_on(
     "dependency_scans"

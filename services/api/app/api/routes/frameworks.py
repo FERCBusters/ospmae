@@ -65,8 +65,11 @@ def _paths_by_id(nodes: list[FrameworkNode]) -> dict[int, str]:
 
     def path_for(n: FrameworkNode) -> str:
         parts = [n.display_name]
+        seen = {n.id}
         parent = by_id.get(n.parent_id) if n.parent_id else None
-        while parent:
+        # A stored cycle (which updates refuse) must not loop forever.
+        while parent and parent.id not in seen:
+            seen.add(parent.id)
             parts.append(parent.display_name)
             parent = by_id.get(parent.parent_id) if parent.parent_id else None
         return " / ".join(reversed(parts))
@@ -584,7 +587,7 @@ def create_framework_node(
         key=key,
         display_name=payload.display_name.strip(),
         description=(payload.description or None),
-        parent_id=parent_id,
+        parent_id=parent_id or None,
         sort_order=int(payload.sort_order or 0),
         level=level,
     )
@@ -665,9 +668,34 @@ def update_framework_node(
                 raise HTTPException(
                     status_code=400, detail="Node cannot be its own parent"
                 )
+            # Walking up from the new parent must never reach this node: a
+            # node under its own descendant would form a cycle.
+            ancestor: FrameworkNode | None = parent
+            seen: set[int] = set()
+            while ancestor is not None and ancestor.id not in seen:
+                if ancestor.id == node.id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Node cannot move under one of its own descendants",
+                    )
+                seen.add(ancestor.id)
+                ancestor = (
+                    db.get(FrameworkNode, ancestor.parent_id)
+                    if ancestor.parent_id
+                    else None
+                )
             level = int(parent.level or 0) + 1
-        node.parent_id = parent_id
+        node.parent_id = parent_id or None
         node.level = level
+        # The moved node's descendants move with it.
+        pending = [node]
+        while pending:
+            current = pending.pop()
+            for child in db.query(FrameworkNode).filter(
+                FrameworkNode.parent_id == current.id
+            ):
+                child.level = int(current.level or 0) + 1
+                pending.append(child)
 
     db.add(node)
     db.commit()

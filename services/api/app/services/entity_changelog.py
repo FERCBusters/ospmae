@@ -40,6 +40,10 @@ _CHANGE_FIELD_LABELS = {
     "tracked_repo_url": "Tracked repository",
     "tracked_branch": "Tracked branch",
     "branch_poll_interval_hours": "Branch re-scan interval (hours)",
+    "repo_private": "Private repository",
+    "repo_token_host": "Access token host",
+    "repo_token_username": "Access token account",
+    "repo_token_updated_at": "Access token saved",
     "status": "Status",
     "supported_formats": "Supported formats",
     "supported_issuance_protocols": "Issuance protocols",
@@ -259,6 +263,15 @@ def project_changelog_state(
         "tracked_repo_url": project.tracked_repo_url,
         "tracked_branch": project.tracked_branch,
         "branch_poll_interval_hours": project.branch_poll_interval_hours,
+        # The token itself is never recorded; when it was saved is.
+        "repo_private": bool(project.repo_private),
+        "repo_token_host": project.repo_token_host,
+        "repo_token_username": project.repo_token_username,
+        "repo_token_updated_at": (
+            project.repo_token_updated_at.isoformat()
+            if project.repo_token_updated_at
+            else None
+        ),
         "supported_profiles": list(project.supported_profiles or []),
         "supported_formats": list(project.supported_formats or []),
         "supported_issuance_protocols": list(

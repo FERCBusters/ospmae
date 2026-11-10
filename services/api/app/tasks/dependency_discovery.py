@@ -23,6 +23,7 @@ from app.depscan.grype import scan_grype
 from app.depscan.parsers import DiscoveredDependency, parse_lockfile, redact_url
 from app.depscan.scan import clone_repo, find_lockfiles
 from app.depscan.syft import scan_syft
+from app.security.repo_credentials import project_credential
 from app.services.branch_tracking import is_branch_version
 
 log = get_task_logger(__name__)
@@ -321,6 +322,8 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
             url,
             version_hint=str(getattr(pv, "version", "") or "").strip() or None,
             branch=branch,
+            # A private repository's token, bound to the host it was saved for.
+            credential=project_credential(pv.project),
         )
         max_bytes = int(
             getattr(settings, "dependency_discovery_max_file_bytes", 5_000_000)

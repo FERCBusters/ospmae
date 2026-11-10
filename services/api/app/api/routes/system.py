@@ -19,4 +19,4 @@ def health():
 @router.get("/v1/system/features")
 def features(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Installation feature switches for the UI; authentication required."""
-    return public_dict()
+    return public_dict(db)

@@ -54,6 +54,7 @@
     csrf: { cookieName: "ospmae_csrf" },
 
     // Keep the navbar unified across apps; Account is provided by the shared UI.
+    // Each key is the data-page of the page it highlights in the navbar.
     links: [
       {
         key: "projects",
@@ -68,13 +69,13 @@
         requireAny: ["can_view_catalogue"],
       },
       {
-        key: "deps",
+        key: "dependencies",
         label: "Dependencies",
         href: "/dependencies.html",
         requireAny: ["can_view_catalogue"],
       },
       {
-        key: "viz",
+        key: "comparisons",
         label: "Project Comparisons",
         href: "/comparisons.html",
         requireAny: ["can_view_catalogue"],

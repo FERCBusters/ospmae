@@ -121,11 +121,11 @@ def _record_git(monkeypatch, heads: set[str], tags: set[str]):
     looked_up: list[tuple[str, str]] = []
     commands: list[list[str]] = []
 
-    def _has_ref(url, ref, *, kind):
+    def _has_ref(url, ref, *, kind, env=None):
         looked_up.append((kind, ref))
         return ref in (heads if kind == "branch" else tags)
 
-    def _run(cmd, *, cwd=None, timeout=180):
+    def _run(cmd, *, cwd=None, timeout=180, env=None):
         commands.append(cmd)
         return "0123abcd\n" if "rev-parse" in cmd else ""
 
@@ -506,7 +506,7 @@ def test_discovery_clones_the_tracked_branch_for_the_branch_version(
 
     seen: list[tuple[str, str | None, str | None]] = []
 
-    def _fake_clone(url, version_hint=None, *, branch=None):
+    def _fake_clone(url, version_hint=None, *, branch=None, credential=None):
         seen.append((url, version_hint, branch))
         repo = tmp_path / f"repo{len(seen)}"
         repo.mkdir()

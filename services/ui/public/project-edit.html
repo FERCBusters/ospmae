@@ -166,6 +166,31 @@
           <span class="small muted">At least 1 hour. Each re-scan clones the branch head again and runs dependency discovery.</span>
         </label>
       </div>
+      <div id="repoAccessField" style="margin-bottom:10px;">
+        <span class="form-label mb-1">Repository access</span>
+        <div class="form-check form-switch mt-2 mb-0">
+          <input id="repo_private" class="form-check-input" type="checkbox" />
+          <label class="form-check-label" for="repo_private">Private repository</label>
+        </div>
+        <div class="form-text">Clones authenticate with an access token. It is stored encrypted, sent only over HTTPS to the host below, and never shown again. Turning this off deletes the saved token.</div>
+      </div>
+      <div id="repoAccessFields" class="grid cols-2" style="margin-bottom:10px;" hidden>
+        <label>
+          <span>Token host *</span>
+          <input id="repo_token_host" placeholder="github.com" maxlength="255" autocomplete="off" />
+          <span class="small muted">The token is sent to this host only. Changing it needs the token entered again.</span>
+        </label>
+        <label>
+          <span>Access token <span id="repoTokenRequired">*</span></span>
+          <input id="repo_token" type="password" maxlength="1024" autocomplete="new-password" spellcheck="false" />
+          <span id="repoTokenStatus" class="small muted">A read-only token for this repository, such as a fine-grained personal access token.</span>
+        </label>
+        <label>
+          <span>Account name</span>
+          <input id="repo_token_username" maxlength="100" autocomplete="off" placeholder="Not needed for GitHub, GitLab or Bitbucket" />
+          <span class="small muted">The account the token belongs to, for hosts that need one.</span>
+        </label>
+      </div>
       </section>
 
       <section id="projectWizardStep3" hidden>

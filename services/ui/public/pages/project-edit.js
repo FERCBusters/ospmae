@@ -58,6 +58,13 @@
     branch_poll_interval_hours: document.getElementById(
       "branch_poll_interval_hours",
     ),
+    repo_private: document.getElementById("repo_private"),
+    repoAccessFields: document.getElementById("repoAccessFields"),
+    repo_token_host: document.getElementById("repo_token_host"),
+    repo_token: document.getElementById("repo_token"),
+    repoTokenStatus: document.getElementById("repoTokenStatus"),
+    repoTokenRequired: document.getElementById("repoTokenRequired"),
+    repo_token_username: document.getElementById("repo_token_username"),
 
     capability: document.getElementById("capability"),
     supported_profiles: document.getElementById("supported_profiles"),
@@ -259,6 +266,48 @@
       el.branch_poll_interval_hours,
     ]) {
       if (input) input.required = tracking;
+    }
+  }
+
+  function urlHost(value) {
+    try {
+      const url = new URL(String(value || "").trim());
+      return url.protocol === "https:" ? url.hostname.toLowerCase() : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  // A private repository's token fields appear with the switch. The token is
+  // write-only: a saved one is reported, never shown, and an empty field
+  // keeps it unless the host changes.
+  function syncRepoAccessFields() {
+    const isPrivate = !!el.repo_private?.checked;
+    if (el.repoAccessFields) el.repoAccessFields.hidden = !isPrivate;
+    const project = state.editingProject;
+    const savedHost = project?.repo_token_set ? project.repo_token_host : "";
+    if (isPrivate && el.repo_token_host && !el.repo_token_host.value) {
+      el.repo_token_host.value =
+        urlHost(el.tracked_repo_url?.value) ||
+        urlHost(currentLatestVersion()?.link_to_source_code) ||
+        "";
+    }
+    const host = (el.repo_token_host?.value || "").trim().toLowerCase();
+    const tokenNeeded = isPrivate && (!savedHost || host !== savedHost);
+    if (el.repo_token_host) el.repo_token_host.required = isPrivate;
+    if (el.repo_token) {
+      el.repo_token.required = tokenNeeded;
+      el.repo_token.placeholder = tokenNeeded
+        ? ""
+        : "Leave empty to keep the saved token";
+    }
+    if (el.repoTokenRequired) el.repoTokenRequired.hidden = !tokenNeeded;
+    if (el.repoTokenStatus) {
+      el.repoTokenStatus.textContent = savedHost
+        ? host === savedHost
+          ? "A token is saved for this host. Enter a new one to replace it."
+          : "The saved token is for another host; enter the token for this one."
+        : "A read-only token for this repository, such as a fine-grained personal access token.";
     }
   }
 
@@ -497,6 +546,13 @@
       el.trackBranchField.hidden =
         !featureOn("dependency_scans") && !project?.track_branch;
     syncTrackingFields();
+    if (el.repo_private) el.repo_private.checked = !!project?.repo_private;
+    if (el.repo_token_host)
+      el.repo_token_host.value = project?.repo_token_host || "";
+    if (el.repo_token_username)
+      el.repo_token_username.value = project?.repo_token_username || "";
+    if (el.repo_token) el.repo_token.value = "";
+    syncRepoAccessFields();
 
     el.capability.value = project?.capability || "";
 
@@ -547,6 +603,10 @@
       branch_poll_interval_hours:
         Number.parseInt(el.branch_poll_interval_hours?.value || "", 10) ||
         undefined,
+      repo_private: !!el.repo_private?.checked,
+      repo_token_host: (el.repo_token_host?.value || "").trim() || null,
+      repo_token_username: (el.repo_token_username?.value || "").trim() || null,
+      repo_token: (el.repo_token?.value || "").trim() || undefined,
 
       capability: (el.capability.value || "").trim() || null,
 
@@ -573,6 +633,12 @@
       delete payload.tracked_repo_url;
       delete payload.tracked_branch;
       delete payload.branch_poll_interval_hours;
+    }
+    if (!payload.repo_private) {
+      // Turning private off deletes the saved token on the server.
+      delete payload.repo_token_host;
+      delete payload.repo_token_username;
+      delete payload.repo_token;
     }
 
     if (isUpdate) {
@@ -1115,6 +1181,8 @@
     });
 
     el.track_branch?.addEventListener("change", syncTrackingFields);
+    el.repo_private?.addEventListener("change", syncRepoAccessFields);
+    el.repo_token_host?.addEventListener("input", syncRepoAccessFields);
 
     el.saveProjectBtn.addEventListener("click", () => {
       saveProject().catch((err) =>

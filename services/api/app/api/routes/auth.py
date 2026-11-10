@@ -22,14 +22,15 @@ from app.api.payloads import (
 )
 from app.core.config import settings
 from app.db.models import (
+    LoginDevice,
     PasswordResetToken,
-    RateLimitEntry,
     User,
 )
 from app.db.models import (
     Session as SessionRow,
 )
 from app.db.session import get_db
+from app.security import sign_in_throttle as throttle
 from app.security.audit import (
     log_login_failure,
     log_login_success,
@@ -47,7 +48,7 @@ from app.security.auth import (
     get_user_by_email,
     set_session_cookie,
 )
-from app.security.client_addr import public_client_address
+from app.security.client_addr import allowance_address, public_client_address
 from app.security.csrf import clear_csrf_cookie, generate_csrf_token, set_csrf_cookie
 from app.security.oidc import (
     any_sso_enabled,
@@ -140,137 +141,99 @@ def _get_user_agent(request: Request) -> str | None:
     return request.headers.get("User-Agent") or None
 
 
-# Window for the per-address and per-username sign-in allowances.
-_LOGIN_WINDOW_SECONDS = 300
-_LOGIN_PER_ADDRESS = 10
-# Failed attempts one username name may absorb before every further failure
-# must run under the controlled-verification allowance below.
-_LOGIN_FAILURES_PER_NAME = 15
-# Once the failure allowance is spent, at most this many further password
-# verifications run per (username, address) window: a legitimate user's
-# correct password still logs in, while brute-force work stays bounded.
-_LOGIN_VERIFY_BUDGET = 5
-
-
-def _normalize_login_name(username: str) -> str:
-    """The form in which sign-in names are compared for limiting.
-
-    Folds case so spellings that name the same account share one allowance.
-    """
-    return " ".join(str(username or "").strip().casefold().split())
-
-
 @router.post("/v1/auth/login")
 def login(
     payload: LoginPayload, request: Request, db: Session = Depends(get_db)
 ) -> Response:
+    """Password sign-in under the shared throttling policy.
+
+    See app/security/sign_in_throttle.py: a browser that has signed in to this
+    account before is heard whatever an attacker does elsewhere, and every
+    other browser shares the account's growing waits.
+    """
+
     if not bool(getattr(settings, "local_auth_enabled", True)):
         raise HTTPException(status_code=404, detail="Local auth disabled")
 
     client_ip = _get_client_ip(request)
     user_agent = _get_user_agent(request)
     username = (payload.username or "").strip()
-    # A blank username is refused before any rate limit or password work.
-    if not username:
+    # A blank username is refused before any throttling or password work.
+    if not username or not throttle.login_name(username):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    rate_id = f"login:{client_ip}"
 
-    allowed, info = check_rate_limit(
-        db,
-        rate_id,
-        max_attempts=_LOGIN_PER_ADDRESS,
-        window_seconds=_LOGIN_WINDOW_SECONDS,
-    )
-    if not allowed:
-        log_security_alert(
-            db,
-            "rate_limit_exceeded",
-            {"action": "login"},
-            None,
-            client_ip,
-            user_agent,
-        )
-        return JSONResponse(
-            {"detail": "Too many login attempts", "retry_after": info["retry_after"]},
-            status_code=429,
-            headers={"Retry-After": str(info["retry_after"] // 1000)},
-        )
-
-    record_rate_limit_attempt(db, rate_id)
-
-    # One allowance per compared username, keyed by digest so the ledger
-    # neither grows with name length nor stores the attempted name.
-    from app.security.client_addr import allowance_address
-
-    name_key = hashlib.sha256(
-        _normalize_login_name(username).encode("utf-8")
-    ).hexdigest()
-    user_fail_id = f"login_fail_user:{name_key}"
-    user_allowed, user_info = check_rate_limit(
-        db,
-        user_fail_id,
-        max_attempts=_LOGIN_FAILURES_PER_NAME,
-        window_seconds=_LOGIN_WINDOW_SECONDS,
+    now = datetime.utcnow()
+    key = throttle.name_key(username)
+    device = throttle.recognised_device(
+        db, request.cookies.get(throttle.device_cookie_name()), key, now
     )
 
-    if user_allowed:
-        user = authenticate_user(db, payload.username, payload.password)
-        if not user:
-            record_rate_limit_attempt(db, user_fail_id)
-            log_login_failure(
-                db, username, "invalid_credentials", client_ip, user_agent
-            )
-            raise HTTPException(status_code=401, detail="Invalid username or password")
-        # Success clears any accumulating failure state for this name.
-        db.query(RateLimitEntry).filter(
-            RateLimitEntry.identifier == user_fail_id
-        ).delete(synchronize_session=False)
-        db.commit()
-    else:
-        # The failure allowance is spent -- someone is attacking this account.
-        # A correct password must still sign in: verifications proceed only
-        # under a small per-(name, address) budget, so distributed guessing
-        # can stay slow while the legitimate user always gets through.
-        verify_id = (
-            f"login_verify_user:{name_key}:{allowance_address(client_ip) or 'unknown'}"
-        )
-        verify_allowed, verify_info = check_rate_limit(
+    if device is None:
+        address_id = f"login:{allowance_address(client_ip) or 'unknown'}"
+        allowed, info = check_rate_limit(
             db,
-            verify_id,
-            max_attempts=_LOGIN_VERIFY_BUDGET,
-            window_seconds=_LOGIN_WINDOW_SECONDS,
+            address_id,
+            max_attempts=throttle.ADDRESS_ATTEMPTS,
+            window_seconds=throttle.ADDRESS_WINDOW_SECONDS,
         )
-        if not verify_allowed:
-            return JSONResponse(
-                {
-                    "detail": "Too many failed attempts",
-                    "retry_after": user_info["retry_after"],
-                },
-                status_code=429,
+        if not allowed:
+            log_security_alert(
+                db,
+                "rate_limit_exceeded",
+                {"action": "login"},
+                None,
+                client_ip,
+                user_agent,
             )
-        record_rate_limit_attempt(db, verify_id)
-        user = authenticate_user(db, payload.username, payload.password)
-        if not user:
-            log_login_failure(
-                db, username, "invalid_credentials", client_ip, user_agent
-            )
-            raise HTTPException(status_code=401, detail="Invalid username or password")
-        # A success under the spent-failure budget clears the attack state.
-        db.query(RateLimitEntry).filter(
-            RateLimitEntry.identifier == user_fail_id
-        ).delete(synchronize_session=False)
-        db.commit()
+            return _limited(int(info["retry_after"]) // 1000)
+        record_rate_limit_attempt(db, address_id)
 
-    delete_all_sessions_for_user(db, user.id)
+        admitted, retry = throttle.reserve_unrecognised_attempt(db, key, now)
+        if not admitted:
+            log_security_alert(
+                db,
+                "rate_limit_exceeded",
+                {"action": "login", "scope": "account"},
+                None,
+                client_ip,
+                user_agent,
+            )
+            return _limited(retry)
+
+    user = authenticate_user(db, payload.username, payload.password)
+    if not user:
+        if device is not None:
+            throttle.device_failed(db, device)
+        log_login_failure(db, username, "invalid_credentials", client_ip, user_agent)
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    # The password is proven: the account's count ends, and this browser is
+    # recognised for it from now on (its previous token retired).
+    throttle.clear_throttle(db, key)
+    token = throttle.issue_device(
+        db, user_id=user.id, key=key, now=now, replaces=device
+    )
+    db.commit()
 
     from app.security import mfa
 
     if user.mfa_enabled or mfa.required(db, user):
         # The password is proven; the browser now holds the ceremony cookie
         # while /v1/auth/mfa/* runs outside of any session.
-        return mfa.start(db, user, request)
+        response = mfa.start(db, user, request)
+    else:
+        response = complete_local_login(db, user, request)
+    throttle.set_device_cookie(response, token)
+    return response
 
-    return complete_local_login(db, user, request)
+
+def _limited(retry_after: int) -> JSONResponse:
+    retry = max(1, int(retry_after))
+    return JSONResponse(
+        {"detail": throttle.LIMITED, "retry_after": retry},
+        status_code=429,
+        headers={"Retry-After": str(retry)},
+    )
 
 
 def complete_local_login(
@@ -281,6 +244,9 @@ def complete_local_login(
     mfa_verified: bool = False,
     verified_version: int | None = None,
 ):
+    # The account's earlier sessions end only once sign-in is complete, any
+    # second factor included: a password alone cannot sign anyone out.
+    delete_all_sessions_for_user(db, user.id)
     sid = create_session(
         db,
         user_id=user.id,
@@ -297,6 +263,7 @@ def complete_local_login(
         db.add(user)
         db.commit()
         request.state.user = user
+        request.state.audit_username = user.username
 
         log_login_success(
             db, user.id, "local", _get_client_ip(request), _get_user_agent(request)
@@ -373,6 +340,7 @@ async def _complete_sso_callback(
         request, db, provider_key=provider_key
     )
     request.state.user = user
+    request.state.audit_username = user.username
 
     delete_all_sessions_for_user(db, user.id)
 
@@ -427,7 +395,6 @@ def _local_password_features_enabled() -> bool:
 
 
 def _hash_reset_token(token: str) -> str:
-    import hashlib
 
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -491,6 +458,15 @@ def change_password(
         raise HTTPException(status_code=401, detail="Not authenticated")
     user_row.password_hash = get_password_hash(payload.new_password)
     db.add(user_row)
+    # Other sessions and every browser's recognition end with the old
+    # password (KEEN's rule); this browser keeps its session and is
+    # recognised again at its next correct password.
+    db.query(SessionRow).filter(SessionRow.user_id == user_row.id).filter(
+        SessionRow.session_id != sid
+    ).delete(synchronize_session=False)
+    db.query(LoginDevice).filter(LoginDevice.user_id == user_row.id).delete(
+        synchronize_session=False
+    )
     db.commit()
     return Response(status_code=204)
 
@@ -654,6 +630,15 @@ def reset_password(
 
     db.add(user)
     db.add(row)
+    # A reset is the account's recovery: every session and recognised browser
+    # ends, and the sign-in throttle for its name starts afresh.
+    db.query(SessionRow).filter(SessionRow.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    db.query(LoginDevice).filter(LoginDevice.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    throttle.clear_throttle(db, throttle.name_key(user.username))
     db.commit()
 
     log_password_reset_confirm(db, user.id, None, None)

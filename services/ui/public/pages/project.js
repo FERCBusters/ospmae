@@ -20,7 +20,7 @@ const state = {
   versions: [],
   currentVersionId: null,
   graphData: null,
-  activeTab: "visualise",
+  activeTab: "capabilities",
   svg: null,
   viewport: null,
   zoomBehavior: null,
@@ -43,16 +43,18 @@ const state = {
 };
 
 const TAB_HASHES = Object.freeze({
-  visualise: "visualise",
+  capabilities: "capabilities",
   dependency: "dependencies",
   questions: "questions",
   metadata: "metadata",
   changelog: "changelog",
 });
 
+// Older links named the capabilities tab "visualise".
 const TAB_ALIASES = Object.freeze({
-  visualise: "visualise",
-  visualize: "visualise",
+  capabilities: "capabilities",
+  visualise: "capabilities",
+  visualize: "capabilities",
   dependency: "dependency",
   dependencies: "dependency",
   questions: "questions",
@@ -68,19 +70,41 @@ function normalizeTabName(value) {
   return TAB_ALIASES[raw] || null;
 }
 
+// Each optional tab belongs to an installation feature; a tab whose feature
+// is off is hidden and never opened.
+const TAB_FEATURES = Object.freeze({
+  capabilities: "frameworks",
+  dependency: "dependency_scans",
+  questions: "questions",
+});
+
+function tabAvailable(name) {
+  const feature = TAB_FEATURES[name];
+  return !feature || !window.OSPMAE || window.OSPMAE.featureOn(feature);
+}
+
+function defaultTab() {
+  return ["capabilities", "dependency", "metadata"].find(tabAvailable);
+}
+
+function availableTab(value) {
+  const name = normalizeTabName(value);
+  return name && tabAvailable(name) ? name : defaultTab();
+}
+
 function tabFromLocation() {
   const fromHash = normalizeTabName(window.location.hash || "");
-  if (fromHash) return fromHash;
+  if (fromHash) return availableTab(fromHash);
   try {
     const params = new URLSearchParams(window.location.search || "");
-    return normalizeTabName(params.get("tab")) || "visualise";
+    return availableTab(params.get("tab"));
   } catch (_) {
-    return "visualise";
+    return defaultTab();
   }
 }
 
 function rememberTabInHash(tabName) {
-  const normalized = normalizeTabName(tabName) || "visualise";
+  const normalized = availableTab(tabName);
   const hash = TAB_HASHES[normalized] || normalized;
   const nextUrl = `${window.location.pathname}${window.location.search}#${hash}`;
   if (
@@ -110,12 +134,12 @@ const el = {
   ),
 
   tabMetadataBtn: document.getElementById("tabMetadataBtn"),
-  tabVisualiseBtn: document.getElementById("tabVisualiseBtn"),
+  tabCapabilitiesBtn: document.getElementById("tabCapabilitiesBtn"),
   tabDependencyBtn: document.getElementById("tabDependencyBtn"),
   tabQuestionsBtn: document.getElementById("tabQuestionsBtn"),
   tabChangelogBtn: document.getElementById("tabChangelogBtn"),
   metadataTab: document.getElementById("metadataTab"),
-  visualiseTab: document.getElementById("visualiseTab"),
+  capabilitiesTab: document.getElementById("capabilitiesTab"),
   dependencyTab: document.getElementById("dependencyTab"),
   questionsTab: document.getElementById("questionsTab"),
   changelogTab: document.getElementById("changelogTab"),
@@ -525,39 +549,39 @@ function applyDependencyRunPolicy() {
 }
 
 function setTab(tabName, options = {}) {
-  const normalized = normalizeTabName(tabName) || "visualise";
+  const normalized = availableTab(tabName);
   state.activeTab = normalized;
   if (options.updateLocation !== false) {
     rememberTabInHash(normalized);
   }
 
   const isMetadata = normalized === "metadata";
-  const isVisualise = normalized === "visualise";
+  const isCapabilities = normalized === "capabilities";
   const isDependency = normalized === "dependency";
   const isQuestions = normalized === "questions";
   const isChangelog = normalized === "changelog";
 
   // Panels
   el.metadataTab?.classList.toggle("active", isMetadata);
-  el.visualiseTab?.classList.toggle("active", isVisualise);
+  el.capabilitiesTab?.classList.toggle("active", isCapabilities);
   el.dependencyTab?.classList.toggle("active", isDependency);
   el.questionsTab?.classList.toggle("active", isQuestions);
   el.changelogTab?.classList.toggle("active", isChangelog);
 
   // Buttons
   el.tabMetadataBtn?.classList.toggle("active", isMetadata);
-  el.tabVisualiseBtn?.classList.toggle("active", isVisualise);
+  el.tabCapabilitiesBtn?.classList.toggle("active", isCapabilities);
   el.tabDependencyBtn?.classList.toggle("active", isDependency);
   el.tabQuestionsBtn?.classList.toggle("active", isQuestions);
   el.tabChangelogBtn?.classList.toggle("active", isChangelog);
 
   el.tabMetadataBtn?.setAttribute("aria-selected", String(isMetadata));
-  el.tabVisualiseBtn?.setAttribute("aria-selected", String(isVisualise));
+  el.tabCapabilitiesBtn?.setAttribute("aria-selected", String(isCapabilities));
   el.tabDependencyBtn?.setAttribute("aria-selected", String(isDependency));
   el.tabQuestionsBtn?.setAttribute("aria-selected", String(isQuestions));
   el.tabChangelogBtn?.setAttribute("aria-selected", String(isChangelog));
 
-  if (isVisualise) {
+  if (isCapabilities) {
     renderVisualization();
   }
 
@@ -3953,7 +3977,9 @@ function bindEvents() {
     el.depOnlyVulnToggle.checked = !!state.depOnlyVulnOnly;
 
   el.tabMetadataBtn?.addEventListener("click", () => setTab("metadata"));
-  el.tabVisualiseBtn?.addEventListener("click", () => setTab("visualise"));
+  el.tabCapabilitiesBtn?.addEventListener("click", () =>
+    setTab("capabilities"),
+  );
   el.tabDependencyBtn?.addEventListener("click", () => setTab("dependency"));
   el.tabQuestionsBtn?.addEventListener("click", () => setTab("questions"));
   el.tabChangelogBtn?.addEventListener("click", () => setTab("changelog"));
@@ -4006,7 +4032,7 @@ function bindEvents() {
     updateProjectManifestNameSuggestion(false);
     await loadGraph(id);
     renderMetadata();
-    if (state.activeTab === "visualise") {
+    if (state.activeTab === "capabilities") {
       renderVisualization();
     }
   });
@@ -4146,7 +4172,7 @@ function bindEvents() {
   });
 
   el.visualTypeSelect?.addEventListener("change", () => {
-    if (state.activeTab === "visualise") {
+    if (state.activeTab === "capabilities") {
       renderVisualization();
     }
   });
@@ -4156,7 +4182,7 @@ function bindEvents() {
   el.zoomResetBtn?.addEventListener("click", resetZoom);
 
   window.addEventListener("resize", () => {
-    if (state.activeTab === "visualise") {
+    if (state.activeTab === "capabilities") {
       renderVisualization();
     }
     if (state.activeTab === "dependency") {
@@ -4194,10 +4220,21 @@ async function init() {
       el.manifestExportField.style.display = canExportManifests() ? "" : "none";
     }
 
-    // Framework selection (drives the taxonomy mapping + visualisation colouring).
-    await loadFrameworks();
-    state.frameworks = getFrameworks();
-    state.activeFramework = getActiveFramework();
+    // Tabs for features this installation has switched off stay hidden.
+    for (const [name, button] of [
+      ["capabilities", el.tabCapabilitiesBtn],
+      ["dependency", el.tabDependencyBtn],
+      ["questions", el.tabQuestionsBtn],
+    ]) {
+      if (button && !tabAvailable(name)) button.style.display = "none";
+    }
+
+    // Framework selection (drives the taxonomy mapping + capability colouring).
+    if (tabAvailable("capabilities")) {
+      await loadFrameworks();
+      state.frameworks = getFrameworks();
+      state.activeFramework = getActiveFramework();
+    }
 
     bindEvents();
     await loadProject();

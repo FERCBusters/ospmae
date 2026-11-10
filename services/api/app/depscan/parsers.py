@@ -68,12 +68,21 @@ def parse_package_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependen
     # npm v7+: packages map has full transitive tree.
     packages = data.get("packages") if isinstance(data, dict) else None
     if isinstance(packages, dict) and packages:
+        # Lockfiles 2 and 3 list the project's own dependencies on its root
+        # package entry; everything else is installed for them.
+        root = packages.get("")
+        if isinstance(root, dict):
+            root_direct = set()
+            for field in ("dependencies", "devDependencies", "optionalDependencies"):
+                if isinstance(root.get(field), dict):
+                    root_direct.update(root[field])
         for k, v in packages.items():
             if k in ("", None):
                 continue
             if not isinstance(k, str) or not k.startswith("node_modules/"):
                 continue
-            name = k[len("node_modules/") :]
+            # A nested install ("node_modules/a/node_modules/b") is package b.
+            name = k.rsplit("node_modules/", 1)[-1]
             if not name:
                 continue
             version = ""
@@ -103,7 +112,8 @@ def parse_package_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependen
 
 
 _YARN_KEY_RE = re.compile(r"^(?P<key>.+):\s*$")
-_YARN_VERSION_RE = re.compile(r'^\s*version\s+"(?P<ver>[^"]+)"\s*$')
+# Yarn 1 writes `version "1.2.3"`; Yarn 2 and later write `version: 1.2.3`.
+_YARN_VERSION_RE = re.compile(r'^\s+version:?\s+"?(?P<ver>[^"\s]+)"?\s*$')
 _YARN_NAME_RE = re.compile(r"^(?P<name>@[^/]+/[^@]+|[^@]+)@")
 
 
@@ -150,19 +160,34 @@ def parse_pnpm_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]
     packages = data.get("packages")
     if not isinstance(packages, dict):
         return out
-    for key, meta in packages.items():
-        # Typical keys: "/react/18.2.0" or "/@scope/name/1.0.0".
+    for key in packages:
         if not isinstance(key, str):
             continue
-        parts = [p for p in key.split("/") if p]
-        if len(parts) < 2:
-            continue
-        ver = parts[-1]
-        name = "/".join(parts[:-1])
-        if not name or not ver:
-            continue
-        out.append(DiscoveredDependency("npm", name, ver, True, str(path)))
+        parsed = _pnpm_package_key(key)
+        if parsed:
+            out.append(DiscoveredDependency("npm", *parsed, True, str(path)))
     return out
+
+
+_PNPM_V5_KEY = re.compile(r"^(?P<name>(?:@[^/@]+/)?[^/@]+)/(?P<ver>[^/_]+)(?:_.*)?$")
+
+
+def _pnpm_package_key(key: str) -> tuple[str, str] | None:
+    """The name and version a pnpm lockfile package key names.
+
+    Lockfile 5 writes "/react/18.2.0" (peer suffixes after "_"); lockfiles 6
+    and 9 write "/react@18.2.0" and "react@18.2.0" (peer suffixes in brackets).
+    Scoped names keep their leading "@".
+    """
+    key = key.lstrip("/")
+    v5 = _PNPM_V5_KEY.match(key)
+    if v5:
+        return v5.group("name"), v5.group("ver")
+    key = key.split("(", 1)[0]
+    at = key.rfind("@")
+    if at <= 0 or at == len(key) - 1:
+        return None
+    return key[:at], key[at + 1 :]
 
 
 def parse_cargo_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:

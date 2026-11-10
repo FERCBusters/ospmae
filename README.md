@@ -17,7 +17,7 @@ Applications in the same family share a design system and conventions: **KEEN** 
 
 ## Installation feature switches
 
-Each optional product area answers 404 and disappears from the UI and background schedules when switched off in `.env` (`OSPMAE_FEATURE_*`, all default `true`):
+Administrators switch optional product areas on and off on the Administration page (**Features** tab, `/admin.html#features`); a switched-off area answers 404, disappears from the UI and skips its background work, and its records are kept. Each save is checked against the configuration revision it started from, and every revision is kept. The deployment's `.env` switches (`OSPMAE_FEATURE_*`, all default `true`) are a ceiling: an area turned off there stays off and its switch on the page cannot turn it on.
 
 | Switch | What it toggles |
 | --- | --- |

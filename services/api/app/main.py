@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import threading
 import time
 from datetime import datetime
-from urllib.parse import urlparse
 
+import anyio
 from fastapi import FastAPI, Request, WebSocket
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.routes import router as api_router
@@ -18,66 +20,52 @@ from app.security.auth import (
     get_current_user_from_headers_cookies,
     get_current_user_from_request,
 )
-from app.security.client_addr import public_client_address, socket_peer_trusted
-from app.security.csrf import csrf_valid
+from app.security.client_addr import (
+    allowance_address,
+    public_client_address,
+    socket_peer_trusted,
+)
+from app.security.csrf import (
+    csrf_valid,
+    generate_csrf_token,
+    get_csrf_token_from_request,
+    request_origin_allowed,
+    set_csrf_cookie,
+)
+from app.security.local_allowance import LocalAllowance
 from app.security.permissions import seed_default_permissions
 from app.security.redaction import redact_query_string
+from app.security.request_limits import (
+    RequestLimitMiddleware,
+    validation_error_response,
+)
 from app.security.roles import ROLE_PENDING, attach_effective_role
 
-
-class _MemoryWindowLimiter:
-    """Process-local fixed-window allowances for cheap per-address bounds.
-
-    The database-backed limiter is too heavy to sit in front of the audit
-    trail and WebSocket handshakes, where the bound is an availability guard
-    against unauthenticated floods, not a brute-force counter.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._buckets: dict[str, tuple[float, list[float]]] = {}
-
-    def _prune(self, key: str, now: float, window: float) -> int:
-        entry = self._buckets.get(key)
-        if not entry:
-            return 0
-        _, stamps = entry
-        fresh = [t for t in stamps if now - t < window]
-        if fresh:
-            self._buckets[key] = (now, fresh)
-        else:
-            self._buckets.pop(key, None)
-        return len(fresh)
-
-    def allow(self, key: str | None, limit: int, window_seconds: float) -> bool:
-        if limit <= 0 or window_seconds <= 0:
-            return True
-        addr = key or "unknown"
-        now = time.monotonic()
-        with self._lock:
-            count = self._prune(addr, now, window_seconds)
-            if count >= limit:
-                return False
-            entry = self._buckets.get(addr)
-            stamps = entry[1] + [now] if entry else [now]
-            self._buckets[addr] = (now, stamps)
-            return True
-
-
-_memory_limiter = _MemoryWindowLimiter()
-
-
-app = FastAPI(title=settings.app_title)
+app = FastAPI(
+    title=settings.app_title,
+    exception_handlers={RequestValidationError: validation_error_response},
+)
 
 _MAX_NOTIFICATION_SOCKETS_PER_USER = 8
-# Unauthenticated or cheap-to-repeat work gets a small per-address budget:
-# audit-trail writes and WebSocket handshakes cannot be flooded into database
-# churn from a single address.
-_AUDIT_ROWS_PER_ADDRESS_PER_MINUTE = 120
-_WS_HANDSHAKES_PER_ADDRESS_PER_MINUTE = 30
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Requests without a signed-in account carry no identity, so each client
+# address (each /64 network for IPv6) adds at most this many audit records a
+# minute, whatever their status: refusals, and public routes such as signing
+# in. Signed-in requests are always recorded. The same figure as KEEN's.
+_ANONYMOUS_AUDIT_PER_MINUTE = 60
+# WebSocket handshakes cost a session checkout and a user lookup each.
+_WS_HANDSHAKES_PER_MINUTE = 30
+_anonymous_audit = LocalAllowance(_ANONYMOUS_AUDIT_PER_MINUTE, 60)
+_ws_handshakes = LocalAllowance(_WS_HANDSHAKES_PER_MINUTE, 60)
+
+# Public read-only documents and pollers that anyone may fetch at any rate.
+_UNAUDITED_PUBLIC_READS = frozenset({"/v1/system/health", "/v1/auth/methods"})
+# The navbar's unanswered-questions badge polls this on every page.
+_UNAUDITED_POLLS = frozenset({"/v1/questions/unanswered/summary"})
 
 
-def _client_ip(request: Request) -> str | None:
+def _client_ip(request) -> str | None:
     return public_client_address(
         getattr(getattr(request, "client", None), "host", None),
         request.headers.get("x-forwarded-for"),
@@ -113,10 +101,6 @@ class _TrustedProxySchemeMiddleware:
         await self.asgi_app(scope, receive, send)
 
 
-if bool(getattr(settings, "trust_proxy_headers", False)):
-    app.add_middleware(_TrustedProxySchemeMiddleware)
-
-
 def _pending_user_api_allowed(method: str, path: str) -> bool:
     """Return True for the tiny API surface a pending user needs.
 
@@ -136,46 +120,74 @@ def _pending_user_api_allowed(method: str, path: str) -> bool:
     return False
 
 
-@app.middleware("http")
-async def load_user_and_enforce_csrf(request: Request, call_next):
+def _authenticate(request: Request) -> JSONResponse | None:
+    """Attach the request's user, or return the response refusing the request.
+
+    The account is loaded in a short-lived session that closes before the
+    route runs, so no connection is held for the length of a request. The
+    instance is detached: a route that changes it adds it to its own session.
+    """
     db = SessionLocal()
     try:
         user = get_current_user_from_request(request, db)
+        if user is None:
+            return None
+        # Loads every column, so the detached instance stays readable.
+        effective_role = attach_effective_role(db, user)
+        db.expunge(user)
         request.state.user = user
-
-        if user is not None and (request.url.path or "").startswith("/v1"):
-            effective_role = attach_effective_role(db, user)
-            if effective_role == ROLE_PENDING and not _pending_user_api_allowed(
-                request.method, request.url.path or ""
-            ):
-                from fastapi.responses import JSONResponse
-
-                return JSONResponse(
-                    {"detail": "Your account is pending administrator approval."},
-                    status_code=403,
-                )
-
-        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
-            path = request.url.path or ""
-            # Login stays exempt: a first-time browser has neither session nor
-            # CSRF cookie. Every other cookie-authenticated unsafe write,
-            # logout included, must carry the matching CSRF token.
-            if path != "/v1/auth/login":
-                # Only enforce csrf for cookie-authenticated calls.
-                has_session_cookie = bool(
-                    request.cookies.get(settings.session_cookie_name)
-                )
-                if has_session_cookie and not csrf_valid(request):
-                    from fastapi.responses import JSONResponse
-
-                    return JSONResponse(
-                        {"detail": "CSRF token missing or invalid"}, status_code=403
-                    )
-
-        response = await call_next(request)
-        return response
+        request.state.audit_username = user.username
+        path = request.url.path or ""
+        if (
+            path.startswith("/v1")
+            and effective_role == ROLE_PENDING
+            and not _pending_user_api_allowed(request.method, path)
+        ):
+            return JSONResponse(
+                {"detail": "Your account is pending administrator approval."},
+                status_code=403,
+            )
+        return None
     finally:
         db.close()
+
+
+@app.middleware("http")
+async def load_user_and_enforce_csrf(request: Request, call_next):
+    # Database work runs in the thread pool, so one slow lookup never holds up
+    # the requests the event loop is serving.
+    refused = await run_in_threadpool(_authenticate, request)
+    if refused is not None:
+        return refused
+    user = getattr(request.state, "user", None)
+
+    if request.method.upper() in _UNSAFE_METHODS:
+        # A browser sends every write from OSPMAE's own origin, including
+        # writes before anyone is signed in (signing in, password resets, a
+        # second factor in progress), which have no CSRF token to check.
+        if not request_origin_allowed(request):
+            return JSONResponse(
+                {"detail": "Request origin is not allowed"}, status_code=403
+            )
+        # Every signed-in write needs the token, whether the account came from
+        # a session cookie or a trusted identity header.
+        path = request.url.path or ""
+        if user is not None and path != "/v1/auth/login" and not csrf_valid(request):
+            return JSONResponse(
+                {"detail": "CSRF token missing or invalid"}, status_code=403
+            )
+
+    response = await call_next(request)
+
+    # Browsers signed in by a trusted proxy get no OSPMAE sign-in response to
+    # carry the CSRF cookie, and a browser may lose the cookie before its
+    # session ends; either receives a token with this response.
+    if user is not None and not get_csrf_token_from_request(request):
+        try:
+            set_csrf_cookie(response, generate_csrf_token())
+        except Exception:
+            pass
+    return response
 
 
 def _is_sensitive_auth_callback_path(path: str | None) -> bool:
@@ -193,9 +205,12 @@ async def audit_trail_middleware(request: Request, call_next):
     """
 
     path = request.url.path or ""
-    if path in {"/health", "/v1/system/health", "/v1/admin/questions/summary"}:
-        return await call_next(request)
-    if _is_sensitive_auth_callback_path(path):
+    if (
+        not path.startswith("/v1")
+        or path in _UNAUDITED_POLLS
+        or (request.method.upper() == "GET" and path in _UNAUDITED_PUBLIC_READS)
+        or _is_sensitive_auth_callback_path(path)
+    ):
         return await call_next(request)
 
     start = time.perf_counter()
@@ -204,61 +219,58 @@ async def audit_trail_middleware(request: Request, call_next):
         response = await call_next(request)
         return response
     finally:
+        status_code = getattr(response, "status_code", 500)
+        duration_ms = int((time.perf_counter() - start) * 1000)
         try:
-            if not path.startswith("/v1"):
-                return
-
-            status_code = getattr(response, "status_code", 500)
-            duration_ms = int((time.perf_counter() - start) * 1000)
-            user = getattr(request.state, "user", None)
-            username = getattr(user, "username", None) if user else None
-
-            query_string = redact_query_string(request.url.query)
-            if query_string and len(query_string) > 4096:
-                query_string = query_string[:4096]
-
-            user_agent = (request.headers.get("user-agent") or "").strip() or None
-            referer = (request.headers.get("referer") or "").strip() or None
-            if user_agent and len(user_agent) > 256:
-                user_agent = user_agent[:256]
-            if referer and len(referer) > 512:
-                referer = referer[:512]
-
-            client_ip = _client_ip(request)
-
-            # One committed row per request is a floodable write: an
-            # unauthenticated client gets a bounded per-address audit
-            # allowance, and paths that are refused before any work (rate
-            # limits, CSRF) are sampled, not committed.
-            write_row = True
-            if client_ip:
-                write_row = _memory_limiter.allow(
-                    client_ip, _AUDIT_ROWS_PER_ADDRESS_PER_MINUTE, 60.0
+            # Written in the thread pool, off the event loop, and kept even
+            # when the client goes away before it is written.
+            with anyio.CancelScope(shield=True):
+                await run_in_threadpool(
+                    _record_request, request, path, status_code, duration_ms
                 )
-
-            if write_row:
-                db = SessionLocal()
-                try:
-                    db.add(
-                        AuditLog(
-                            ts=datetime.utcnow(),
-                            username=username,
-                            method=request.method,
-                            path=path,
-                            query_string=query_string,
-                            status_code=int(status_code or 0),
-                            duration_ms=duration_ms,
-                            client_ip=client_ip,
-                            user_agent=user_agent,
-                            referer=referer,
-                        )
-                    )
-                    db.commit()
-                finally:
-                    db.close()
         except Exception:
             # Audit logging must never break the request path.
             pass
+
+
+def _record_request(
+    request: Request, path: str, status_code: int, duration_ms: int
+) -> None:
+    username = getattr(request.state, "audit_username", None)
+    client_ip = _client_ip(request)
+    if username is None and not _anonymous_audit.allow(allowance_address(client_ip)):
+        return
+
+    query_string = redact_query_string(request.url.query)
+    if query_string and len(query_string) > 4096:
+        query_string = query_string[:4096]
+
+    user_agent = (request.headers.get("user-agent") or "").strip() or None
+    referer = (request.headers.get("referer") or "").strip() or None
+    if user_agent and len(user_agent) > 256:
+        user_agent = user_agent[:256]
+    if referer and len(referer) > 512:
+        referer = referer[:512]
+
+    db = SessionLocal()
+    try:
+        db.add(
+            AuditLog(
+                ts=datetime.utcnow(),
+                username=username,
+                method=request.method,
+                path=path,
+                query_string=query_string,
+                status_code=int(status_code or 0),
+                duration_ms=duration_ms,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                referer=referer,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
 
 
 @app.on_event("startup")
@@ -275,56 +287,10 @@ def _bootstrap_catalog_data() -> None:
     db = SessionLocal()
     try:
         seed_default_permissions(db)
-        if is_enabled("frameworks"):
+        if is_enabled("frameworks", db):
             ensure_default_frameworks(db)
     finally:
         db.close()
-
-
-def _origin_host(value: str) -> str:
-    try:
-        u = urlparse(value)
-        return (u.hostname or "").strip().lower()
-    except Exception:
-        return ""
-
-
-def _ws_origin_allowed(ws: WebSocket) -> bool:
-    """Protect against cross-site WebSocket hijacking.
-
-    When ``OSPMAE_PUBLIC_BASE_URL`` is configured, an Origin must name that
-    origin exactly. Otherwise the Origin host must match the request's Host
-    header, and the Origin may never be absent: browsers always send one, so a
-    missing Origin from a browser page is already attacker-shaped. This check
-    is in addition to same-origin cookie protections, not instead of them.
-    """
-
-    origin = (ws.headers.get("origin") or "").strip()
-    if not origin:
-        return False
-
-    try:
-        o = urlparse(origin)
-    except Exception:
-        return False
-
-    if (o.scheme or "").lower() not in {"http", "https"}:
-        return False
-
-    origin_host = (o.hostname or "").strip().lower()
-    if not origin_host:
-        return False
-
-    expected_base = (getattr(settings, "public_base_url", "") or "").strip()
-    if expected_base:
-        expected = _origin_host(expected_base)
-        return bool(expected) and origin_host == expected
-
-    host_hdr = (ws.headers.get("host") or "").split(":", 1)[0].strip().lower()
-    if not host_hdr:
-        return False
-
-    return origin_host == host_hdr
 
 
 @app.websocket("/ws/notifications")
@@ -337,15 +303,22 @@ async def ws_notifications(ws: WebSocket):
     idle lifetime of the connection.
     """
 
-    if not _ws_origin_allowed(ws):
+    # Cross-site WebSocket hijacking: browsers always send Origin, and it must
+    # name OSPMAE itself.
+    if not request_origin_allowed(ws, require_origin=True):
         await ws.close(code=4403)
         return
 
     # Handshake attempts themselves are floodable work (one session checkout
-    # and user lookup each), so each address gets a small allowance before the
-    # database is touched.
+    # and user lookup each), so each client address gets a small allowance
+    # before the database is touched. Behind the proxy every socket peer is
+    # the proxy itself, so the allowance counts the resolved client address.
     peer = getattr(getattr(ws, "client", None), "host", None)
-    if not _memory_limiter.allow(peer, _WS_HANDSHAKES_PER_ADDRESS_PER_MINUTE, 60.0):
+    if not _ws_handshakes.allow(
+        allowance_address(
+            public_client_address(peer, ws.headers.get("x-forwarded-for"))
+        )
+    ):
         await ws.close(code=4429)
         return
 
@@ -394,3 +367,10 @@ def root():
 
 
 app.include_router(api_router)
+
+# Byte, shape and target limits apply before any middleware reads the request.
+app.add_middleware(RequestLimitMiddleware)
+
+# Outermost, so every middleware and route sees the forwarded scheme.
+if bool(getattr(settings, "trust_proxy_headers", False)):
+    app.add_middleware(_TrustedProxySchemeMiddleware)

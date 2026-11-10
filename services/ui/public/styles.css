@@ -241,3 +241,33 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+
+/* Sign-in card brand mark, as on KEEN's sign-in page. */
+.login-brand-icon {
+  border-radius: 6px;
+  box-shadow: 0 1px 4px #0002;
+  flex: 0 0 auto;
+}
+
+/* Pills (such as the audit trail / changelog switch on the Administration
+   page) follow the theme's accent like primary buttons, not Bootstrap's
+   default blue. The vertical administration menu keeps its own styling. */
+.nav-pills:not(.admin-tab-nav) {
+  --bs-nav-pills-link-active-bg: var(--keen-accent);
+  --bs-nav-pills-link-active-color: var(--keen-accent-contrast);
+}
+
+/* The OSPMAE mark is drawn on a 28px grid as its own coloured tile, so the
+   navbar shows it at its native size without the shared white backing tile
+   (which would shrink it to 22px and rescale it). */
+.navbar-keen .keen-brand-icon[src="/favicon.svg"] {
+  background: transparent;
+  padding: 0;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.35);
+}
+
+/* Switches and checkboxes follow the theme's accent like primary buttons. */
+.form-check-input:checked {
+  background-color: var(--keen-accent);
+  border-color: var(--keen-accent);
+}

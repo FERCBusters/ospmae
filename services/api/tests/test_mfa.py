@@ -35,6 +35,8 @@ INVALID_CODE = (400, {"detail": "Invalid or already-used code"})
 EXPIRED = (401, {"detail": "Verification expired; start again"})
 ACCEPTED = (200, {"ok": True})
 ORIGIN_REFUSED = (403, {"detail": "Authentication request origin is not allowed"})
+# Every write from a foreign origin is refused before any route runs.
+CROSS_SITE_REFUSED = (403, {"detail": "Request origin is not allowed"})
 NOT_VERIFIED = (403, {"detail": "Verify your existing second factor first"})
 CODES_REFUSED = (
     401,
@@ -454,7 +456,7 @@ def test_wrong_origin_is_refused_before_any_state_change(client, db, user):
             "X-CSRF-Token": c.cookies.get("ospmae_csrf"),
         },
     )
-    assert outcome(response) == ORIGIN_REFUSED
+    assert outcome(response) == CROSS_SITE_REFUSED
 
 
 def test_a_password_change_invalidates_a_pending_ceremony(client, db, user):

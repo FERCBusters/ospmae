@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from urllib.parse import urlsplit
 
 from fastapi import Request, Response
 
@@ -16,7 +17,65 @@ def get_csrf_token_from_request(request: Request) -> str:
     return (request.cookies.get(name) or "").strip()
 
 
+def _origin(value: str) -> tuple[str, str, int]:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or "\\" in value
+        or any(ord(c) < 32 or ord(c) == 127 for c in value)
+    ):
+        raise ValueError("Invalid origin")
+    return (
+        parsed.scheme,
+        parsed.hostname.lower(),
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+
+
+def request_origin_allowed(request, *, require_origin: bool = False) -> bool:
+    """Whether a browser request (HTTP or WebSocket) comes from OSPMAE itself.
+
+    With ``OSPMAE_PUBLIC_BASE_URL`` configured, that is the one accepted
+    origin: scheme, host and port must all match. Without it, the Origin host
+    must match the request's own Host header. Non-browser clients may omit
+    Origin unless ``require_origin`` is set; a browser that omits it while
+    reporting a cross-site request is refused.
+    """
+    supplied = (request.headers.get("origin") or "").strip()
+    if not supplied:
+        return (
+            not require_origin
+            and (request.headers.get("sec-fetch-site") or "") != "cross-site"
+        )
+    try:
+        origin = _origin(supplied)
+    except ValueError:
+        return False
+    expected_base = (getattr(settings, "public_base_url", "") or "").strip()
+    if expected_base:
+        try:
+            return origin == _origin(expected_base)
+        except ValueError:
+            return False
+    host = (request.headers.get("host") or "").strip().lower()
+    if not host:
+        return False
+    try:
+        host_name = urlsplit(f"//{host}").hostname or ""
+    except ValueError:
+        return False
+    return bool(host_name) and origin[1] == host_name
+
+
 def csrf_valid(request: Request) -> bool:
+    if not request_origin_allowed(request):
+        return False
     cookie_name = settings.csrf_cookie_name
     header_name = settings.csrf_header_name
 

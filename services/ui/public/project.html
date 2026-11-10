@@ -38,9 +38,9 @@
     </div>
 
     <section class="tabs" role="tablist" aria-label="Project tabs">
-      <button id="tabVisualiseBtn" class="tab-btn active" role="tab" aria-selected="true" type="button">Visualise</button>
-      <button id="tabDependencyBtn" class="tab-btn" role="tab" aria-selected="false" type="button">Dependency map</button>
-      <button id="tabQuestionsBtn" class="tab-btn" role="tab" aria-selected="false" type="button">Questions</button>
+      <button id="tabCapabilitiesBtn" class="tab-btn active" role="tab" aria-selected="true" type="button" data-feature="frameworks">Capabilities</button>
+      <button id="tabDependencyBtn" class="tab-btn" role="tab" data-feature="dependency_scans" aria-selected="false" type="button">Dependency map</button>
+      <button id="tabQuestionsBtn" class="tab-btn" role="tab" data-feature="questions" aria-selected="false" type="button">Questions</button>
       <button id="tabMetadataBtn" class="tab-btn" role="tab" aria-selected="false" type="button">Metadata</button>
       <button id="tabChangelogBtn" class="tab-btn" role="tab" aria-selected="false" type="button">Changelog</button>
     </section>
@@ -58,7 +58,7 @@
       </div>
     </section>
 
-    <section id="visualiseTab" class="tab-panel active">
+    <section id="capabilitiesTab" class="tab-panel active">
       <div class="keen-sticky-topblock">
       <div class="card" data-mosp-filter-section="project-visualisation-controls" data-mosp-filter-title="Visualisation controls">
         <div class="card-body visual-controls">

@@ -7,6 +7,13 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.depscan.scan import validate_git_ref_name, validate_repo_url
+from app.security.regex_shape import MAX_PATTERN_CHARS, compile_supplied_pattern
+from app.security.repo_credentials import (
+    MAX_TOKEN_CHARS,
+    clean_host,
+    clean_token,
+    clean_username,
+)
 from app.security.url_safety import validate_public_http_url, validate_safe_href
 from app.services.branch_tracking import (
     MAX_POLL_INTERVAL_HOURS,
@@ -142,7 +149,7 @@ class ReleaseFeedIgnorePatternPayload(BaseModel):
     """A per-project rule for suppressing release-feed draft creation."""
 
     match_type: str = Field(default="contains", max_length=20)
-    pattern: str = Field(min_length=1, max_length=800)
+    pattern: str = Field(min_length=1, max_length=MAX_PATTERN_CHARS)
     case_sensitive: bool = False
 
     @model_validator(mode="before")
@@ -192,7 +199,7 @@ class ReleaseFeedIgnorePatternPayload(BaseModel):
         if self.match_type == "regex":
             flags = 0 if self.case_sensitive else re.IGNORECASE
             try:
-                re.compile(self.pattern, flags=flags)
+                compile_supplied_pattern(self.pattern, flags)
             except re.error as exc:
                 raise ValueError(f"invalid regex pattern: {exc}") from exc
         return self
@@ -255,6 +262,13 @@ class ProjectCreatePayload(BaseModel):
     branch_poll_interval_hours: int | None = Field(
         default=None, ge=MIN_POLL_INTERVAL_HOURS, le=MAX_POLL_INTERVAL_HOURS
     )
+    # A private repository: clones authenticate with this write-only token,
+    # sent only over HTTPS to repo_token_host. An empty token keeps the saved
+    # one; turning repo_private off deletes it.
+    repo_private: bool | None = None
+    repo_token: str | None = Field(default=None, max_length=MAX_TOKEN_CHARS, repr=False)
+    repo_token_host: str | None = Field(default=None, max_length=255)
+    repo_token_username: str | None = Field(default=None, max_length=100)
     supported_profiles: list[str] | None = None
     supported_formats: list[str] | None = None
 
@@ -311,6 +325,25 @@ class ProjectCreatePayload(BaseModel):
     @classmethod
     def _validate_tracked_repo_url(cls, v):
         return _optional_repo_url(v)
+
+    @field_validator("repo_token", mode="before")
+    @classmethod
+    def _validate_repo_token(cls, v):
+        return clean_token(v if v is None else str(v))
+
+    @field_validator("repo_token_host", mode="before")
+    @classmethod
+    def _validate_repo_token_host(cls, v):
+        host = clean_host(v if v is None else str(v))
+        if host is not None:
+            # The same host allowlist as every clone.
+            validate_repo_url(f"https://{host}/")
+        return host
+
+    @field_validator("repo_token_username", mode="before")
+    @classmethod
+    def _validate_repo_token_username(cls, v):
+        return clean_username(v if v is None else str(v))
 
     @field_validator("tracked_branch", mode="before")
     @classmethod

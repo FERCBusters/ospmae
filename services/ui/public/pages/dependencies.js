@@ -24,6 +24,11 @@
     usedByCount: document.getElementById("usedByCount"),
     usageGraph: document.getElementById("depUsageGraph"),
 
+    packageVersionsCard: document.getElementById("packageVersionsCard"),
+    packageProjectsBadge: document.getElementById("packageProjectsBadge"),
+    packageVersionsBody: document.getElementById("packageVersionsBody"),
+    packageVersionsMore: document.getElementById("packageVersionsMore"),
+
     namespaceCard: document.getElementById("namespaceCard"),
     namespaceBadge: document.getElementById("namespaceBadge"),
     namespaceHelp: document.getElementById("namespaceHelp"),
@@ -77,6 +82,39 @@
     const width = Math.max(520, Math.floor(rect?.width || 1100));
     const height = Math.max(420, Math.floor(rect?.height || 520));
     return { width, height };
+  }
+
+  // Every recorded version of the package with its own project count, so
+  // the list's package-level figure reconciles with this version's backlinks.
+  function renderPackageVersions(pkg) {
+    const versions = Array.isArray(pkg?.versions) ? pkg.versions : [];
+    if (!el.packageVersionsCard) return;
+    el.packageVersionsCard.hidden = versions.length === 0;
+    el.packageProjectsBadge.textContent = `${Number(pkg?.project_count || 0)} projects, any version`;
+    el.packageVersionsMore.hidden = !pkg?.versions_truncated;
+    el.packageVersionsBody.replaceChildren(
+      ...versions.map((v) => {
+        const tr = document.createElement("tr");
+        const name = document.createElement("td");
+        if (v.current) {
+          name.textContent = String(v.version || "(unversioned)");
+          const here = document.createElement("span");
+          here.className = "badge text-bg-primary ms-2";
+          here.textContent = "this page";
+          name.appendChild(here);
+        } else {
+          const link = document.createElement("a");
+          link.href = `/dependencies.html?id=${encodeURIComponent(String(v.public_id || ""))}`;
+          link.textContent = String(v.version || "(unversioned)");
+          name.appendChild(link);
+        }
+        const count = document.createElement("td");
+        count.className = "text-end";
+        count.textContent = String(Number(v.project_count || 0));
+        tr.append(name, count);
+        return tr;
+      }),
+    );
   }
 
   function renderUsageGraph(projects, depLabel) {
@@ -272,9 +310,12 @@
       }
     }
 
-    // Used by table
+    // Used by table: one row per project release; the badge counts projects.
     const projects = Array.isArray(data.projects) ? data.projects : [];
-    if (el.usedByCount) el.usedByCount.textContent = String(projects.length);
+    if (el.usedByCount)
+      el.usedByCount.textContent = String(
+        new Set(projects.map((p) => p.project_id)).size,
+      );
     if (el.usedByBody) {
       el.usedByBody.innerHTML = projects.length
         ? ""
@@ -293,6 +334,7 @@
     }
 
     renderUsageGraph(projects, label);
+    renderPackageVersions(data.package);
 
     // Vulnerabilities table
     const vulns = Array.isArray(data.vulnerabilities)

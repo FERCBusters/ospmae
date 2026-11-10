@@ -41,14 +41,15 @@ class Settings(BaseSettings):
     # addresses for rate limits, audit records and identity headers are
     # resolved by walking the forwarded list from the socket peer right-to-left
     # only while each hop is inside these networks; everything else is treated
-    # as untrusted. Compose's default network gateway falls in 172.16.0.0/12.
+    # as untrusted. docker-compose.yml sets exactly its component-ui address
+    # and network gateway.
     trusted_proxy_cidrs: str = Field(default="127.0.0.1,::1")
 
     # Hard ceiling on how long a session may live however recently it was used.
     session_absolute_ttl_seconds: int = Field(default=60 * 60 * 24 * 30)
 
     # Request-audit retention in days; the beat sweeper deletes older rows.
-    audit_log_retention_days: int = Field(default=90)
+    audit_log_retention_days: int = Field(default=90, ge=0, le=36500)
 
     # Native (local) username/password login
     local_auth_enabled: bool = Field(default=True)
@@ -60,7 +61,8 @@ class Settings(BaseSettings):
     # "optional", "admins" or "all".
     mfa_policy: str = Field(default="optional")
     # Persistent Fernet key (base64, 32 url-safe base64-encoded bytes) used to
-    # encrypt at-rest TOTP secrets, e.g. `openssl rand -base64 32`. Without a
+    # encrypt at-rest TOTP secrets and, through a key derived from it,
+    # private repository access tokens, e.g. `openssl rand -base64 32`. Without a
     # valid key TOTP enrolment and verification answer 503, and existing
     # secrets cannot be decrypted, so enrolment stays refused.
     mfa_encryption_key: str = Field(default="", repr=False)

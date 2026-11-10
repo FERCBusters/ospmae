@@ -1036,6 +1036,9 @@ def _severity_rank(value: str | None) -> int:
     return int(order.get(v, 0))
 
 
+# Versions listed on a dependency's detail page; the rest are summarised.
+_PACKAGE_VERSIONS_LIMIT = 100
+
 _PUBLIC_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -1053,6 +1056,13 @@ def _resolve_dependency_version_id(db: Session, raw: str) -> int:
 
     text = (raw or "").strip().lower()
     if _PUBLIC_ID_RE.fullmatch(text):
+        exact = (
+            db.query(DependencyVersion.id)
+            .filter(DependencyVersion.public_id == text)
+            .scalar()
+        )
+        if exact is not None:
+            return exact
         package = (
             db.query(DependencyPackage.id)
             .filter(DependencyPackage.public_id == text)
@@ -1213,6 +1223,57 @@ def dependency_version_detail(
         )
     )
 
+    # Every recorded version of the package with the distinct projects using
+    # it, so the package-level "Used by" figure (any version) reconciles with
+    # this version's own backlinks.
+    version_rows = (
+        db.query(
+            DependencyVersion.id,
+            DependencyVersion.public_id,
+            DependencyVersion.version,
+            func.count(func.distinct(ProjectVersion.project_id)),
+        )
+        .outerjoin(
+            ProjectVersionDependency,
+            ProjectVersionDependency.dependency_version_id == DependencyVersion.id,
+        )
+        .outerjoin(
+            ProjectVersion,
+            ProjectVersion.id == ProjectVersionDependency.project_version_id,
+        )
+        .filter(DependencyVersion.dependency_id == dv.dependency_id)
+        .group_by(
+            DependencyVersion.id, DependencyVersion.public_id, DependencyVersion.version
+        )
+        .order_by(DependencyVersion.version.desc(), DependencyVersion.id.desc())
+        .limit(_PACKAGE_VERSIONS_LIMIT + 1)
+        .all()
+    )
+    package_projects = (
+        db.query(func.count(func.distinct(ProjectVersion.project_id)))
+        .join(
+            ProjectVersionDependency,
+            ProjectVersionDependency.project_version_id == ProjectVersion.id,
+        )
+        .join(
+            DependencyVersion,
+            DependencyVersion.id == ProjectVersionDependency.dependency_version_id,
+        )
+        .filter(DependencyVersion.dependency_id == dv.dependency_id)
+        .scalar()
+    )
+    package_versions = [
+        {
+            "public_id": public_id,
+            "version": version,
+            "project_count": int(count or 0),
+            "current": int(version_id) == int(dv.dependency_version_id),
+        }
+        for version_id, public_id, version, count in version_rows[
+            :_PACKAGE_VERSIONS_LIMIT
+        ]
+    ]
+
     # Namespace (npm scopes)
     namespace: dict[str, Any] | None = None
     eco = str(dv.ecosystem or "").lower().strip()
@@ -1263,6 +1324,11 @@ def dependency_version_detail(
         "vulnerabilities": vulns,
         "severity_counts": dict(sev_counts),
         "namespace": namespace,
+        "package": {
+            "project_count": int(package_projects or 0),
+            "versions": package_versions,
+            "versions_truncated": len(version_rows) > _PACKAGE_VERSIONS_LIMIT,
+        },
     }
 
 
@@ -1472,39 +1538,60 @@ def dependency_index(
         .all()
     )
 
-    # Per-package usage counts and vulnerability tallies in one bounded pass
-    # over the page's packages, however the catalogue grows.
+    # Per-package usage and vulnerability tallies for the page's packages.
+    # "Used by" counts distinct projects using any recorded version of the
+    # package (each project once, however many of its releases or which of
+    # the package's versions link to it); findings count distinct advisories
+    # on the package's linked versions.
     package_ids = [int(row.package_id) for row in rows]
     usage: dict[int, int] = {}
     vuln_counts: dict[int, int] = {}
     if package_ids:
-        links = (
+        usage = {
+            int(dep_id): int(count)
+            for dep_id, count in (
+                db.query(
+                    DependencyVersion.dependency_id,
+                    func.count(func.distinct(ProjectVersion.project_id)),
+                )
+                .join(
+                    ProjectVersionDependency,
+                    ProjectVersionDependency.dependency_version_id
+                    == DependencyVersion.id,
+                )
+                .join(
+                    ProjectVersion,
+                    ProjectVersion.id == ProjectVersionDependency.project_version_id,
+                )
+                .filter(DependencyVersion.dependency_id.in_(package_ids))
+                .group_by(DependencyVersion.dependency_id)
+                .all()
+            )
+        }
+        linked_versions = (
+            db.query(ProjectVersionDependency.dependency_version_id)
+            .filter(
+                ProjectVersionDependency.dependency_version_id == DependencyVersion.id
+            )
+            .exists()
+        )
+        findings = (
             db.query(
-                DependencyVersion.id.label("dv_id"),
-                DependencyVersion.dependency_id.label("dep_id"),
-                ProjectVersionDependency.project_version_id.label("pv_link_id"),
-                DependencyVulnerability.vulnerability_id.label("vuln_id"),
+                DependencyVersion.dependency_id,
+                DependencyVersion.id,
+                DependencyVulnerability.vulnerability_id,
             )
             .join(
-                ProjectVersionDependency,
-                ProjectVersionDependency.dependency_version_id == DependencyVersion.id,
-            )
-            .outerjoin(
                 DependencyVulnerability,
                 DependencyVulnerability.dependency_version_id == DependencyVersion.id,
             )
             .filter(DependencyVersion.dependency_id.in_(package_ids))
+            .filter(linked_versions)
+            .distinct()
             .all()
         )
-        vuln_seen: set[tuple[int, int, str]] = set()
-        for link in links:
-            dep_id = int(link.dep_id)
-            usage[dep_id] = usage.get(dep_id, 0) + 1
-            if link.vuln_id:
-                key = (dep_id, int(link.dv_id), str(link.vuln_id))
-                if key not in vuln_seen:
-                    vuln_seen.add(key)
-                    vuln_counts[dep_id] = vuln_counts.get(dep_id, 0) + 1
+        for dep_id, _dv_id, _vuln_id in findings:
+            vuln_counts[int(dep_id)] = vuln_counts.get(int(dep_id), 0) + 1
 
     # The ecosystem dropdown is built from what exists; distinct names are
     # few by design (scanner ecosystems), but stay capped for safety.
@@ -1650,6 +1737,6 @@ def global_dashboard(
         }
 
     return {
-        "dependency_scans_enabled": is_enabled("dependency_scans"),
+        "dependency_scans_enabled": is_enabled("dependency_scans", db),
         "projects": [_project_row(p) for p in projects],
     }

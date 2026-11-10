@@ -204,6 +204,7 @@
     "#audit": "tab-audit",
     "#changelog": "tab-audit",
     "#entity-changelog": "tab-audit",
+    "#features": "tab-features",
   });
 
   const AUDIT_SUBTAB_HASH = Object.freeze({

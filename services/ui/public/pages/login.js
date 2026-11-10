@@ -55,11 +55,12 @@
     return new URLSearchParams(window.location.search).get("next") || "";
   }
 
+  // Messages show as an alert above the form, as on KEEN's sign-in page.
   function setMsg(text, kind = "info") {
     if (!msgEl) return;
     msgEl.textContent = text || "";
-    msgEl.className =
-      "small mb-2 " + (kind === "error" ? "text-danger" : "text-secondary");
+    msgEl.className = `alert ${kind === "error" ? "alert-danger" : "alert-info"}`;
+    msgEl.hidden = !text;
   }
 
   function iconForProvider(key) {
@@ -129,15 +130,9 @@
 
       if (methods.local_enabled === false && form) {
         form.classList.add("d-none");
-        const divider = ssoSection?.querySelector(
-          ".text-center.text-secondary.small",
-        );
+        const divider = ssoSection?.querySelector("[data-sso-divider]");
         if (divider) divider.classList.add("d-none");
-        if (msgEl) {
-          msgEl.className = "small mb-2 text-secondary text-center";
-          msgEl.textContent =
-            "Sign in using one of the enabled single sign-on providers.";
-        }
+        setMsg("Sign in using one of the enabled single sign-on providers.");
       }
 
       if (methods.password_reset_enabled && forgotWrap)

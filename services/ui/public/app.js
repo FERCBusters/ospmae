@@ -51,6 +51,13 @@
     }
   }
 
+  // The Features administration tab applies a saved change to this page.
+  function setFeatures(enabled) {
+    state.features =
+      enabled && typeof enabled === "object" ? { ...enabled } : {};
+    applyFeatureVisibility();
+  }
+
   function gateFeature(feature) {
     if (!featureOn(feature)) {
       window.location.replace("/index.html");
@@ -1443,6 +1450,7 @@
     ensureInitialized,
     logout,
     featureOn,
+    setFeatures,
     gateFeature,
     applyFeatureVisibility,
     startNotifications,

@@ -1,7 +1,10 @@
+# Third-party images are pinned by digest. tools/docker_image_pins.py and the
+# Docker image pins workflow keep the digests current.
 services:
   postgres:
     image: postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
-    env_file: .env
+    # Only the database's own settings reach this container, not the whole
+    # application .env with its provider and mail secrets.
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ospmae}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -18,36 +21,58 @@ services:
     networks: [componentnet]
     restart: unless-stopped
 
-  component-api:
-    build:
-      context: ./services/api
-    env_file: .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    ports:
-      - "127.0.0.1:8182:8080"
-    networks: [componentnet]
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp
-
   redis:
     image: docker.io/valkey/valkey:8@sha256:8f836008e0986c36adf50da714c7060cf689dbb335f61fe077939d90fa650809
     command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
     networks: [componentnet]
     restart: unless-stopped
 
+  # The API is reached only through component-ui, whose nginx clears
+  # client-supplied identity headers; it publishes no port of its own.
+  component-api:
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    build:
+      context: ./services/api
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/v1/system/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    env_file: .env
+    environment:
+      # Client addresses for sign-in and other per-address limits come through
+      # two forwarding hops: the component-ui nginx container, and the network
+      # gateway, where connections to the host's published port arrive (such
+      # as from a TLS proxy on the host). Set the variable to override.
+      OSPMAE_TRUSTED_PROXY_CIDRS: ${OSPMAE_TRUSTED_PROXY_CIDRS:-${OSPMAE_UI_ADDRESS:-172.30.66.10}/32,${OSPMAE_NETWORK_GATEWAY:-172.30.66.1}/32}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [componentnet]
+    restart: unless-stopped
+
+  # Clones and catalogues repositories named by project editors, so it runs
+  # with bounded memory, processor and process budgets.
   component-worker:
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: ${OSPMAE_WORKER_MEM_LIMIT:-2g}
+    cpus: ${OSPMAE_WORKER_CPUS:-2.0}
+    pids_limit: 256
     build:
       context: ./services/api
     env_file: .env
     depends_on:
+      # The API applies database migrations before it reports healthy.
+      component-api:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -55,14 +80,17 @@ services:
     command: ["./scripts/start-celery-worker.sh"]
     networks: [componentnet]
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
 
   component-beat:
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
     build:
       context: ./services/api
     env_file: .env
     depends_on:
+      component-api:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -72,10 +100,11 @@ services:
       - beatdata:/var/lib/ospmae
     networks: [componentnet]
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
 
   component-ui:
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp
     build:
       context: .
       dockerfile: services/ui/Dockerfile
@@ -83,17 +112,22 @@ services:
       - component-api
     ports:
       - "127.0.0.1:8082:80"
-    networks: [componentnet]
+    networks:
+      componentnet:
+        ipv4_address: ${OSPMAE_UI_ADDRESS:-172.30.66.10}
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp
 
 volumes:
   pgdata:
   beatdata:
 
+# A fixed subnet gives the component-ui proxy and the gateway known addresses
+# for OSPMAE_TRUSTED_PROXY_CIDRS. Where it clashes with another network on the
+# host, set OSPMAE_NETWORK_SUBNET, OSPMAE_NETWORK_GATEWAY and OSPMAE_UI_ADDRESS.
 networks:
   componentnet:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${OSPMAE_NETWORK_SUBNET:-172.30.66.0/24}
+          gateway: ${OSPMAE_NETWORK_GATEWAY:-172.30.66.1}

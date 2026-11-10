@@ -491,3 +491,98 @@ def test_factor_change_mails_the_account_owner(client, db):
             settings.public_base_url,
             settings.mfa_encryption_key,
         ) = saved
+
+
+def test_used_by_counts_distinct_projects_across_versions(client, db):
+    """One project with two scanned releases and three advisories on the
+    version they use is one project; the detail page's package section adds
+    up to the same figure."""
+
+    from app.db.models import (
+        DependencyPackage,
+        DependencyVersion,
+        DependencyVulnerability,
+        ProjectVersionDependency,
+    )
+
+    with SessionLocal() as s:
+        pkg = DependencyPackage(
+            ecosystem="npm", name="shared", normalized_name="shared"
+        )
+        alpha = Project(machine_name="alpha", display_name="Alpha")
+        beta = Project(machine_name="beta", display_name="Beta")
+        s.add_all([pkg, alpha, beta])
+        s.flush()
+        old = DependencyVersion(dependency_id=pkg.id, version="1.0.0")
+        new = DependencyVersion(dependency_id=pkg.id, version="2.0.0")
+        unused = DependencyVersion(dependency_id=pkg.id, version="0.9.0")
+        s.add_all([old, new, unused])
+        s.flush()
+        releases = [
+            ProjectVersion(project_id=alpha.id, version="v1"),
+            ProjectVersion(project_id=alpha.id, version="v2"),
+            ProjectVersion(project_id=beta.id, version="v1"),
+        ]
+        s.add_all(releases)
+        s.flush()
+        s.add_all(
+            [
+                ProjectVersionDependency(
+                    project_version_id=releases[0].id, dependency_version_id=old.id
+                ),
+                ProjectVersionDependency(
+                    project_version_id=releases[1].id, dependency_version_id=old.id
+                ),
+                ProjectVersionDependency(
+                    project_version_id=releases[2].id, dependency_version_id=new.id
+                ),
+            ]
+        )
+        for n in range(3):
+            s.add(
+                DependencyVulnerability(
+                    dependency_version_id=old.id,
+                    scanner="grype",
+                    vulnerability_id=f"GHSA-{n}",
+                    severity="high",
+                )
+            )
+        # Findings on a version no project uses are not unfixed findings here.
+        s.add(
+            DependencyVulnerability(
+                dependency_version_id=unused.id,
+                scanner="grype",
+                vulnerability_id="GHSA-unused",
+            )
+        )
+        s.commit()
+        pkg_uuid, old_uuid = str(pkg.public_id), str(old.public_id)
+
+    c, _admin = auth_client(username="used-by", password=PASSWORD, role="admin")
+    row = next(
+        r
+        for r in c.get("/v1/dependencies", params={"q": "shared"}).json()[
+            "dependencies"
+        ]
+        if r["name"] == "shared"
+    )
+    assert row["used_by_count"] == 2
+    assert row["version_count"] == 3
+    assert row["vulnerability_count"] == 3
+
+    detail = c.get(f"/v1/dependencies/{pkg_uuid}").json()
+    assert detail["dependency_version"]["version"] == "2.0.0"
+    assert detail["package"]["project_count"] == 2
+    versions = {v["version"]: v for v in detail["package"]["versions"]}
+    assert {k: v["project_count"] for k, v in versions.items()} == {
+        "2.0.0": 1,
+        "1.0.0": 1,
+        "0.9.0": 0,
+    }
+    assert versions["2.0.0"]["current"] is True
+    assert detail["package"]["versions_truncated"] is False
+
+    # A version's own UUID opens that version, with both of Alpha's releases.
+    exact = c.get(f"/v1/dependencies/{old_uuid}").json()
+    assert exact["dependency_version"]["version"] == "1.0.0"
+    assert [p["project_version"] for p in exact["projects"]] == ["v1", "v2"]

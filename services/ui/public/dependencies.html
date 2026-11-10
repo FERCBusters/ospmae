@@ -13,7 +13,7 @@
   <script src="/vendor/mosp-design-system/theme-boot.js"></script>
 </head>
 
-<body data-page="dependency">
+<body data-page="dependencies">
   <div id="navbar"></div>
 
   <main class="container py-4">
@@ -102,6 +102,25 @@
                 <tbody id="vulnBody"></tbody>
               </table>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12" id="packageVersionsCard" hidden>
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span class="fw-semibold">Versions of this package</span>
+            <span id="packageProjectsBadge" class="badge text-bg-secondary"></span>
+          </div>
+          <div class="card-body">
+            <div class="text-secondary small mb-2">The dependency list's <em>Used by</em> figure counts every project using any recorded version of the package; each version below counts the projects using that version.</div>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead><tr><th>Version</th><th class="text-end">Used by projects</th></tr></thead>
+                <tbody id="packageVersionsBody"></tbody>
+              </table>
+            </div>
+            <div id="packageVersionsMore" class="text-secondary small mt-2" hidden>Only the 100 newest versions are listed.</div>
           </div>
         </div>
       </div>
