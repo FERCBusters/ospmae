@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.db.session import SessionLocal
 from app.security.auth import authenticate_user
 from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
 
@@ -118,14 +119,18 @@ def test_inactive_user_gets_the_same_dummy_verification(client, monkeypatch):
 
     monkeypatch.setattr(auth_mod, "verify_password", counting)
     make_user("Ghost", "Password1!", role="viewer")
-    auth_mod.db = None
-    s = __import__("app.db.session", fromlist=["SessionLocal"]).SessionLocal()
-    user = s.query(auth_mod.User).filter(auth_mod.User.username == "Ghost").one()
-    user.is_active = False
-    s.add(user)
-    s.commit()
-    s.close()
-    assert authenticate_user(s, "Ghost", "Password1!") is None
+    s = SessionLocal()
+    try:
+        user = s.query(auth_mod.User).filter(auth_mod.User.username == "Ghost").one()
+        user.is_active = False
+        s.add(user)
+        s.commit()
+        # The session stays open until here: a closed session reused by
+        # authenticate_user leaks an idle-in-transaction connection, and the
+        # next TRUNCATE teardown waits on its ACCESS SHARE lock forever.
+        assert authenticate_user(s, "Ghost", "Password1!") is None
+    finally:
+        s.close()
     assert calls["n"] == 1
 
 

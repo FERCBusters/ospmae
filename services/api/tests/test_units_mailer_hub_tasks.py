@@ -8,6 +8,7 @@ import pytest
 from app.core.config import settings
 
 from tests.conftest import db as db_fixture  # noqa: F401
+from tests.conftest import make_user
 
 # ----------------------------------------------------------------- mailer --
 
@@ -283,15 +284,14 @@ def test_sweep_removes_expired_rows(db):
 
     past = datetime.utcnow() - timedelta(days=1)
     old_audit = datetime.utcnow() - timedelta(days=400)
+    owner = make_user("SweepOwner", "Password1!", role="viewer")
     db.add(OidcLoginState(state="s", nonce="n", code_verifier="v", expires_at=past))
     db.add(
-        PasswordResetToken(
-            user_id=None if False else 1, token_hash="0" * 64, expires_at=past
-        )
+        PasswordResetToken(user_id=int(owner.id), token_hash="0" * 64, expires_at=past)
     )
     db.add(
         EmailVerificationToken(
-            user_id=None if False else 1,
+            user_id=int(owner.id),
             email_lower="x@y",
             token_hash="1" * 64,
             expires_at=past,

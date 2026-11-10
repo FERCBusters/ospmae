@@ -65,9 +65,17 @@ def truncate_all() -> None:
                     text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
                 )
             ]
+            # A leaked idle-in-transaction connection would block this exclusive
+            # lock forever; a bounded wait turns the hang into a loud failure.
+            conn.execute(text("SET LOCAL lock_timeout = '30s'"))
+            # Identity columns restart with the tables: tests assume fresh
+            # sequences, like SQLite gives, and a shared Postgres database must
+            # not leak counters between tests or runs.
             conn.execute(
                 text(
-                    "TRUNCATE TABLE " + ", ".join(f'"{n}"' for n in names) + " CASCADE"
+                    "TRUNCATE TABLE "
+                    + ", ".join(f'"{n}"' for n in names)
+                    + " RESTART IDENTITY CASCADE"
                 )
             )
 

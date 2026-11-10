@@ -98,11 +98,14 @@ def test_normalize_next_helper():
 
 def test_pop_login_state_single_use(db):
     s = SessionLocal()
-    row = create_login_state(s, next_url="/index.html")
-    first = pop_login_state(s, state=row.state)
-    assert first is not None
-    assert pop_login_state(s, state=row.state) is None
-    assert pop_login_state(s, state="") is None
+    try:
+        row = create_login_state(s, next_url="/index.html")
+        first = pop_login_state(s, state=row.state)
+        assert first is not None
+        assert pop_login_state(s, state=row.state) is None
+        assert pop_login_state(s, state="") is None
+    finally:
+        s.close()
 
 
 def test_expired_login_state_refused(db):
@@ -111,25 +114,31 @@ def test_expired_login_state_refused(db):
     from app.db.models import OidcLoginState
 
     s = SessionLocal()
-    row = OidcLoginState(
-        state="stale-state",
-        nonce="n",
-        code_verifier="v",
-        expires_at=datetime.utcnow() - timedelta(minutes=1),
-    )
-    s.add(row)
-    s.commit()
-    assert pop_login_state(s, state="stale-state") is None
-    assert s.query(OidcLoginState).count() == 0
+    try:
+        row = OidcLoginState(
+            state="stale-state",
+            nonce="n",
+            code_verifier="v",
+            expires_at=datetime.utcnow() - timedelta(minutes=1),
+        )
+        s.add(row)
+        s.commit()
+        assert pop_login_state(s, state="stale-state") is None
+        assert s.query(OidcLoginState).count() == 0
+    finally:
+        s.close()
 
 
 def test_unique_username_skips_taken(db):
     from app.security.auth import create_user
 
     s = SessionLocal()
-    create_user(s, username="taken", password="Password1!", role="viewer")
-    name = _unique_username(s, "taken")
-    assert name != "taken"
+    try:
+        create_user(s, username="taken", password="Password1!", role="viewer")
+        name = _unique_username(s, "taken")
+        assert name != "taken"
+    finally:
+        s.close()
 
 
 def test_provider_lookup():
@@ -142,14 +151,17 @@ def test_roles_and_canonicalization(db):
     from app.security.roles import ROLE_ADMIN, ROLE_VIEWER
 
     s = SessionLocal()
-    from app.security.auth import create_user
+    try:
+        from app.security.auth import create_user
 
-    u = create_user(s, username="RoleU", password="Password1!", role="admin")
-    assert attach_effective_role(s, u) == ROLE_ADMIN
-    u.role = "inherit"
-    assert attach_effective_role(s, u) == ROLE_VIEWER
-    assert canonicalize_role("MAINTAINER") == "maintainer"
-    assert canonicalize_role("bogus") is None
+        u = create_user(s, username="RoleU", password="Password1!", role="admin")
+        assert attach_effective_role(s, u) == ROLE_ADMIN
+        u.role = "inherit"
+        assert attach_effective_role(s, u) == ROLE_VIEWER
+        assert canonicalize_role("MAINTAINER") == "maintainer"
+        assert canonicalize_role("bogus") is None
+    finally:
+        s.close()
 
 
 def test_validate_safe_href_blocklist():

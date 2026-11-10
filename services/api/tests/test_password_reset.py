@@ -31,20 +31,23 @@ def test_reset_request_answers_204_for_unknown_and_known(client, monkeypatch, db
     from app.db.session import SessionLocal
 
     s = SessionLocal()
-    from app.security.auth import get_user_by_username as _g
+    try:
+        from app.security.auth import get_user_by_username as _g
 
-    user = _g(s, "RstU")
-    s.add(
-        UserEmail(
-            user_id=int(user.id),
-            email="rstu@example.com",
-            email_lower="rstu@example.com",
-            source="user",
-            is_primary=True,
-            is_verified=True,
+        user = _g(s, "RstU")
+        s.add(
+            UserEmail(
+                user_id=int(user.id),
+                email="rstu@example.com",
+                email_lower="rstu@example.com",
+                source="user",
+                is_primary=True,
+                is_verified=True,
+            )
         )
-    )
-    s.commit()
+        s.commit()
+    finally:
+        s.close()
 
     c = client
     c.headers["X-Forwarded-For"] = "7.7.7.7"
@@ -74,21 +77,23 @@ def test_reset_tokens_are_single_use_and_expire(client, monkeypatch, db):
     from app.db.models import UserEmail
 
     s = SessionLocal()
-    from app.security.auth import get_user_by_username as _g
+    try:
+        from app.security.auth import get_user_by_username as _g
 
-    u_row = _g(s, "RstV")
-    s.add(
-        UserEmail(
-            user_id=int(u_row.id),
-            email="rstv@example.com",
-            email_lower="rstv@example.com",
-            source="user",
-            is_primary=True,
-            is_verified=True,
+        u_row = _g(s, "RstV")
+        s.add(
+            UserEmail(
+                user_id=int(u_row.id),
+                email="rstv@example.com",
+                email_lower="rstv@example.com",
+                source="user",
+                is_primary=True,
+                is_verified=True,
+            )
         )
-    )
-    s.commit()
-    s.close()
+        s.commit()
+    finally:
+        s.close()
     c.post("/v1/auth/request-password-reset", json={"identifier": "rstv@example.com"})
     tokens = [r for (r,) in db.query(PasswordResetToken.token_hash).all()]
     assert tokens, "a known active user with a resolved address earns a token"
@@ -147,20 +152,23 @@ def test_reset_request_is_rate_limited_per_address(client, monkeypatch, db):
     from app.db.session import SessionLocal
 
     s = SessionLocal()
-    from app.security.auth import get_user_by_username
+    try:
+        from app.security.auth import get_user_by_username
 
-    user = get_user_by_username(s, "RstX")
-    s.add(
-        UserEmail(
-            user_id=int(user.id),
-            email="rstx@example.com",
-            email_lower="rstx@example.com",
-            source="user",
-            is_primary=True,
-            is_verified=True,
+        user = get_user_by_username(s, "RstX")
+        s.add(
+            UserEmail(
+                user_id=int(user.id),
+                email="rstx@example.com",
+                email_lower="rstx@example.com",
+                source="user",
+                is_primary=True,
+                is_verified=True,
+            )
         )
-    )
-    s.commit()
+        s.commit()
+    finally:
+        s.close()
     codes = [
         c.post(
             "/v1/auth/request-password-reset",
