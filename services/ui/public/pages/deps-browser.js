@@ -16,6 +16,10 @@ const escapeHtml = (value) =>
 
 function buildBrowser() {
   const section = document.createElement("main");
+  section.id = "dep-browser-main";
+  // The id matters: the removal logic below excludes this element through
+  // :not(#dep-browser-main), so an unlabelled section makes the browser
+  // exclude itself and every control lookup return null.
   section.className = "container py-4";
   section.innerHTML = `
     <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
