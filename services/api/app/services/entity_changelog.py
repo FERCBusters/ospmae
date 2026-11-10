@@ -228,13 +228,12 @@ def _owner_group_ids(db: Session, project_id: int) -> list[int]:
 def project_changelog_state(
     db: Session, project_or_id: Project | int
 ) -> dict[str, Any] | None:
-    project = project_or_id if isinstance(project_or_id, Project) else None
-    if project is None:
-        project = (
-            db.query(Project)
-            .filter(Project.id == int(project_or_id))  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
-            .one_or_none()
-        )
+    project: Project | None
+    if isinstance(project_or_id, Project):
+        project = project_or_id
+    else:
+        project_id = int(project_or_id)
+        project = db.query(Project).filter(Project.id == project_id).one_or_none()
     if project is None:
         return None
     return {
@@ -302,11 +301,14 @@ def _version_framework_nodes(db: Session, version_id: int) -> list[dict[str, Any
 def project_version_changelog_state(
     db: Session, version_or_id: ProjectVersion | int
 ) -> dict[str, Any] | None:
-    version = version_or_id if isinstance(version_or_id, ProjectVersion) else None
-    if version is None:
+    version: ProjectVersion | None
+    if isinstance(version_or_id, ProjectVersion):
+        version = version_or_id
+    else:
+        version_id = int(version_or_id)
         version = (
             db.query(ProjectVersion)
-            .filter(ProjectVersion.id == int(version_or_id))  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
+            .filter(ProjectVersion.id == version_id)
             .one_or_none()
         )
     if version is None:
@@ -388,7 +390,7 @@ def list_entity_changelogs(
 
     total = qry.order_by(None).count()
     rows = (
-        qry.order_by(desc(EntityChangelog.changed_at)).limit(limit).offset(offset).all()  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
+        qry.order_by(desc(EntityChangelog.changed_at)).limit(limit).offset(offset).all()
     )
     return {
         "total": total,

@@ -737,7 +737,7 @@ def admin_audit_trail(
             pass
 
     total = qry.order_by(None).count()
-    rows = qry.order_by(desc(AuditLog.ts)).limit(limit).offset(offset).all()  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
+    rows = qry.order_by(desc(AuditLog.ts)).limit(limit).offset(offset).all()
     items = [
         {
             "id": str(row.id),

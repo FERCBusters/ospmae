@@ -82,7 +82,7 @@ def _resolved_email(db: Session, user: User) -> tuple[str | None, str | None]:
         db.query(UserIdentity.email)
         .filter(UserIdentity.user_id == user.id)
         .filter(UserIdentity.email.isnot(None))
-        .order_by(desc(UserIdentity.updated_at))  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
+        .order_by(desc(UserIdentity.updated_at))
         .first()
     )
     if ident and ident[0]:
@@ -850,7 +850,7 @@ def list_my_shortcuts(request: Request, db: Session = Depends(get_db)) -> list[d
     rows = (
         db.query(UserShortcut)
         .filter(UserShortcut.user_id == user.id)
-        .order_by(desc(UserShortcut.updated_at), UserShortcut.name.asc())  # type: ignore[arg-type]  # desc() chains are accepted by Query
+        .order_by(desc(UserShortcut.updated_at), UserShortcut.name.asc())
         .all()
     )
 
