@@ -486,9 +486,11 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
     ignored = 0
 
     try:
+        # A project tracking a branch has no releases to follow.
         projects = (
             db.query(Project)
             .filter(Project.release_rss_feed_url.isnot(None))
+            .filter(Project.track_branch.is_(False))
             .order_by(Project.updated_at.desc())
             .limit(int(limit_projects or 50))
             .all()
@@ -814,6 +816,13 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
         project = db.query(Project).filter(Project.id == int(project_id)).one_or_none()
         if project is None or not str(project.release_rss_feed_url or "").strip():
             return {"enabled": True, "checked": 0, "created": 0, "reason": "no feed"}
+        if project.track_branch:
+            return {
+                "enabled": True,
+                "checked": 0,
+                "created": 0,
+                "reason": "project tracks a branch",
+            }
 
         url = str(project.release_rss_feed_url or "").strip()
         with httpx.Client(timeout=20, follow_redirects=False) as client:
@@ -1021,13 +1030,7 @@ def _best_automatic_latest_version_db(db, project_id: int) -> ProjectVersion | N
 
 
 def _promote_latest(db, project_id: int, latest_version_id: int) -> None:
-    db.query(ProjectVersion).filter(
-        ProjectVersion.project_id == project_id,
-        ProjectVersion.is_draft.is_(False),
-    ).update({ProjectVersion.is_latest: False}, synchronize_session=False)
-    db.query(ProjectVersion).filter(
-        ProjectVersion.id == latest_version_id,
-        ProjectVersion.project_id == project_id,
-        ProjectVersion.is_draft.is_(False),
-    ).update({ProjectVersion.is_latest: True}, synchronize_session=False)
+    from app.services.versioning import set_latest_version
+
+    set_latest_version(db, project_id, latest_version_id)
     db.commit()

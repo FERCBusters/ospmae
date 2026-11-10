@@ -3,6 +3,7 @@
   const {
     api: apiFetch,
     initAuth,
+    canExportManifests,
     loadFrameworks,
     getFrameworks,
     loadFrameworkNodes,
@@ -22,7 +23,8 @@
 
   const el = {
     whoami: document.getElementById("whoami"),
-    refreshBtn: document.getElementById("refreshBtn"),
+    refreshBtn: document.getElementById("savedRefreshBtn"),
+    savedTabBtn: document.getElementById("tabBtnSaved"),
     list: document.getElementById("manifestList"),
     detailsCard: document.getElementById("manifestDetailsCard"),
     detailsTitle: document.getElementById("manifestDetailsTitle"),
@@ -30,9 +32,9 @@
     sharingArea: document.getElementById("manifestSharingArea"),
     detailsFilters: document.getElementById("manifestDetailsFilters"),
     detailsProjects: document.getElementById("manifestDetailsProjects"),
-    exportJsonBtn: document.getElementById("exportJsonBtn"),
-    exportXlsxBtn: document.getElementById("exportXlsxBtn"),
-    exportMdBtn: document.getElementById("exportMdBtn"),
+    exportJsonBtn: document.getElementById("savedExportJsonBtn"),
+    exportXlsxBtn: document.getElementById("savedExportXlsxBtn"),
+    exportMdBtn: document.getElementById("savedExportMdBtn"),
     cloneManifestBtn: document.getElementById("cloneManifestBtn"),
     deleteManifestBtn: document.getElementById("deleteManifestBtn"),
     backToListBtn: document.getElementById("backToListBtn"),
@@ -505,25 +507,29 @@
       });
     }
 
-    if (el.refreshBtn) {
-      el.refreshBtn.addEventListener("click", () => {
-        (async () => {
-          await loadManifests();
-          renderManifestList();
-          if (state.selectedManifest?.id) {
-            await openManifest(state.selectedManifest.id);
-          }
-        })().catch((err) =>
-          OSPMAE.toast(err.message || "Failed to refresh", "error"),
-        );
-      });
-    }
+    const refresh = () => {
+      (async () => {
+        await loadManifests();
+        renderManifestList();
+        if (state.selectedManifest?.id) {
+          await openManifest(state.selectedManifest.id);
+        }
+      })().catch((err) =>
+        OSPMAE.toast(err.message || "Failed to refresh", "error"),
+      );
+    };
+    el.refreshBtn?.addEventListener("click", refresh);
+    // The builder tab saves into this list, so it reloads whenever shown.
+    el.savedTabBtn?.addEventListener("shown.bs.tab", refresh);
   }
 
   async function init() {
     state.me = await initAuth({ redirectOnFail: true });
     if (window.OSPMAE && !window.OSPMAE.gateFeature("manifests")) return;
     if (!state.me) return;
+    // The Saved Manifests tab stays hidden for roles without manifest
+    // access (pages/manifests.js); the API refuses them regardless.
+    if (!canExportManifests()) return;
 
     if (el.whoami) {
       const role = state.me?.effective_role || state.me?.role || "viewer";

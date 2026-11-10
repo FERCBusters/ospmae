@@ -18,8 +18,8 @@
     getNodeColorOverrides,
     DEFAULT_NODE_COLORS,
     ALLOWED_START_PAGES,
-    canMaintainProjects,
-    canExportManifests,
+    canAskQuestions,
+    featureOn,
     toast,
     api,
   } = OSPMAE;
@@ -87,25 +87,35 @@
     newPassword: document.getElementById("newPassword"),
     confirmPassword: document.getElementById("confirmPassword"),
     passwordMsg: document.getElementById("passwordMsg"),
+    questionsTabItem: document.getElementById("questionsTabItem"),
+    questionsTabBtn: document.getElementById("tabBtnQuestions"),
+    myQuestionsRefreshBtn: document.getElementById("myQuestionsRefreshBtn"),
+    myQuestionsStatus: document.getElementById("myQuestionsStatus"),
+    myQuestionsCount: document.getElementById("myQuestionsCount"),
+    myQuestionsEmpty: document.getElementById("myQuestionsEmpty"),
+    myQuestionsTableWrap: document.getElementById("myQuestionsTableWrap"),
+    myQuestionsBody: document.getElementById("myQuestionsBody"),
   };
 
-  function initAccountTabs() {
-    // Optional hash-based navigation: #profile, #preferences, #subscriptions, #shortcuts, #password
+  // Hash navigation: #profile, #preferences, #subscriptions, #questions,
+  // #shortcuts, #password. A tab hidden for this account is never shown.
+  function showTabFromHash() {
     const hash = String(window.location.hash || "")
       .replace("#", "")
       .trim()
       .toLowerCase();
-    if (hash) {
-      const btn = document.querySelector(
-        `#accountTabs button[data-hash="${hash}"]`,
-      );
-      if (btn && window.bootstrap?.Tab) {
-        try {
-          const tab = new window.bootstrap.Tab(btn);
-          tab.show();
-        } catch {}
-      }
-    }
+    if (!hash) return;
+    const btn = document.querySelector(
+      `#accountTabs button[data-hash="${CSS.escape(hash)}"]`,
+    );
+    if (!btn || btn.closest("[hidden]") || !window.bootstrap?.Tab) return;
+    try {
+      window.bootstrap.Tab.getOrCreateInstance(btn).show();
+    } catch {}
+  }
+
+  function initAccountTabs() {
+    showTabFromHash();
 
     document
       .querySelectorAll('#accountTabs button[data-bs-toggle="tab"]')
@@ -436,14 +446,6 @@
     for (const page of ALLOWED_START_PAGES || []) {
       if (page.permission === "public") {
         opts.push(page);
-        continue;
-      }
-      if (page.permission === "manifests") {
-        if (canExportManifests()) opts.push(page);
-        continue;
-      }
-      if (page.permission === "project_admin") {
-        if (canMaintainProjects()) opts.push(page);
         continue;
       }
       if (page.permission === "framework_admin") {
@@ -1023,6 +1025,70 @@
     });
   }
 
+  function latestQuestionPreview(thread) {
+    const posts = Array.isArray(thread?.posts) ? thread.posts : [];
+    const last = posts.length ? posts[posts.length - 1] : null;
+    const body = String(last?.body || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    if (!body) return "—";
+    return body.length > 140 ? `${body.slice(0, 139)}…` : body;
+  }
+
+  function questionStatusBadge(status) {
+    return String(status || "open").toLowerCase() === "answered"
+      ? '<span class="badge text-bg-success">answered</span>'
+      : '<span class="badge text-bg-warning">open</span>';
+  }
+
+  function renderMyQuestions(items) {
+    el.myQuestionsCount.textContent = String(items.length);
+    el.myQuestionsEmpty.hidden = items.length > 0;
+    el.myQuestionsTableWrap.hidden = items.length === 0;
+    el.myQuestionsBody.innerHTML = items
+      .map((thread) => {
+        const updated = thread?.updated_at
+          ? new Date(thread.updated_at).toLocaleString()
+          : "—";
+        const project =
+          thread?.project_display_name ||
+          `Project #${thread?.project_id || ""}`;
+        const href = `/project.html?id=${encodeURIComponent(thread?.project_id || "")}&tab=questions`;
+        return `
+          <tr>
+            <td class="small text-secondary">${esc(updated)}</td>
+            <td>${esc(project)}</td>
+            <td>${questionStatusBadge(thread?.status)}</td>
+            <td class="wrap">${esc(latestQuestionPreview(thread))}</td>
+            <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="${esc(href)}">Open</a></td>
+          </tr>`;
+      })
+      .join("");
+  }
+
+  async function loadMyQuestions() {
+    el.myQuestionsStatus.hidden = true;
+    try {
+      const data = await api("/v1/me/questions");
+      renderMyQuestions(Array.isArray(data?.items) ? data.items : []);
+    } catch (err) {
+      el.myQuestionsStatus.textContent =
+        err?.message || "Failed to load questions.";
+      el.myQuestionsStatus.hidden = false;
+    }
+  }
+
+  // My questions is personal to askers; it loads when first opened.
+  function initMyQuestions() {
+    if (!el.questionsTabItem) return;
+    const visible = featureOn("questions") && canAskQuestions();
+    el.questionsTabItem.hidden = !visible;
+    if (!visible) return;
+    el.questionsTabBtn?.addEventListener("shown.bs.tab", loadMyQuestions);
+    el.myQuestionsRefreshBtn?.addEventListener("click", loadMyQuestions);
+    showTabFromHash();
+  }
+
   async function init() {
     initAccountTabs();
     state.me = await initAuth({ redirectOnFail: true });
@@ -1033,6 +1099,7 @@
     if (el.profileUsername)
       el.profileUsername.textContent = state.me.username || "";
     if (el.profileRole) el.profileRole.textContent = role;
+    initMyQuestions();
     const emailEditable = state.me?.email_editable !== false;
 
     if (el.profileEmailInput) {

@@ -1060,17 +1060,20 @@ def _resolve_dependency_version_id(db: Session, raw: str) -> int:
         )
         if not package:
             raise HTTPException(status_code=404, detail="Dependency not found")
+        # .scalar() on a one-row window yields the id itself; .first() on a
+        # single-column query yields a Row, which int() refuses.
         version = (
             db.query(DependencyVersion.id)
             .filter(DependencyVersion.dependency_id == package)
             .order_by(DependencyVersion.version.desc(), DependencyVersion.id.desc())
-            .first()
+            .limit(1)
+            .scalar()
         )
-        if not version:
+        if version is None:
             raise HTTPException(
                 status_code=404, detail="Dependency has no recorded versions yet"
             )
-        return int(version)
+        return version
     try:
         number = int(text)
     except ValueError:
@@ -1078,8 +1081,8 @@ def _resolve_dependency_version_id(db: Session, raw: str) -> int:
     exists = (
         db.query(DependencyVersion.id).filter(DependencyVersion.id == number).scalar()
     )
-    if exists:
-        return int(exists)
+    if exists is not None:
+        return exists
     version = (
         db.query(DependencyVersion.id)
         .join(
@@ -1088,11 +1091,12 @@ def _resolve_dependency_version_id(db: Session, raw: str) -> int:
         )
         .filter(DependencyPackage.id == number)
         .order_by(DependencyVersion.version.desc(), DependencyVersion.id.desc())
-        .first()
+        .limit(1)
+        .scalar()
     )
-    if not version:
+    if version is None:
         raise HTTPException(status_code=404, detail="Dependency version not found")
-    return int(version)
+    return version
 
 
 @router.get("/v1/dependencies/{dependency_version_id}")
@@ -1563,6 +1567,7 @@ def global_dashboard(
     projects = projects_query.all()
 
     def _project_row(project: Project) -> dict[str, Any]:
+        tracked_branch = project.tracked_branch if project.track_branch else None
         latest = (
             db.query(ProjectVersion)
             .filter(
@@ -1592,6 +1597,7 @@ def global_dashboard(
                 "organisation": project.organisation,
                 "organisation_id": project.organisation_id,
                 "project_type": project.project_type,
+                "tracked_branch": tracked_branch,
                 "latest": None,
                 "dependencies": None,
                 "vulnerabilities": None,
@@ -1623,6 +1629,7 @@ def global_dashboard(
             "organisation": project.organisation,
             "organisation_id": project.organisation_id,
             "project_type": project.project_type,
+            "tracked_branch": tracked_branch,
             "latest": {
                 "id": latest.id,
                 "version": latest.version,

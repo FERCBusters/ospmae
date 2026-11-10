@@ -27,6 +27,7 @@ celery_app = Celery(
     broker=_broker_url(),
     backend=_result_backend(),
     include=[
+        "app.tasks.branch_tracking",
         "app.tasks.dependency_discovery",
         "app.tasks.dependency_queue",
         "app.tasks.maintenance",
@@ -58,6 +59,12 @@ if bool(getattr(settings, "dependency_discovery_enabled", True)) and _feature_on
         "dispatch-queued-dependency-discoveries": {
             "task": "app.tasks.dependency_queue.dispatch_queued_dependency_discoveries",
             "schedule": timedelta(minutes=1),
+        },
+        # Tracked branches re-scan on their own hourly-or-longer interval; a
+        # five-minute check keeps each one close to its due time.
+        "poll-tracked-branches": {
+            "task": "app.tasks.branch_tracking.poll_tracked_branches",
+            "schedule": timedelta(minutes=5),
         },
     }
 

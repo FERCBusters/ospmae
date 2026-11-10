@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from app.db.models import ProjectVersion
+
 try:
     from packaging.version import InvalidVersion, Version
 
@@ -86,3 +90,20 @@ def is_semantically_lower(candidate: Any, current: Any) -> bool | None:
     if comparison is None:
         return None
     return comparison < 0
+
+
+def set_latest_version(db: Session, project_id: int, latest_version_id: int) -> None:
+    """Make one published version the project's single Latest marker.
+
+    Drafts never carry the marker; the caller owns the transaction.
+    """
+
+    db.query(ProjectVersion).filter(
+        ProjectVersion.project_id == project_id,
+        ProjectVersion.is_draft.is_(False),
+    ).update({ProjectVersion.is_latest: False}, synchronize_session=False)
+    db.query(ProjectVersion).filter(
+        ProjectVersion.id == latest_version_id,
+        ProjectVersion.project_id == project_id,
+        ProjectVersion.is_draft.is_(False),
+    ).update({ProjectVersion.is_latest: True}, synchronize_session=False)

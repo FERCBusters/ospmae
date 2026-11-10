@@ -1,5 +1,12 @@
 const OSPMAE = window.OSPMAE;
-const { api: apiFetch, initAuth, ensureInitialized, toast } = OSPMAE;
+const {
+  api: apiFetch,
+  initAuth,
+  ensureInitialized,
+  canMaintainProjects,
+  csvCell,
+  toast,
+} = OSPMAE;
 
 const SEVERITY_ORDER = [
   "critical",
@@ -21,6 +28,7 @@ const SEVERITY_BADGE = {
 const el = {
   orgFilter: document.getElementById("orgFilter"),
   exportCsv: document.getElementById("exportCsv"),
+  newProjectBtn: document.getElementById("newProjectBtn"),
   summary: document.getElementById("summary"),
   rows: document.getElementById("rows"),
 };
@@ -95,7 +103,7 @@ function renderSummary(projects) {
 function renderRows(projects) {
   if (!projects.length) {
     el.rows.innerHTML =
-      '<tr><td colspan="7" class="text-secondary">No projects in this view yet. Create one under Manage projects and attach its release feed.</td></tr>';
+      '<tr><td colspan="7" class="text-secondary">No projects in this view yet. Use New project to add one.</td></tr>';
     return;
   }
   el.rows.innerHTML = projects
@@ -114,8 +122,11 @@ function renderRows(projects) {
               "'": "&#39;",
             })[c],
         );
+      // A tracked branch stands in for releases: its version is the branch.
       const latest = row.latest
-        ? `${escape(row.latest.version)}`
+        ? row.tracked_branch
+          ? `<i class="bi bi-git" aria-hidden="true"></i> ${escape(row.latest.version)} <span class="badge text-bg-secondary">branch</span>`
+          : `${escape(row.latest.version)}`
         : '<span class="text-secondary">no release</span>';
       // The column is a single number: how many direct dependencies the
       // latest release recorded. The status vocabulary is not_run, queued,
@@ -155,7 +166,6 @@ function renderRows(projects) {
 
 function csv() {
   const projects = current || [];
-  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const lines = [
     "project,organisation,machine_name,latest_version,scan_state,dependencies,unfixed_total",
   ];
@@ -173,12 +183,12 @@ function csv() {
         row.machine_name,
         row.latest?.version || "",
         scanLabel(row),
-        row.dependencies?.discovery_status === "done"
+        row.dependencies?.discovery_status === "complete"
           ? row.dependencies.count
           : "",
         unfixed,
       ]
-        .map(esc)
+        .map(csvCell)
         .join(","),
     );
   }
@@ -208,6 +218,9 @@ async function refresh() {
 (async () => {
   await initAuth();
   await ensureInitialized();
+  // The API decides who may create projects; the button only spares other
+  // roles a form they cannot submit.
+  el.newProjectBtn.hidden = !canMaintainProjects();
   try {
     const orgs = await apiFetch("/v1/organisations");
     for (const o of orgs) {

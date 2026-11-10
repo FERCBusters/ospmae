@@ -64,3 +64,30 @@ def test_theme_defaults_to_the_application_palette(client):
     )
     assert r.status_code == 200
     assert r.json()["theme"] == "ink"
+
+
+def test_start_pages_follow_the_page_layout(client):
+    """Projects (/index.html) and Manifests are everyone's start pages; the
+    retired pages normalise to the entry page instead of a dead link."""
+    csrf = _signed_in(client, "StartPages", role="viewer")
+
+    def _save(page):
+        r = client.put(
+            "/v1/me/preferences",
+            json={"default_start_page": page},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert r.status_code == 200, r.text
+        return r.json()["default_start_page"]
+
+    assert _save("/manifests.html") == "/manifests.html"
+    assert _save("/index.html") == "/index.html"
+    for retired in (
+        "/saved-manifests.html",
+        "/project-manage.html",
+        "/dashboard.html",
+        "/my-questions.html",
+    ):
+        assert _save(retired) == "/index.html"
+    # Admin-only pages stay out of reach for other roles.
+    assert _save("/admin.html") == "/index.html"

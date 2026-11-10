@@ -23,6 +23,7 @@ from app.depscan.grype import scan_grype
 from app.depscan.parsers import DiscoveredDependency, parse_lockfile, redact_url
 from app.depscan.scan import clone_repo, find_lockfiles
 from app.depscan.syft import scan_syft
+from app.services.branch_tracking import is_branch_version
 
 log = get_task_logger(__name__)
 
@@ -275,7 +276,14 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
         pv = db.get(ProjectVersion, project_version_id)
         if not pv:
             return {"skipped": True, "reason": "not_found"}
-        url = str(pv.link_to_source_code or "").strip()
+        # A tracked branch scans the project's repository at exactly that
+        # branch head; every other version resolves its ref from its label.
+        branch: str | None = None
+        if is_branch_version(pv.project, pv):
+            branch = pv.project.tracked_branch
+            url = str(pv.project.tracked_repo_url or "").strip()
+        else:
+            url = str(pv.link_to_source_code or "").strip()
         if not url:
             # Nothing to do.
             db.execute(
@@ -310,7 +318,9 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
         db.commit()
 
         repo_dir, commit = clone_repo(
-            url, version_hint=str(getattr(pv, "version", "") or "").strip() or None
+            url,
+            version_hint=str(getattr(pv, "version", "") or "").strip() or None,
+            branch=branch,
         )
         max_bytes = int(
             getattr(settings, "dependency_discovery_max_file_bytes", 5_000_000)

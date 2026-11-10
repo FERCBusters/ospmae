@@ -6,7 +6,7 @@ Applications in the same family share a design system and conventions: **KEEN** 
 
 ## What is in the box
 
-- **Projects and versions** - a catalogue of open-source projects with releases, drafts, subscriptions, changelog records and exportable manifests. Owners and owner groups manage their own projects; the catalogue is the common meeting point between project capabilities and adopter needs.
+- **Projects and versions** - a catalogue of open-source projects with releases, drafts, subscriptions, changelog records and exportable manifests. Owners and owner groups manage their own projects; the catalogue is the common meeting point between project capabilities and adopter needs. A project can track one branch of its repository in place of releases: the branch head is re-cloned and scanned on an interval the owner chooses, once an hour at most.
 - **Frameworks and capability mapping** - architecture frameworks (Universal Wallet Reference Architecture by default) encoded as machine-readable trees with per-node capability definitions, project-to-framework mappings and D3 visualisations.
 - **Dependency scanning** - an operator-configured Grype/Syft pipeline clones policy-permitted repositories (host allowlist, command allowlists, fixed scrubbed environment), parses lockfiles/SBOMs and records dependencies, vulnerabilities and remediation status against each version.
 - **Comparisons** - side-by-side project/version diffs with capability matrices and dependency/vulnerability deltas, plus CSV/XLSX/PDF exports served as neutral attachments.
@@ -24,7 +24,7 @@ Each optional product area answers 404 and disappears from the UI and background
 | `OSPMAE_FEATURE_FRAMEWORKS` | framework management, capability trees, UWRA seeding |
 | `OSPMAE_FEATURE_MANIFESTS` | manifest editing, sharing and export |
 | `OSPMAE_FEATURE_QUESTIONS` | question threads, notifications bell |
-| `OSPMAE_FEATURE_DEPENDENCY_SCANS` | Grype/Syft discovery, dependency dashboard, release feeds |
+| `OSPMAE_FEATURE_DEPENDENCY_SCANS` | Grype/Syft discovery, dependency dashboard, release feeds, tracked-branch re-scans |
 | `OSPMAE_FEATURE_COMPARISONS` | the project compare endpoint |
 | `OSPMAE_FEATURE_RELEASE_FEED` | RSS/Atom release polling |
 

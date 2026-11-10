@@ -6,8 +6,25 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.depscan.scan import validate_repo_url
+from app.depscan.scan import validate_git_ref_name, validate_repo_url
 from app.security.url_safety import validate_public_http_url, validate_safe_href
+from app.services.branch_tracking import (
+    MAX_POLL_INTERVAL_HOURS,
+    MIN_POLL_INTERVAL_HOURS,
+)
+
+
+def _optional_repo_url(value: Any) -> str | None:
+    """A git repository URL the scanner may clone, or None when blank."""
+
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    # Must be a supported git URL and on an allowed host.
+    validate_repo_url(s)
+    return s
 
 
 def _clean_tag_list(values: list[str]) -> list[str]:
@@ -229,6 +246,15 @@ class ProjectCreatePayload(BaseModel):
     # Optional RSS/Atom feed for releases (e.g. GitHub releases feed).
     release_rss_feed_url: str | None = None
     release_rss_ignore_patterns: list[ReleaseFeedIgnorePatternPayload] | None = None
+
+    # Branch tracking: follow one branch head, re-scanned on an interval of
+    # at least an hour, instead of following releases.
+    track_branch: bool | None = None
+    tracked_repo_url: str | None = Field(default=None, max_length=600)
+    tracked_branch: str | None = Field(default=None, max_length=64)
+    branch_poll_interval_hours: int | None = Field(
+        default=None, ge=MIN_POLL_INTERVAL_HOURS, le=MAX_POLL_INTERVAL_HOURS
+    )
     supported_profiles: list[str] | None = None
     supported_formats: list[str] | None = None
 
@@ -280,6 +306,21 @@ class ProjectCreatePayload(BaseModel):
             return None
         # This URL is fetched server-side by the release feed poller; keep it public.
         return validate_public_http_url(s)
+
+    @field_validator("tracked_repo_url", mode="before")
+    @classmethod
+    def _validate_tracked_repo_url(cls, v):
+        return _optional_repo_url(v)
+
+    @field_validator("tracked_branch", mode="before")
+    @classmethod
+    def _validate_tracked_branch(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return None
+        return validate_git_ref_name(s)
 
     @field_validator("release_rss_ignore_patterns", mode="before")
     @classmethod
@@ -336,14 +377,7 @@ class ProjectVersionCreatePayload(BaseModel):
     @field_validator("link_to_source_code", mode="before")
     @classmethod
     def _validate_link_to_source_code(cls, v):
-        if v is None:
-            return None
-        s = str(v or "").strip()
-        if not s:
-            return None
-        # Must be a supported git URL and on an allowed host.
-        validate_repo_url(s)
-        return s
+        return _optional_repo_url(v)
 
 
 class ProjectVersionUpdatePayload(BaseModel):
@@ -358,14 +392,7 @@ class ProjectVersionUpdatePayload(BaseModel):
     @field_validator("link_to_source_code", mode="before")
     @classmethod
     def _validate_link_to_source_code(cls, v):
-        if v is None:
-            return None
-        s = str(v or "").strip()
-        if not s:
-            return None
-        # Must be a supported git URL and on an allowed host.
-        validate_repo_url(s)
-        return s
+        return _optional_repo_url(v)
 
 
 class ProjectVersionFrameworkNodesPayload(BaseModel):

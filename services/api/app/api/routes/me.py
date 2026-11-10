@@ -39,8 +39,7 @@ router = APIRouter()
 
 ALLOWED_START_PAGES = {
     "/index.html",
-    "/saved-manifests.html",
-    "/project-manage.html",
+    "/manifests.html",
     "/framework-manage.html",
     "/account.html",
     # Backwards-compatible: previously this page was named Preferences.
@@ -303,16 +302,11 @@ def _pages_allowed_for_role(user: User) -> set[str]:
 
     allowed = {
         "/index.html",
+        "/manifests.html",
         "/account.html",
         # Backwards-compatible: previously this page was named Preferences.
         "/preferences.html",
     }
-
-    if role in {"admin", "architect", "product_owner"}:
-        allowed.add("/saved-manifests.html")
-
-    if role in {"admin", "maintainer"}:
-        allowed.add("/project-manage.html")
 
     if role in {"admin", "framework_admin"}:
         allowed.add("/framework-manage.html")

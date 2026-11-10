@@ -2,7 +2,6 @@ const OSPMAE = window.OSPMAE;
 const {
   api: apiFetch,
   initAuth,
-  canMaintainProjects,
   loadFrameworks,
   getFrameworks,
   getActiveFramework,
@@ -56,7 +55,6 @@ const el = {
   exportXlsxBtn: document.getElementById("exportXlsxBtn"),
   exportMdBtn: document.getElementById("exportMdBtn"),
   saveManifestBtn: document.getElementById("saveManifestBtn"),
-  btnNewProject: document.getElementById("btnNewProject"),
 };
 
 function roleOf(me) {
@@ -1433,12 +1431,6 @@ function wireEvents() {
   el.exportMdBtn?.addEventListener("click", () => exportManifest("markdown"));
   el.saveManifestBtn?.addEventListener("click", () => saveManifest());
 
-  if (el.btnNewProject) {
-    el.btnNewProject.addEventListener("click", () => {
-      window.location.href = "/project-manage.html?create=1";
-    });
-  }
-
   window.addEventListener("resize", () => {
     // Re-render treemap on resize (layout uses container size).
     renderCatalogueTreemap();
@@ -1469,10 +1461,6 @@ async function init() {
   await loadFrameworkCatalogue();
   updateActiveFilterSummary();
   await loadProjects();
-
-  if (!canMaintainProjects()) {
-    if (el.btnNewProject) el.btnNewProject.style.display = "none";
-  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OSPMAE - Manage projects</title>
+  <title>Project editor • OSPMAE</title>
 
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/vendor/bootstrap/bootstrap.min.css" />
@@ -17,42 +17,19 @@
   <div id="navbar"></div>
 
   <main class="container container-tight py-4">
-    <section class="card" id="projectBrowserCard" style="margin-bottom:14px;" data-mosp-filter-section="manage-project-filters" data-mosp-filter-title="Filters">
-      <div class="card-body">
-      <div data-mosp-filter-body style="margin-bottom:12px;">
-      <div class="d-flex flex-wrap" style="justify-content:space-between; align-items:flex-end; gap:10px;">
-        <div>
-          <h2 style="margin:0;">Projects</h2>
-          <div class="small">Browse existing projects, then click Edit to update. Use New project to create one.</div>
-        </div>
-        <div class="d-flex flex-wrap" style="gap:8px; align-items:flex-end;">
-          <label>
-            <span class="small">Search</span>
-            <input id="manageSearchInput" type="text" placeholder="Name, machine name, organisation" style="min-width:260px;" />
-          </label>
-          <button id="manageSearchBtn" class="btn btn-outline-secondary" type="button">Search</button>
-          <button id="manageResetBtn" class="btn btn-outline-secondary" type="button">Reset</button>
-          <button id="btnCreateProject" class="btn btn-primary" type="button"><i class="bi bi-plus"></i> New project</button>
-        </div>
-      </div>
-      </div>
-      <div id="manageList"></div>
-      </div>
-    </section>
-
-    <section class="card" id="projectEditorCard" style="display:none; margin-bottom:14px;">
+    <section class="card" id="projectEditorCard" style="margin-bottom:14px;">
       <div class="card-body">
       <div class="d-flex flex-wrap" style="justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
         <h2 id="formTitle" style="margin:0;">Create project</h2>
         <div class="d-flex flex-wrap" style="gap:8px;">
-          <button id="btnBackToList" class="btn btn-outline-secondary" type="button">← Back</button>
+          <a id="btnBack" class="btn btn-outline-secondary" href="/index.html">← Back</a>
         </div>
       </div>
 
       <div id="wizardSteps" class="d-flex gap-2 align-items-center mb-2 small">
-        <span id="wizardIndicator" class="badge text-bg-primary" aria-live="polite">Intro</span>
+        <span id="wizardIndicator" class="badge text-bg-primary" aria-live="polite">Step 1: Identity</span>
         <button id="wizardPrev" class="btn btn-sm btn-outline-secondary" type="button" hidden>Back</button>
-        <button id="wizardNext" class="btn btn-sm btn-outline-primary" type="button">Next step</button>
+        <button id="wizardNext" class="btn btn-sm btn-outline-primary" type="button">Next ➜</button>
       </div>
 
       <section id="projectWizardStep1">
@@ -60,11 +37,11 @@
       <div class="grid cols-2" style="margin-bottom:10px;">
         <label>
           <span>Machine name *</span>
-          <input id="machine_name" placeholder="sd-jwt-js" />
+          <input id="machine_name" placeholder="sd-jwt-js" required maxlength="160" />
         </label>
         <label>
           <span>Display name *</span>
-          <input id="display_name" placeholder="SD-JWT-JS" />
+          <input id="display_name" placeholder="SD-JWT-JS" required maxlength="200" />
         </label>
         <label>
           <span>Organisation</span>
@@ -141,25 +118,54 @@
             <option value="BSL-1.0">BSL-1.0</option>
           </select>
         </label>
+      </div>
       </section>
 
       <section id="projectWizardStep2" hidden>
-      <div class="small text-secondary mb-1">Where to find it and how new releases arrive. The feed runs a full discovery when first attached.</div>
+      <div class="small text-secondary mb-1">Where to find it and how its dependencies stay current: follow published releases, or track one branch of its repository.</div>
       <div class="grid cols-2" style="margin-bottom:10px;">
         <label>
           <span>Homepage / app URL</span>
           <input id="link_to_app" placeholder="https://..." />
         </label>
+        <div id="trackBranchField">
+          <span class="form-label mb-1">Tracking</span>
+          <div class="form-check form-switch mt-2 mb-0">
+            <input id="track_branch" class="form-check-input" type="checkbox" />
+            <label class="form-check-label" for="track_branch">Track branch instead of releases</label>
+          </div>
+          <div class="form-text">Scans the head of one branch on a schedule instead of following releases. The release feed is not polled while a branch is tracked.</div>
+        </div>
+      </div>
+      <div id="releaseFields" class="grid cols-2" style="margin-bottom:10px;">
         <label>
           <span>Release RSS feed</span>
           <input id="release_rss_feed_url" placeholder="https://..." />
-          <span class="small muted">Optional: RSS/Atom feed to auto-detect new releases (creates drafts).</span>
+          <span class="small muted">Optional: RSS/Atom feed to auto-detect new releases (creates drafts). The feed runs a full discovery when first attached.</span>
         </label>
         <label>
           <span>Release feed ignore patterns</span>
           <textarea id="release_rss_ignore_patterns" rows="4" placeholder="beta&#10;regex:^v?\\d+\\.\\d+\\.\\d+-rc"></textarea>
           <span class="small muted">Optional: one per line. Plain lines are case-insensitive substring matches; prefix with regex: for regular expressions.</span>
         </label>
+      </div>
+      <div id="branchFields" class="grid cols-2" style="margin-bottom:10px;" hidden>
+        <label>
+          <span>Repository URL *</span>
+          <input id="tracked_repo_url" placeholder="https://github.com/org/repo" maxlength="600" />
+          <span class="small muted">The repository's clone URL, on a host the installation allows.</span>
+        </label>
+        <label>
+          <span>Branch *</span>
+          <input id="tracked_branch" placeholder="main" maxlength="64" />
+          <span class="small muted">The branch whose head is cloned and scanned. Its name labels the project's version.</span>
+        </label>
+        <label>
+          <span>Re-scan every (hours) *</span>
+          <input id="branch_poll_interval_hours" type="number" min="1" max="720" step="1" value="24" />
+          <span class="small muted">At least 1 hour. Each re-scan clones the branch head again and runs dependency discovery.</span>
+        </label>
+      </div>
       </section>
 
       <section id="projectWizardStep3" hidden>
@@ -223,7 +229,7 @@
       </section>
 
       <div class="d-flex flex-wrap" style="gap:8px; margin-bottom:12px; justify-content:flex-end;">
-        <button id="saveProjectBtn" class="btn btn-primary" type="button"><i class="bi bi-check2"></i> Save project</button>
+        <button id="saveProjectBtn" class="btn btn-primary" type="button" hidden><i class="bi bi-check2"></i> Save project</button>
         <button id="deleteProjectBtn" class="btn btn-outline-danger" type="button" style="display:none;"><i class="bi bi-trash"></i> Delete project</button>
       </div>
 
@@ -232,12 +238,14 @@
           <h3 style="margin:0;">Versions</h3>
           <button id="newVersionBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-plus"></i> New version</button>
         </div>
+        <div id="versionsBranchNotice" class="small text-secondary mb-2" hidden></div>
         <div id="versionsList" class="small"></div>
       </div>
 
       <div id="versionEditor" class="card p-3" style="display:none;">
         <h3 id="versionFormTitle" style="margin-top:0;">Version</h3>
         <div id="versionEditContext" class="version-edit-context" aria-live="polite"></div>
+        <div id="versionBranchNotice" class="alert alert-info small" role="status" hidden>This version follows the tracked branch: its label, source and published state come from the project's tracking settings. Framework mappings and notes stay editable.</div>
         <div class="grid cols-2" style="margin-bottom:10px;">
           <label>
             <span>Version *</span>
@@ -308,13 +316,13 @@
           <button id="cancelVersionBtn" class="btn btn-outline-secondary" type="button">Cancel</button>
         </div>
       </div>
+      </div>
     </section>
-  </div>
-</main>
+  </main>
 
   <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
   <script defer src="/app.js"></script>
   <script defer src="/pages/project-wizard.js"></script>
-  <script defer src="/pages/project-manage.js"></script>
+  <script defer src="/pages/project-edit.js"></script>
 </body>
 </html>

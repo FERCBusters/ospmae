@@ -28,8 +28,8 @@
   // Feature switches; pages call OSPMAE.gateFeature('frameworks') first.
   const FEATURE_PAGES = {
     frameworks: ["/framework-manage.html"],
-    manifests: ["/saved-manifests.html"],
-    questions: ["/questions.html", "/my-questions.html"],
+    manifests: ["/manifests.html"],
+    questions: ["/questions.html"],
     dependency_scans: ["/dependencies.html"],
     comparisons: ["/comparisons.html"],
   };
@@ -78,6 +78,15 @@
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;");
+  }
+
+  // One CSV cell: quoted with inner quotes doubled, and a leading = + - @
+  // or tab neutralised with an apostrophe so a spreadsheet reads text rather
+  // than a formula (the rule of the API's _excel_safe_cell).
+  function csvCell(value) {
+    let s = String(value ?? "");
+    if (/^[=+\-@\t]/.test(s)) s = `'${s}`;
+    return `"${s.replace(/"/g, '""')}"`;
   }
 
   async function parseError(response) {
@@ -281,11 +290,6 @@
   }
   function applyNavPermissions() {
     const currentRole = role();
-    const canMaintain = currentRole === "admin" || currentRole === "maintainer";
-    const canManifests =
-      currentRole === "admin" ||
-      currentRole === "architect" ||
-      currentRole === "product_owner";
     const canFrameworks =
       currentRole === "admin" || currentRole === "framework_admin";
     const adminOnly = currentRole === "admin";
@@ -293,18 +297,6 @@
       currentRole === "admin" ||
       currentRole === "maintainer" ||
       currentRole === "contributor";
-
-    document
-      .querySelectorAll('a[href="/project-manage.html"]')
-      .forEach((el) => {
-        el.style.display = canMaintain ? "" : "none";
-      });
-
-    document
-      .querySelectorAll('a[href="/saved-manifests.html"]')
-      .forEach((el) => {
-        el.style.display = canManifests ? "" : "none";
-      });
 
     document.querySelectorAll('a[href="/admin.html"]').forEach((el) => {
       el.style.display = adminOnly ? "" : "none";
@@ -480,6 +472,17 @@
   function canAnswerQuestions() {
     const r = role();
     return r === "admin" || r === "maintainer" || r === "contributor";
+  }
+
+  // Askers open threads; every answering role can ask as well.
+  function canAskQuestions() {
+    const r = role();
+    return (
+      canAnswerQuestions() ||
+      r === "engineer" ||
+      r === "product_owner" ||
+      r === "architect"
+    );
   }
 
   function _setQuestionBellCount(n) {
@@ -666,17 +669,8 @@
   // Start page choices shown in Preferences.
   // `permission` is used client-side only to filter options by role.
   const ALLOWED_START_PAGES = [
-    { value: "/index.html", label: "Manifest builder", permission: "public" },
-    {
-      value: "/saved-manifests.html",
-      label: "Saved manifests",
-      permission: "manifests",
-    },
-    {
-      value: "/project-manage.html",
-      label: "Manage projects",
-      permission: "project_admin",
-    },
+    { value: "/index.html", label: "Projects", permission: "public" },
+    { value: "/manifests.html", label: "Manifests", permission: "public" },
     {
       value: "/framework-manage.html",
       label: "Framework administration",
@@ -1455,10 +1449,12 @@
     stopNotifications,
     toast,
     escapeHtml,
+    csvCell,
     isAdmin,
     canMaintainProjects,
     canExportManifests,
     canAnswerQuestions,
+    canAskQuestions,
     refreshQuestionBell,
     downloadResponseAsFile,
     entityChangelogHtml,

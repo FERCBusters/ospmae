@@ -4,6 +4,7 @@
     api: apiFetch,
     initAuth,
     canMaintainProjects,
+    featureOn,
     loadFrameworks,
     getFrameworks,
     getActiveFramework,
@@ -16,9 +17,6 @@
     me: null,
     frameworks: [],
     activeFramework: null,
-
-    projects: [],
-    query: "",
 
     editingProject: null,
     editingVersion: null,
@@ -37,16 +35,8 @@
   };
 
   const el = {
-    projectBrowserCard: document.getElementById("projectBrowserCard"),
-    manageSearchInput: document.getElementById("manageSearchInput"),
-    manageSearchBtn: document.getElementById("manageSearchBtn"),
-    manageResetBtn: document.getElementById("manageResetBtn"),
-    btnCreateProject: document.getElementById("btnCreateProject"),
-    manageList: document.getElementById("manageList"),
-
-    projectEditorCard: document.getElementById("projectEditorCard"),
     formTitle: document.getElementById("formTitle"),
-    btnBackToList: document.getElementById("btnBackToList"),
+    btnBack: document.getElementById("btnBack"),
 
     machine_name: document.getElementById("machine_name"),
     display_name: document.getElementById("display_name"),
@@ -58,6 +48,15 @@
     release_rss_feed_url: document.getElementById("release_rss_feed_url"),
     release_rss_ignore_patterns: document.getElementById(
       "release_rss_ignore_patterns",
+    ),
+    trackBranchField: document.getElementById("trackBranchField"),
+    track_branch: document.getElementById("track_branch"),
+    releaseFields: document.getElementById("releaseFields"),
+    branchFields: document.getElementById("branchFields"),
+    tracked_repo_url: document.getElementById("tracked_repo_url"),
+    tracked_branch: document.getElementById("tracked_branch"),
+    branch_poll_interval_hours: document.getElementById(
+      "branch_poll_interval_hours",
     ),
 
     capability: document.getElementById("capability"),
@@ -81,11 +80,13 @@
 
     newVersionBtn: document.getElementById("newVersionBtn"),
     versionsList: document.getElementById("versionsList"),
+    versionsBranchNotice: document.getElementById("versionsBranchNotice"),
 
     versionEditor: document.getElementById("versionEditor"),
     versionFormTitle: document.getElementById("versionFormTitle"),
     versionEditContext: document.getElementById("versionEditContext"),
     versionDraftNotice: document.getElementById("versionDraftNotice"),
+    versionBranchNotice: document.getElementById("versionBranchNotice"),
 
     version: document.getElementById("version"),
     status: document.getElementById("status"),
@@ -246,18 +247,33 @@
     return nodeColor(`${prefix}${groupKey}`);
   }
 
-  function showListView() {
-    el.projectBrowserCard.style.display = "";
-    el.projectEditorCard.style.display = "none";
-    state.editingProject = null;
-    state.editingVersion = null;
-    state.creatingProject = false;
-    state.creatingVersion = false;
+  // A tracked branch is followed instead of releases: the branch fields
+  // replace the release feed fields and become required.
+  function syncTrackingFields() {
+    const tracking = !!el.track_branch?.checked;
+    if (el.releaseFields) el.releaseFields.hidden = tracking;
+    if (el.branchFields) el.branchFields.hidden = !tracking;
+    for (const input of [
+      el.tracked_repo_url,
+      el.tracked_branch,
+      el.branch_poll_interval_hours,
+    ]) {
+      if (input) input.required = tracking;
+    }
   }
 
-  function showEditorView() {
-    el.projectBrowserCard.style.display = "none";
-    el.projectEditorCard.style.display = "";
+  function isBranchVersion(version) {
+    const project = state.editingProject;
+    return (
+      !!project?.track_branch &&
+      !!version &&
+      String(version.version || "") === String(project.tracked_branch || "")
+    );
+  }
+
+  function backHref() {
+    const id = state.editingProject?.id;
+    return id ? `/project.html?id=${encodeURIComponent(id)}` : "/index.html";
   }
 
   function parseTags(value) {
@@ -448,57 +464,6 @@
       });
   }
 
-  function renderProjectList() {
-    const list = state.projects || [];
-    if (!list.length) {
-      el.manageList.innerHTML = '<div class="muted">No projects found.</div>';
-      return;
-    }
-
-    el.manageList.innerHTML = list
-      .map((c) => {
-        const latest = c.latest_version?.version || "—";
-        const capCount = (c.capability_paths || []).length;
-        return `
-          <div class="card" style="margin-bottom:10px; padding:12px;">
-            <div class="row" style="justify-content:space-between; gap:10px; align-items:flex-start;">
-              <div>
-                <div style="font-weight:700;">${escapeHtml(c.display_name || c.machine_name)}</div>
-                <div class="small muted">${escapeHtml(c.organisation || "—")} · ${escapeHtml(c.project_type || "n/a")}</div>
-                <div class="small" style="margin-top:4px;">Latest: ${escapeHtml(latest)} · Categories (current framework): ${capCount}</div>
-              </div>
-              <div style="display:flex; gap:8px;">
-                <button class="btn btn-outline-primary btn-sm" data-action="edit" data-id="${c.id}"><i class="bi bi-pencil"></i> Edit</button>
-                <a class="btn btn-outline-secondary btn-sm" href="/project.html?id=${c.id}"><i class="bi bi-box-arrow-up-right"></i> View</a>
-              </div>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
-
-    el.manageList
-      .querySelectorAll('button[data-action="edit"]')
-      .forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const id = Number(btn.dataset.id);
-          if (Number.isNaN(id)) return;
-          openProject(id);
-        });
-      });
-  }
-
-  async function loadProjectList() {
-    const fwId = state.activeFramework?.id;
-    const query = {
-      q: state.query || undefined,
-      framework_id: fwId || undefined,
-    };
-    const res = await apiFetch(`/v1/projects${toQueryString(query)}`);
-    state.projects = Array.isArray(res?.items) ? res.items : [];
-    renderProjectList();
-  }
-
   function fillProjectForm(project) {
     el.machine_name.value = project?.machine_name || "";
     el.display_name.value = project?.display_name || "";
@@ -517,6 +482,21 @@
         project?.release_rss_ignore_patterns || [],
       );
     }
+    if (el.track_branch) el.track_branch.checked = !!project?.track_branch;
+    if (el.tracked_repo_url)
+      el.tracked_repo_url.value = project?.tracked_repo_url || "";
+    if (el.tracked_branch)
+      el.tracked_branch.value = project?.tracked_branch || "";
+    if (el.branch_poll_interval_hours)
+      el.branch_poll_interval_hours.value = String(
+        project?.branch_poll_interval_hours || 24,
+      );
+    // Without dependency scans there is nothing to re-scan, so the option
+    // only stays visible for a project that already tracks a branch.
+    if (el.trackBranchField)
+      el.trackBranchField.hidden =
+        !featureOn("dependency_scans") && !project?.track_branch;
+    syncTrackingFields();
 
     el.capability.value = project?.capability || "";
 
@@ -561,6 +541,12 @@
       release_rss_ignore_patterns: releaseIgnorePatternsFromText(
         el.release_rss_ignore_patterns?.value || "",
       ),
+      track_branch: !!el.track_branch?.checked,
+      tracked_repo_url: (el.tracked_repo_url?.value || "").trim() || null,
+      tracked_branch: (el.tracked_branch?.value || "").trim() || null,
+      branch_poll_interval_hours:
+        Number.parseInt(el.branch_poll_interval_hours?.value || "", 10) ||
+        undefined,
 
       capability: (el.capability.value || "").trim() || null,
 
@@ -579,6 +565,15 @@
         el.supported_signing_algorithms,
       ),
     };
+
+    if (!payload.track_branch) {
+      // Branch settings only travel while tracking is on, so a half-typed
+      // value in the hidden fields neither blocks the save nor replaces
+      // what is stored.
+      delete payload.tracked_repo_url;
+      delete payload.tracked_branch;
+      delete payload.branch_poll_interval_hours;
+    }
 
     if (isUpdate) {
       // API allows machine_name/display_name optional in updates.
@@ -722,7 +717,7 @@
         const buttonText = isSelected ? "Editing" : "Edit";
         return `
           <div class="card version-row ${isSelected ? "version-row-selected" : ""}" data-version-id="${v.id}">
-            <div class="row" style="justify-content:space-between; gap:10px;">
+            <div class="d-flex flex-wrap align-items-start" style="justify-content:space-between; gap:10px;">
               <div>
                 <div style="font-weight:700;">${escapeHtml(v.version)}${latest}${draft}${editing}</div>
                 <div class="small muted">${escapeHtml(date)} · Categories (current framework): ${capCount}</div>
@@ -736,6 +731,16 @@
 
     el.versionsList.innerHTML =
       rows || '<div class="muted">No versions created yet.</div>';
+
+    const project = state.editingProject;
+    const tracking = !!project?.track_branch;
+    if (el.newVersionBtn) el.newVersionBtn.hidden = tracking || !project?.id;
+    if (el.versionsBranchNotice) {
+      el.versionsBranchNotice.hidden = !tracking;
+      el.versionsBranchNotice.textContent = tracking
+        ? `This project tracks branch ${project.tracked_branch}: its version is kept up to date automatically and re-scanned every ${project.branch_poll_interval_hours} hour(s). Earlier versions stay listed.`
+        : "";
+    }
 
     el.versionsList
       .querySelectorAll('button[data-action="edit-version"]')
@@ -762,6 +767,11 @@
     state.latestTouched = false;
     syncLatestSwitchForDraftState();
     el.notes.value = version?.notes || "";
+    const branchVersion = isBranchVersion(version);
+    for (const input of [el.version, el.link_to_source_code, el.is_draft]) {
+      if (input) input.disabled = branchVersion;
+    }
+    if (el.versionBranchNotice) el.versionBranchNotice.hidden = !branchVersion;
     updateDraftPublishNotice();
   }
 
@@ -855,12 +865,11 @@
     state.editingProject = full;
     state.creatingProject = false;
 
-    showEditorView();
     el.formTitle.textContent = `Edit project: ${full.display_name || full.machine_name}`;
+    if (el.btnBack) el.btnBack.href = backHref();
     fillProjectForm(full);
 
     el.deleteProjectBtn.style.display = "";
-    el.newVersionBtn.style.display = "";
 
     // Close version editor until one is selected.
     el.versionEditor.style.display = "none";
@@ -884,12 +893,13 @@
     state.editingProject = null;
     state.creatingProject = true;
 
-    showEditorView();
     el.formTitle.textContent = "Create project";
+    if (el.btnBack) el.btnBack.href = backHref();
     fillProjectForm({});
 
     el.deleteProjectBtn.style.display = "none";
-    el.newVersionBtn.style.display = "none";
+    el.newVersionBtn.hidden = true;
+    if (el.versionsBranchNotice) el.versionsBranchNotice.hidden = true;
 
     el.versionsList.innerHTML =
       '<div class="muted">Create the project first to add versions.</div>';
@@ -915,6 +925,7 @@
       return;
     }
 
+    let projectId;
     if (isUpdate) {
       const updated = await apiFetch(
         `/v1/projects/${state.editingProject.id}`,
@@ -926,22 +937,25 @@
           body: payload,
         },
       );
-      state.editingProject = { ...state.editingProject, ...updated };
+      projectId = updated.id;
       OSPMAE.toast("Project updated.");
     } else {
       const created = await apiFetch("/v1/projects", {
         method: "POST",
         body: payload,
       });
-      state.editingProject = created;
-      state.creatingProject = false;
-      el.deleteProjectBtn.style.display = "";
-      el.newVersionBtn.style.display = "";
-      el.formTitle.textContent = `Edit project: ${created.display_name || created.machine_name}`;
-      OSPMAE.toast("Project created.");
+      projectId = created.id;
+      // Reloading the page keeps editing the project just created.
+      history.replaceState(
+        null,
+        "",
+        `/project-edit.html?id=${encodeURIComponent(projectId)}`,
+      );
+      OSPMAE.toast("Project created. Versions can be added below.");
     }
 
-    await loadProjectList();
+    // Saving can add the tracked branch's version, so reload the whole view.
+    await openProject(projectId);
   }
 
   async function deleteProject() {
@@ -954,8 +968,7 @@
       method: "DELETE",
     });
     OSPMAE.toast("Project deleted.");
-    showListView();
-    await loadProjectList();
+    window.location.href = "/index.html";
   }
 
   async function saveVersion() {
@@ -1025,9 +1038,8 @@
     });
     state.dirtyNodeSelection = false;
 
-    // Refresh project and lists.
+    // Refresh the project and its versions.
     await openProject(state.editingProject.id);
-    await loadProjectList();
   }
 
   async function deleteVersion() {
@@ -1038,7 +1050,6 @@
     });
     OSPMAE.toast("Version deleted.");
     await openProject(state.editingProject.id);
-    await loadProjectList();
   }
 
   function cancelVersionEdit() {
@@ -1088,52 +1099,27 @@
       renderNodeTree();
     }
 
-    // Refresh project details and list counts.
+    // Refresh project details and category counts.
     if (state.editingProject?.id) {
       await openProject(state.editingProject.id);
     }
-    await loadProjectList();
   }
 
   function wireEvents() {
-    el.manageSearchBtn.addEventListener("click", () => {
-      state.query = (el.manageSearchInput.value || "").trim();
-      loadProjectList();
-    });
-
-    el.manageSearchInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        state.query = (el.manageSearchInput.value || "").trim();
-        loadProjectList();
-      }
-    });
-
-    el.manageResetBtn.addEventListener("click", () => {
-      el.manageSearchInput.value = "";
-      state.query = "";
-      loadProjectList();
-    });
-
-    el.btnCreateProject.addEventListener("click", () => {
-      startCreateProject();
-    });
-
-    el.btnBackToList.addEventListener("click", () => {
+    el.btnBack?.addEventListener("click", (e) => {
       if (
         state.dirtyNodeSelection &&
         !confirm("Discard unsaved category mapping changes?")
       )
-        return;
-      showListView();
-      loadProjectList();
+        e.preventDefault();
     });
 
+    el.track_branch?.addEventListener("change", syncTrackingFields);
+
     el.saveProjectBtn.addEventListener("click", () => {
-      try {
-        saveProject();
-      } catch (err) {
-        OSPMAE.toast(err.message || "Failed to save project", "error");
-      }
+      saveProject().catch((err) =>
+        OSPMAE.toast(err.message || "Failed to save project", "error"),
+      );
     });
 
     el.deleteProjectBtn.addEventListener("click", () => {
@@ -1147,11 +1133,9 @@
     });
 
     el.saveVersionBtn.addEventListener("click", () => {
-      try {
-        saveVersion();
-      } catch (err) {
-        OSPMAE.toast(err.message || "Failed to save version", "error");
-      }
+      saveVersion().catch((err) =>
+        OSPMAE.toast(err.message || "Failed to save version", "error"),
+      );
     });
 
     el.deleteVersionBtn.addEventListener("click", () => {
@@ -1190,7 +1174,7 @@
     if (!state.me) return;
 
     if (!canMaintainProjects()) {
-      window.location.href = "/index.html";
+      window.location.replace("/index.html");
       return;
     }
 
@@ -1201,26 +1185,12 @@
 
     wireEvents();
 
-    // Start in list view.
-    showListView();
-
-    // URL convenience.
-    const params = new URLSearchParams(window.location.search);
-    const create = params.get("create");
-    const id = params.get("id");
-
-    await loadProjectList();
-
-    if (create === "1") {
+    // ?id= edits that project; without one the page creates a new project.
+    const id = Number(new URLSearchParams(window.location.search).get("id"));
+    if (Number.isInteger(id) && id > 0) {
+      await openProject(id);
+    } else {
       startCreateProject();
-      return;
-    }
-
-    if (id) {
-      const cid = Number(id);
-      if (!Number.isNaN(cid)) {
-        await openProject(cid);
-      }
     }
 
     // Ensure taxonomy renderer has something when version editor is opened.

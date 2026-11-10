@@ -72,18 +72,15 @@
   margin-bottom: 8px;
 }
 
-/* ---- Manage projects page fixes (Bootstrap alignment) ---- */
-#projectBrowserCard.card,
+/* ---- Project editor fixes (Bootstrap alignment) ---- */
 #projectEditorCard.card {
   overflow: hidden; /* so header rounding looks like Keen */
 }
 
-#projectBrowserCard > .card-body,
 #projectEditorCard > .card-body {
   padding: 1rem;
 }
 
-#projectBrowserCard .card-header,
 #projectEditorCard .card-header {
   background: color-mix(
     in srgb,
@@ -93,7 +90,6 @@
   border-bottom: 1px solid var(--bs-border-color, #e5e7eb);
 }
 
-#projectBrowserCard label > span.small,
 #projectEditorCard label > span {
   display: block;
   margin-bottom: 0.25rem;
@@ -101,7 +97,6 @@
   font-size: 0.875rem;
 }
 
-#projectBrowserCard input:not([type="checkbox"]):not([type="radio"]),
 #projectEditorCard input:not([type="checkbox"]):not([type="radio"]),
 #projectEditorCard textarea,
 #projectEditorCard select {
@@ -117,7 +112,6 @@
   border-radius: 0.375rem;
 }
 
-#projectBrowserCard input:not([type="checkbox"]):not([type="radio"]):focus,
 #projectEditorCard input:not([type="checkbox"]):not([type="radio"]):focus,
 #projectEditorCard textarea:focus,
 #projectEditorCard select:focus {
@@ -217,6 +211,13 @@
 .admin-tab-nav .nav-link {
   text-align: left;
   white-space: normal;
+}
+
+/* Wide panes (treemaps, tables) shrink beside the tab list instead of
+   overflowing it. */
+.admin-tab-layout > .tab-content {
+  min-width: 0;
+  width: 100%;
 }
 
 @media (min-width: 992px) {

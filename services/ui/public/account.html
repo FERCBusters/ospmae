@@ -44,6 +44,11 @@
           Subscriptions
         </button>
       </li>
+      <li class="nav-item" role="presentation" id="questionsTabItem" hidden>
+        <button class="nav-link" id="tabBtnQuestions" data-bs-toggle="tab" data-bs-target="#tabQuestions" type="button" role="tab" aria-controls="tabQuestions" aria-selected="false" data-hash="questions">
+          My questions
+        </button>
+      </li>
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="tabBtnShortcuts" data-bs-toggle="tab" data-bs-target="#tabShortcuts" type="button" role="tab" aria-controls="tabShortcuts" aria-selected="false" data-hash="shortcuts">
           Shortcuts
@@ -196,6 +201,36 @@
         </div>
       </div>
 
+      <div class="tab-pane fade" id="tabQuestions" role="tabpanel" aria-labelledby="tabBtnQuestions" tabindex="0">
+        <div class="card mb-3">
+          <div class="card-header d-flex align-items-start justify-content-between gap-2 flex-wrap">
+            <div>
+              <div class="fw-bold">My questions <span id="myQuestionsCount" class="badge text-bg-secondary ms-1">0</span></div>
+              <div class="small-muted">Threads you have opened on projects, including any replies from maintainers.</div>
+            </div>
+            <button id="myQuestionsRefreshBtn" class="btn btn-sm btn-outline-primary" type="button"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+          </div>
+          <div class="card-body">
+            <div id="myQuestionsStatus" class="alert alert-danger" role="status" hidden></div>
+            <div id="myQuestionsEmpty" class="small text-secondary" hidden>No questions yet.</div>
+            <div class="table-responsive" id="myQuestionsTableWrap" hidden>
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Updated</th>
+                    <th>Project</th>
+                    <th>Status</th>
+                    <th>Latest message</th>
+                    <th class="text-end">Open</th>
+                  </tr>
+                </thead>
+                <tbody id="myQuestionsBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="tab-pane fade" id="tabShortcuts" role="tabpanel" aria-labelledby="tabBtnShortcuts" tabindex="0">
         <div class="card mb-3">
           <div class="card-header">
@@ -212,7 +247,7 @@
               </div>
               <div class="col-12 col-lg-6">
                 <label class="form-label small-muted mb-1" for="shortcutUrl">URL</label>
-                <input id="shortcutUrl" class="form-control" type="text" placeholder="/index.html?framework=uwra&amp;q=..." />
+                <input id="shortcutUrl" class="form-control" type="text" placeholder="/manifests.html?framework=uwra&amp;q=..." />
               </div>
               <div class="col-12 col-lg-2 d-grid">
                 <button id="addShortcutBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-plus"></i> Add</button>

@@ -34,6 +34,10 @@ SKIP_DIRS = {
 # Component characters and whitespace are never part of a repository URL.
 _URL_REJECT_CHARS = set(" \t\r\n\0\\'\"<>")
 
+# Characters git refuses in a ref name (git check-ref-format), plus the glob
+# characters ls-remote would expand as a pattern.
+_REF_REJECT_CHARS = set(" ~^:?*[\\{}")
+
 
 @dataclass
 class ScanResult:
@@ -82,6 +86,33 @@ def validate_repo_url(url: str) -> None:
             raise ValueError(f"Repo host not allowed: {host}")
         return
     raise ValueError("Unsupported repository URL scheme")
+
+
+def validate_git_ref_name(name: str) -> str:
+    """Return a branch or tag name that git and ls-remote take literally.
+
+    Follows git check-ref-format for one ref under refs/heads/ or refs/tags/,
+    and refuses a leading "-" so the value can never read as a git option.
+    Every ref that reaches ls-remote or clone passes through here.
+    """
+
+    ref = str(name or "").strip()
+    if not ref:
+        raise ValueError("Branch name is empty")
+    if ref.startswith("-"):
+        raise ValueError("Branch name must not start with '-'")
+    if any(ord(ch) < 32 or ord(ch) == 0x7F for ch in ref):
+        raise ValueError("Branch name contains a control character")
+    if any(ch in _REF_REJECT_CHARS for ch in ref):
+        raise ValueError("Branch name contains a character git does not allow")
+    if ref == "@" or ".." in ref or "@{" in ref or "//" in ref:
+        raise ValueError("Branch name is not a valid git ref")
+    if ref.startswith("/") or ref.endswith("/") or ref.endswith("."):
+        raise ValueError("Branch name is not a valid git ref")
+    for part in ref.split("/"):
+        if part.startswith(".") or part.endswith(".lock"):
+            raise ValueError("Branch name is not a valid git ref")
+    return ref
 
 
 def _git_env() -> dict[str, str]:
@@ -195,12 +226,9 @@ def _remote_has_ref(url: str, ref: str, *, kind: str) -> bool:
     ``refs/tags/`` or ``refs/heads/``, so an option-shaped value cannot reach
     git's option parser.
     """
-    safe_ref = str(ref or "").strip()
-    if (
-        not safe_ref
-        or safe_ref.startswith("-")
-        or any(ch in safe_ref for ch in "*?[]{}")
-    ):
+    try:
+        safe_ref = validate_git_ref_name(ref)
+    except ValueError:
         return False
     if kind == "tag":
         query = f"refs/tags/{safe_ref}"
@@ -224,36 +252,55 @@ def _remote_has_ref(url: str, ref: str, *, kind: str) -> bool:
     return proc.returncode == 0 and bool((proc.stdout or "").strip())
 
 
-def clone_repo(url: str, version_hint: str | None = None) -> tuple[Path, str | None]:
+def clone_repo(
+    url: str, version_hint: str | None = None, *, branch: str | None = None
+) -> tuple[Path, str | None]:
+    """Shallow-clone a repository into a fresh temporary directory.
+
+    With ``branch`` the clone is exactly the head of that branch (a tracked
+    branch project), and a branch the remote lacks is an error rather than
+    a silent fall back to the default branch. Otherwise ``version_hint``
+    selects a matching tag, then a matching branch, then the default branch.
+    """
+
     # If someone supplied a release/tag URL, derive the actual repo URL and tag.
     clone_url, tag_from_url = _extract_repo_and_tag(url)
 
     validate_repo_url(clone_url)
+    tracked_branch = validate_git_ref_name(branch) if branch is not None else None
     tmpdir = Path(tempfile.mkdtemp(prefix="ospmae_repo_"))
     try:
         timeout = int(
             getattr(settings, "dependency_discovery_clone_timeout_seconds", 180) or 180
         )
 
-        # Prefer an explicit version hint over any tag embedded in the URL.
-        # This prevents a copied older release/tag URL from forcing scans onto the
-        # wrong commit when the ProjectVersion.version points at a newer release.
-        ref_candidates = _candidate_refs(
-            str(version_hint or "").strip() or None, tag_from_url
-        )
         chosen_ref: str | None = None
+        if tracked_branch is not None:
+            if not _remote_has_ref(clone_url, tracked_branch, kind="branch"):
+                raise RuntimeError(
+                    f"Branch {tracked_branch} was not found in the repository"
+                )
+            chosen_ref = tracked_branch
+        else:
+            # Prefer an explicit version hint over any tag embedded in the URL.
+            # This prevents a copied older release/tag URL from forcing scans
+            # onto the wrong commit when the ProjectVersion.version points at a
+            # newer release.
+            ref_candidates = _candidate_refs(
+                str(version_hint or "").strip() or None, tag_from_url
+            )
 
-        for ref in ref_candidates:
-            if _remote_has_ref(clone_url, ref, kind="tag"):
-                chosen_ref = ref
-                break
-
-        # If no tag, also allow an exact branch name match.
-        if not chosen_ref:
             for ref in ref_candidates:
-                if _remote_has_ref(clone_url, ref, kind="branch"):
+                if _remote_has_ref(clone_url, ref, kind="tag"):
                     chosen_ref = ref
                     break
+
+            # If no tag, also allow an exact branch name match.
+            if not chosen_ref:
+                for ref in ref_candidates:
+                    if _remote_has_ref(clone_url, ref, kind="branch"):
+                        chosen_ref = ref
+                        break
 
         if chosen_ref:
             # Works for both tags and branches.

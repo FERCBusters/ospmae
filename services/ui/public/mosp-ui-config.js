@@ -56,15 +56,15 @@
     // Keep the navbar unified across apps; Account is provided by the shared UI.
     links: [
       {
-        key: "dashboard",
+        key: "projects",
         label: "Projects",
-        href: "/dashboard.html",
+        href: "/index.html",
         requireAny: ["can_view_catalogue"],
       },
       {
-        key: "find",
-        label: "Manifest builder",
-        href: "/index.html",
+        key: "manifests",
+        label: "Manifests",
+        href: "/manifests.html",
         requireAny: ["can_view_catalogue"],
       },
       {
@@ -78,24 +78,6 @@
         label: "Project Comparisons",
         href: "/comparisons.html",
         requireAny: ["can_view_catalogue"],
-      },
-      {
-        key: "manifests",
-        label: "Saved manifests",
-        href: "/saved-manifests.html",
-        requireAny: ["can_export_manifests", "is_admin"],
-      },
-      {
-        key: "my_questions",
-        label: "My Questions",
-        href: "/my-questions.html",
-        requireAny: ["can_ask_questions", "can_answer_questions", "is_admin"],
-      },
-      {
-        key: "projects",
-        label: "Manage projects",
-        href: "/project-manage.html",
-        requireAny: ["can_manage_projects", "is_admin"],
       },
       {
         key: "frameworks",

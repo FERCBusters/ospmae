@@ -2402,7 +2402,7 @@ async function loadProject() {
 
   if (canMaintainProjects()) {
     el.editProjectLink.style.display = "";
-    el.editProjectLink.href = `/project-manage.html?id=${id}`;
+    el.editProjectLink.href = `/project-edit.html?id=${id}`;
     el.editProjectLink.textContent = "Edit project";
   }
 

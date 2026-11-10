@@ -822,6 +822,7 @@ def admin_discover_all_release_feeds(
         db.query(Project)
         .filter(Project.release_rss_feed_url.isnot(None))
         .filter(Project.release_rss_feed_url != "")
+        .filter(Project.track_branch.is_(False))
         .order_by(Project.id)
         .all()
     )

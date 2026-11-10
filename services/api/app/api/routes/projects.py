@@ -57,6 +57,13 @@ from app.security.permissions import (
     has_permission,
 )
 from app.security.roles import ROLE_ADMIN, attach_effective_role
+from app.services.branch_tracking import (
+    DEFAULT_POLL_INTERVAL_HOURS,
+    ensure_branch_version,
+    is_tracking,
+    mark_scan_queued,
+    scan_in_flight,
+)
 from app.services.entity_changelog import (
     list_entity_changelogs,
     project_changelog_state,
@@ -68,7 +75,11 @@ from app.services.notification_recipients import (
     notification_email_for_user,
     notification_emails_for_users,
 )
-from app.services.versioning import is_semantically_newer, parse_semanticish_version
+from app.services.versioning import (
+    is_semantically_newer,
+    parse_semanticish_version,
+    set_latest_version,
+)
 
 router = APIRouter()
 
@@ -412,21 +423,6 @@ def _latest_version(project: Project) -> ProjectVersion | None:
     return _best_automatic_latest_version(versions)
 
 
-def _set_latest_version(db: Session, project_id: int, latest_version_id: int) -> None:
-    db.query(ProjectVersion).filter(
-        ProjectVersion.project_id == project_id,
-        ProjectVersion.is_draft.is_(False),
-    ).update(
-        {ProjectVersion.is_latest: False},
-        synchronize_session=False,
-    )
-    db.query(ProjectVersion).filter(
-        ProjectVersion.id == latest_version_id,
-        ProjectVersion.project_id == project_id,
-        ProjectVersion.is_draft.is_(False),
-    ).update({ProjectVersion.is_latest: True}, synchronize_session=False)
-
-
 def _ensure_project_has_latest(db: Session, project_id: int) -> None:
     versions = (
         db.query(ProjectVersion)
@@ -440,7 +436,7 @@ def _ensure_project_has_latest(db: Session, project_id: int) -> None:
         return
     chosen = _best_automatic_latest_version(versions)
     if chosen is not None:
-        _set_latest_version(db, project_id, chosen.id)
+        set_latest_version(db, project_id, chosen.id)
 
 
 def _published_latest_for_comparison(
@@ -509,6 +505,11 @@ def _serialize_project(
         "release_rss_ignore_patterns": clean_release_feed_ignore_patterns(
             getattr(project, "release_rss_ignore_patterns", []) or []
         ),
+        "track_branch": project.track_branch,
+        "tracked_repo_url": project.tracked_repo_url,
+        "tracked_branch": project.tracked_branch,
+        "branch_poll_interval_hours": project.branch_poll_interval_hours,
+        "branch_last_polled_at": project.branch_last_polled_at,
         "supported_profiles": _clean_tag_list(project.supported_profiles),
         "supported_formats": _clean_tag_list(project.supported_formats),
         "supported_issuance_protocols": _clean_tag_list(
@@ -958,6 +959,65 @@ def _resolve_organisation(
     return row.name, int(row.id)
 
 
+def _require_branch_tracking_fields(project: Project) -> None:
+    if project.track_branch and not (
+        project.tracked_repo_url and project.tracked_branch
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Tracking a branch needs a repository URL and a branch name",
+        )
+
+
+def _start_branch_scan(
+    db: Session, request: Request, user: User, project: Project
+) -> None:
+    """Bring the tracked branch's version up to date and scan its head now.
+
+    Saving the tracking settings is the maintainer's request for a scan; the
+    poller then re-scans every branch_poll_interval_hours from this point.
+    """
+
+    from app.core.features import is_enabled
+
+    now = datetime.utcnow()
+    version, created = ensure_branch_version(db, project)
+    if created:
+        record_entity_changelog(
+            db,
+            entity_type="project_version",
+            entity_id=version.id,
+            action="created",
+            before=None,
+            after=project_version_changelog_state(db, version),
+            user=user,
+            request_method=request.method,
+            request_path=request.url.path,
+        )
+    launch = (
+        is_enabled("dependency_scans")
+        and settings.dependency_discovery_enabled
+        and not scan_in_flight(version, now)
+    )
+    if launch:
+        mark_scan_queued(version)
+    project.branch_last_polled_at = now
+    db.commit()
+
+    if launch:
+        try:
+            from app.tasks.dependency_discovery import (
+                discover_project_version_dependencies,
+            )
+
+            discover_project_version_dependencies.delay(version.id)
+        except Exception:
+            # The queued-discovery dispatcher picks it up on its next beat.
+            logger.exception(
+                "Failed to enqueue branch scan for project_id=%s", project.id
+            )
+
+
 @router.post("/v1/projects")
 def create_project(
     request: Request,
@@ -1003,8 +1063,19 @@ def create_project(
         supported_signing_algorithms=_clean_tag_list(
             payload.supported_signing_algorithms
         ),
+        track_branch=bool(payload.track_branch),
+        tracked_repo_url=payload.tracked_repo_url,
+        tracked_branch=payload.tracked_branch,
+        branch_poll_interval_hours=(
+            payload.branch_poll_interval_hours or DEFAULT_POLL_INTERVAL_HOURS
+        ),
         created_by_user_id=user.id,
     )
+    _require_branch_tracking_fields(project)
+    if is_tracking(project):
+        # Committed with the project, so the poller never sees a tracked
+        # branch that this request is about to scan as overdue.
+        project.branch_last_polled_at = datetime.utcnow()
 
     db.add(project)
     db.commit()
@@ -1028,6 +1099,12 @@ def create_project(
         request_path=request.url.path,
     )
     db.commit()
+
+    if is_tracking(project):
+        _start_branch_scan(db, request, user, project)
+        db.refresh(project)
+        latest = _latest_version(project)
+        return _serialize_project(project, latest_version=latest, capability_paths=[])
 
     if str(payload.release_rss_feed_url or "").strip():
         from app.core.features import is_enabled
@@ -1326,6 +1403,16 @@ def update_project(
     updates = payload.model_dump(exclude_unset=True)
     rss_changed = "release_rss_feed_url" in updates
     before_feed_url = str(project.release_rss_feed_url or "").strip()
+    before_tracking = (
+        is_tracking(project),
+        project.tracked_repo_url,
+        project.tracked_branch,
+    )
+    if updates.get("branch_poll_interval_hours", 0) is None:
+        # The interval always has a value; an explicit null keeps the stored one.
+        updates.pop("branch_poll_interval_hours")
+    if "track_branch" in updates:
+        updates["track_branch"] = bool(updates["track_branch"])
 
     if "organisation" in updates or "organisation_id" in updates:
         org_name, org_id = _resolve_organisation(db, payload)
@@ -1354,6 +1441,17 @@ def update_project(
             value = clean_release_feed_ignore_patterns(value)
         setattr(project, key, value)
 
+    _require_branch_tracking_fields(project)
+    tracking_target_changed = is_tracking(project) and before_tracking != (
+        True,
+        project.tracked_repo_url,
+        project.tracked_branch,
+    )
+    if tracking_target_changed:
+        # Claimed before commit: the poller's compare-and-set loses to this
+        # request, which scans the new target itself below.
+        project.branch_last_polled_at = datetime.utcnow()
+
     # If the release feed URL changed, reset polling state so the worker can baseline.
     if rss_changed:
         project.release_rss_last_entry_id = None
@@ -1377,6 +1475,12 @@ def update_project(
     db.commit()
     db.refresh(project)
 
+    # Starting to track a branch, or pointing tracking at another repository
+    # or branch, scans the new head straight away.
+    if tracking_target_changed:
+        _start_branch_scan(db, request, user, project)
+        db.refresh(project)
+
     # A newly attached release feed starts full discovery (see
     # discover_project_release_feed): the maintainer has told the catalogue
     # nothing yet, so the whole feed is imported rather than only the newest
@@ -1385,6 +1489,7 @@ def update_project(
         rss_changed
         and str(project.release_rss_feed_url or "").strip()
         and not before_feed_url
+        and not project.track_branch
     ):
         from app.core.features import is_enabled
         from app.tasks.release_feed import discover_project_release_feed
@@ -1628,7 +1733,7 @@ def create_project_version(
             )
 
     if is_latest:
-        _set_latest_version(db, project_id, version.id)
+        set_latest_version(db, project_id, version.id)
     elif (
         not is_draft
         and requested_latest is None
@@ -1636,7 +1741,7 @@ def create_project_version(
             db, project_id, version.version, candidate_version_id=version.id
         )
     ):
-        _set_latest_version(db, project_id, version.id)
+        set_latest_version(db, project_id, version.id)
     else:
         _ensure_project_has_latest(db, project_id)
 
@@ -1750,7 +1855,7 @@ def update_project_version(
         )
 
         if is_latest_update is True:
-            _set_latest_version(db, version.project_id, version.id)
+            set_latest_version(db, version.project_id, version.id)
         elif is_latest_update is False:
             version.is_latest = False
             db.add(version)
@@ -1762,7 +1867,7 @@ def update_project_version(
             version.version,
             candidate_version_id=version.id,
         ):
-            _set_latest_version(db, version.project_id, version.id)
+            set_latest_version(db, version.project_id, version.id)
 
     db.flush()
     db.refresh(version)
@@ -3547,7 +3652,7 @@ def _notify_group_manifest_shared(
 
     # Build link (optional)
     base = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    url = f"{base}/saved-manifests.html?id={manifest.id}" if base else None
+    url = f"{base}/manifests.html?id={manifest.id}" if base else None
 
     sent = 0
     for u in users:

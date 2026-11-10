@@ -65,3 +65,47 @@ test("applyFeatureVisibility hides links of disabled pages", () => {
   // With no document links, the call must be a no-op without throwing.
   OSPMAE.applyFeatureVisibility();
 });
+
+test("csvCell quotes cells and neutralises formula prefixes", () => {
+  const cell = OSPMAE.csvCell;
+  assert.equal(cell("plain"), '"plain"');
+  assert.equal(cell('say "hi"'), '"say ""hi"""');
+  assert.equal(cell(null), '""');
+  assert.equal(cell(3), '"3"');
+  for (const hostile of ["=1+1", "+cmd", "-2+3", "@SUM(A1)", "\tlead"]) {
+    assert.equal(cell(hostile), `"'${hostile}"`);
+  }
+  // Interior formula characters are ordinary text.
+  assert.equal(cell("a=b"), '"a=b"');
+});
+
+test("canAskQuestions widens the answering roles with the asking ones", () => {
+  const ask = (role) => {
+    OSPMAE.state.me = { username: "u", effective_role: role };
+    return OSPMAE.canAskQuestions();
+  };
+  for (const role of ["admin", "maintainer", "contributor", "engineer"]) {
+    assert.equal(ask(role), true, role);
+  }
+  for (const role of ["product_owner", "architect"]) {
+    assert.equal(ask(role), true, role);
+  }
+  for (const role of ["viewer", "pending"]) {
+    assert.equal(ask(role), false, role);
+  }
+  OSPMAE.state.me = null;
+});
+
+test("start pages offer Projects and Manifests, never a retired page", () => {
+  const values = OSPMAE.ALLOWED_START_PAGES.map((p) => p.value);
+  assert.equal(values[0], "/index.html");
+  assert.ok(values.includes("/manifests.html"));
+  for (const retired of [
+    "/saved-manifests.html",
+    "/project-manage.html",
+    "/dashboard.html",
+  ]) {
+    assert.equal(values.includes(retired), false, retired);
+    assert.equal(OSPMAE.normalizeStartPage(retired), "/index.html");
+  }
+});

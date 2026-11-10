@@ -285,6 +285,63 @@ def test_dependency_index_pagination_ecosystems_and_vuln_filter(client, db):
     assert {row["name"] for row in by_eco["dependencies"]} == {"plain-dep"}
 
 
+def test_dependency_detail_resolves_every_reference_shape(client, db):
+    """The browser deep-links by package UUID; legacy links carry numbers.
+
+    Each shape lands on the newest recorded version of the package, and a
+    package without versions answers 404 instead of a server error.
+    """
+
+    from app.db.models import DependencyPackage, DependencyVersion
+
+    with SessionLocal() as s:
+        pkg = DependencyPackage(
+            ecosystem="npm", name="detail-dep", normalized_name="detail-dep"
+        )
+        bare = DependencyPackage(
+            ecosystem="npm", name="no-versions", normalized_name="no-versions"
+        )
+        s.add_all([pkg, bare])
+        s.flush()
+        older = DependencyVersion(dependency_id=pkg.id, version="1.0.0")
+        newer = DependencyVersion(dependency_id=pkg.id, version="2.0.0")
+        s.add_all([older, newer])
+        s.commit()
+        pkg_public_id = str(pkg.public_id)
+        bare_public_id = str(bare.public_id)
+        pkg_id = int(pkg.id)
+        older_id = int(older.id)
+        newer_id = int(newer.id)
+
+    c, _admin = auth_client(username="deps-detail", password=PASSWORD, role="admin")
+
+    by_uuid = c.get(f"/v1/dependencies/{pkg_public_id}")
+    assert by_uuid.status_code == 200, by_uuid.text
+    assert by_uuid.json()["dependency_version"]["dependency_version_id"] == newer_id
+    assert by_uuid.json()["dependency_version"]["name"] == "detail-dep"
+
+    # Upper-case UUIDs (hand-typed links) resolve the same way.
+    upper = c.get(f"/v1/dependencies/{pkg_public_id.upper()}")
+    assert upper.status_code == 200, upper.text
+    assert upper.json()["dependency_version"]["dependency_version_id"] == newer_id
+
+    by_version_id = c.get(f"/v1/dependencies/{older_id}")
+    assert by_version_id.status_code == 200, by_version_id.text
+    assert (
+        by_version_id.json()["dependency_version"]["dependency_version_id"] == older_id
+    )
+
+    # A number that names no version falls back to the package of that id.
+    missing_version_id = max(older_id, newer_id) + 1000
+    if missing_version_id != pkg_id:
+        assert c.get(f"/v1/dependencies/{missing_version_id}").status_code == 404
+
+    assert c.get(f"/v1/dependencies/{bare_public_id}").status_code == 404
+    unknown = "00000000-0000-4000-8000-000000000000"
+    assert c.get(f"/v1/dependencies/{unknown}").status_code == 404
+    assert c.get("/v1/dependencies/not-a-reference").status_code == 404
+
+
 def test_verification_queue_reports_why_it_refused(client, db):
     from app.db.models import UserEmail
 

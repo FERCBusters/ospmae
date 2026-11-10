@@ -623,6 +623,20 @@ class Project(Base):
     release_rss_last_modified: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
+
+    # Branch tracking: instead of following releases, the project follows the
+    # head of one branch, re-cloned and scanned every branch_poll_interval_hours
+    # (app/services/branch_tracking.py keeps the version row named after the
+    # branch). The branch name is that version's label, so it shares its width.
+    track_branch: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    tracked_repo_url: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    tracked_branch: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    branch_poll_interval_hours: Mapped[int] = mapped_column(
+        Integer, default=24, nullable=False
+    )
+    branch_last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
     supported_profiles: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )

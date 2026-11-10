@@ -504,3 +504,83 @@ def test_replay_flags_a_duplicated_creation(tmp_path: Path) -> None:
     executor.apply([seed_dir / "0002_duplicate.py"])
     assert executor.findings, "a duplicated column must be flagged"
     assert any("0002_duplicate.py" in finding for finding in executor.findings)
+
+
+def test_page_moves_rewrite_saved_start_pages_and_shortcuts() -> None:
+    """0033 sends stored links to the pages that now own them: builder
+    filters to Manifests, the old dashboard to the entry page, and project
+    edits to the editor; the bare entry page stays the entry page."""
+    if not _IS_POSTGRES:
+        return
+    cfg = _alembic_config()
+    moves = {
+        "/index.html": "/index.html",
+        "/": "/",
+        "/index.html?framework=uwra&q=wallet": "/manifests.html?framework=uwra&q=wallet",
+        "/?framework=uwra": "/manifests.html?framework=uwra",
+        "/saved-manifests.html": "/manifests.html",
+        "/saved-manifests.html?id=7": "/manifests.html?id=7",
+        "/dashboard.html?framework=uwra": "/index.html?framework=uwra",
+        "/my-questions.html": "/account.html#questions",
+        "/project-manage.html?id=12": "/project-edit.html?id=12",
+        "/project-manage.html?create=1": "/index.html",
+        "/project-manage.html": "/index.html",
+        "/project.html?id=3": "/project.html?id=3",
+        "/dashboard.html.bak": "/dashboard.html.bak",
+    }
+    start_pages = {
+        "/saved-manifests.html": "/manifests.html",
+        "/project-manage.html": "/index.html",
+        "/framework-manage.html": "/framework-manage.html",
+    }
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        command.upgrade(cfg, "0032_project_branch_tracking")
+        with engine.begin() as conn:
+            for index, page in enumerate(start_pages):
+                user_id = conn.execute(
+                    text(
+                        "INSERT INTO users (username, password_hash, role, is_active, "
+                        "created_at) VALUES (:u, 'x', 'admin', true, now()) "
+                        "RETURNING id"
+                    ),
+                    {"u": f"page-move-{index}"},
+                ).scalar_one()
+                conn.execute(
+                    text(
+                        "INSERT INTO user_preferences (user_id, default_start_page, "
+                        "node_colors, created_at, updated_at) "
+                        "VALUES (:id, :page, '{}'::jsonb, now(), now())"
+                    ),
+                    {"id": user_id, "page": page},
+                )
+                if index == 0:
+                    for n, url in enumerate(moves):
+                        conn.execute(
+                            text(
+                                "INSERT INTO user_shortcuts (user_id, name, url, "
+                                "created_at, updated_at) "
+                                "VALUES (:id, :name, :url, now(), now())"
+                            ),
+                            {"id": user_id, "name": f"s{n}", "url": url},
+                        )
+        command.upgrade(cfg, "head")
+        with engine.begin() as conn:
+            stored = dict(
+                conn.execute(text("SELECT name, url FROM user_shortcuts")).all()
+            )
+            pages = [
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT p.default_start_page FROM user_preferences p "
+                        "JOIN users u ON u.id = p.user_id ORDER BY u.username"
+                    )
+                ).all()
+            ]
+        assert [stored[f"s{n}"] for n in range(len(moves))] == list(moves.values())
+        assert pages == list(start_pages.values())
+    finally:
+        _drop_chain()
