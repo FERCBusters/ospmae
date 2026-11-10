@@ -375,6 +375,7 @@
   }
 
   async function init() {
+    const params = new URLSearchParams(window.location.search || "");
     // The id is either a legacy numeric dependency-version id or the UUID
     // public id the dependency browser deep-links; the API resolves both.
     const id = (params.get("id") || "").trim();

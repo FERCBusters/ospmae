@@ -2,7 +2,7 @@
 
 /* OSPMAE legacy helpers (kept small): */
 
-/* Project grid used on the Find projects page */
+/* Project grid used on the Manifest builder page */
 .project-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
@@ -20,7 +20,7 @@
   --accent-100: var(--mosp-accent-100, #f2e9ff);
 }
 
-/* -------- Cards / tags used in Find projects -------- */
+/* -------- Cards / tags used in Manifest builder -------- */
 .project-card {
   border: 1px solid var(--border);
   border-radius: 14px;

@@ -57,13 +57,13 @@
     links: [
       {
         key: "dashboard",
-        label: "Dependency dashboard",
+        label: "Projects",
         href: "/dashboard.html",
         requireAny: ["can_view_catalogue"],
       },
       {
         key: "find",
-        label: "Find projects",
+        label: "Manifest builder",
         href: "/index.html",
         requireAny: ["can_view_catalogue"],
       },

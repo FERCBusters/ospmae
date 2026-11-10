@@ -666,7 +666,7 @@
   // Start page choices shown in Preferences.
   // `permission` is used client-side only to filter options by role.
   const ALLOWED_START_PAGES = [
-    { value: "/index.html", label: "Find projects", permission: "public" },
+    { value: "/index.html", label: "Manifest builder", permission: "public" },
     {
       value: "/saved-manifests.html",
       label: "Saved manifests",

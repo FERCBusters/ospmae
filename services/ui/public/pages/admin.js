@@ -212,6 +212,24 @@
     "#entity-changelog": "subtab-changelog",
   });
 
+  // The inner audit/changelog views are plain divs, not Bootstrap tab-panes,
+  // so this level is switched by hand: reveal the target view, hide the
+  // other, and keep both buttons' active state in step.
+  function showAuditView(which) {
+    const auditView = document.getElementById("auditView");
+    const changelogView = document.getElementById("changelogView");
+    const auditBtn = document.getElementById("subtab-audit");
+    const changelogBtn = document.getElementById("subtab-changelog");
+    if (auditView && changelogView) {
+      auditView.hidden = which !== "audit";
+      changelogView.hidden = which !== "changelog";
+    }
+    if (auditBtn) auditBtn.classList.toggle("active", which === "audit");
+    if (changelogBtn) {
+      changelogBtn.classList.toggle("active", which === "changelog");
+    }
+  }
+
   function activateAdminTabFromHash() {
     const hash = (window.location.hash || "").toLowerCase();
     const tabId = ADMIN_TAB_HASH_TO_ID[hash];
@@ -225,19 +243,16 @@
     }
     // The combined page keeps audit trail and changelog as inner tabs.
     const subTabId = AUDIT_SUBTAB_HASH[hash];
-    if (subTabId) {
-      const subTab = document.getElementById(subTabId);
-      if (subTab) {
-        try {
-          window.bootstrap.Tab.getOrCreateInstance(subTab).show();
-        } catch (_) {
-          // ignore tab activation failures
-        }
-      }
-    }
+    if (subTabId === "subtab-changelog") showAuditView("changelog");
   }
 
   function initAdminTabs() {
+    document
+      .getElementById("subtab-audit")
+      ?.addEventListener("click", () => showAuditView("audit"));
+    document
+      .getElementById("subtab-changelog")
+      ?.addEventListener("click", () => showAuditView("changelog"));
     document
       .querySelectorAll('#adminTabs button[data-bs-toggle="tab"]')
       .forEach((button) => {

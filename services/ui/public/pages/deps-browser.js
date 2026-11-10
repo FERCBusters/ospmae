@@ -106,15 +106,18 @@ async function load(rows) {
   const controls = buildBrowser();
   if (!controls) return;
 
+  // Wire from the elements buildBrowser() created rather than re-querying
+  // the document; a missed prepend must fail closed (no browser wiring and
+  // no listeners) instead of throwing half-initialised.
+  if (!controls.search || !controls.ecosystem || !controls.vulnerable) {
+    return;
+  }
   let timer = null;
-  const searchEl = document.getElementById("depSearch");
-  const ecoEl = document.getElementById("depEcosystem");
-  const vulnEl = document.getElementById("depVulnerable");
-  searchEl.addEventListener("input", () => {
+  controls.search.addEventListener("input", () => {
     clearTimeout(timer);
     timer = setTimeout(() => load(controls.rows), 300);
   });
-  ecoEl.addEventListener("change", () => load(controls.rows));
-  vulnEl.addEventListener("change", () => load(controls.rows));
+  controls.ecosystem.addEventListener("change", () => load(controls.rows));
+  controls.vulnerable.addEventListener("change", () => load(controls.rows));
   await load(controls.rows);
 })();
