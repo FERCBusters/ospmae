@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from app.api.payloads import (
     FrameworkCreatePayload,
     FrameworkNodeCreatePayload,
-    FrameworkUpdatePayload,
     FrameworkNodeUpdatePayload,
+    FrameworkUpdatePayload,
 )
 from app.db.capability_taxonomy import ensure_default_frameworks
 from app.db.models import (
@@ -333,7 +333,7 @@ def update_framework(
     db.add(fw)
     db.commit()
 
-    return get_framework(framework_id=framework_id, db=db, user=user)
+    return get_framework(framework_id=framework_id, db=db)
 
 
 @router.delete("/v1/frameworks/{framework_id}")

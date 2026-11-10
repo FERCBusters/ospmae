@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import tomllib
 
 try:
     import yaml  # type: ignore
@@ -23,13 +22,41 @@ class DiscoveredDependency:
     source_file: str
 
 
-def _norm_name(name: str) -> str:
+_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^/\s:@]+):([^/\s@]+)@")
+
+
+def redact_url(value: str) -> str:
+    """Mask userinfo credentials inside URL-shaped text for error output."""
+
+    return _CRED_RE.sub(r"\1***:***@", str(value or ""))
+
+
+def _bounded_read(path: Path, max_bytes: int) -> bytes | None:
+    """Read at most ``max_bytes`` of a file, checking its size first.
+
+    All parser cost grows with input size, so the byte cap is applied before
+    anything is read: a multi-gigabyte file costs a stat call, not memory.
+    """
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if not stat.st_size or stat.st_size > max_bytes:
+        return None
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _norm_name(name: Any) -> str:
     return str(name or "").strip()
 
 
 def parse_package_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     data = json.loads(raw.decode("utf-8", errors="replace") or "{}")
     out: list[DiscoveredDependency] = []
@@ -81,8 +108,8 @@ _YARN_NAME_RE = re.compile(r"^(?P<name>@[^/]+/[^@]+|[^@]+)@")
 
 
 def parse_yarn_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     text = raw.decode("utf-8", errors="replace")
     out: list[DiscoveredDependency] = []
@@ -113,8 +140,8 @@ def parse_yarn_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]
 def parse_pnpm_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
     if yaml is None:
         return []
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     data = yaml.safe_load(raw.decode("utf-8", errors="replace"))
     out: list[DiscoveredDependency] = []
@@ -139,8 +166,8 @@ def parse_pnpm_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]
 
 
 def parse_cargo_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     data = tomllib.loads(raw.decode("utf-8", errors="replace"))
     out: list[DiscoveredDependency] = []
@@ -157,8 +184,8 @@ def parse_cargo_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency
 
 
 def parse_poetry_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     data = tomllib.loads(raw.decode("utf-8", errors="replace"))
     out: list[DiscoveredDependency] = []
@@ -175,8 +202,8 @@ def parse_poetry_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependenc
 
 
 def parse_pipfile_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     data = json.loads(raw.decode("utf-8", errors="replace") or "{}")
     out: list[DiscoveredDependency] = []
@@ -204,8 +231,8 @@ _REQ_RE = re.compile(
 
 
 def parse_requirements_txt(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     out: list[DiscoveredDependency] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
@@ -231,8 +258,8 @@ def parse_requirements_txt(path: Path, *, max_bytes: int) -> list[DiscoveredDepe
 
 
 def parse_go_mod(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     text = raw.decode("utf-8", errors="replace")
     out: list[DiscoveredDependency] = []
@@ -266,8 +293,8 @@ def parse_go_mod(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
 
 
 def parse_go_sum(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     out: list[DiscoveredDependency] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
@@ -286,8 +313,8 @@ def parse_go_sum(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
 
 
 def parse_composer_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
-    raw = path.read_bytes()
-    if len(raw) > max_bytes:
+    raw = _bounded_read(path, max_bytes)
+    if raw is None:
         return []
     data = json.loads(raw.decode("utf-8", errors="replace") or "{}")
     out: list[DiscoveredDependency] = []

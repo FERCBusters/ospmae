@@ -7,8 +7,8 @@ Create Date: 2026-06-23
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0025_company_to_organisation"
 down_revision = "0024_purge_auth_callback"
@@ -42,14 +42,16 @@ def _rename_jsonb_key(
 ) -> None:
     if not _has_table(table_name):
         return
-    op.execute(sa.text(f"""
+    op.execute(
+        sa.text(f"""
             UPDATE {table_name}
             SET {column_name} = ({column_name} - :old_name)
                 || jsonb_build_object(:new_name, {column_name}->:old_name)
             WHERE {column_name} IS NOT NULL
               AND {column_name} ? :old_name
               AND NOT ({column_name} ? :new_name)
-            """).bindparams(old_name=old_name, new_name=new_name))
+            """).bindparams(old_name=old_name, new_name=new_name)
+    )
 
 
 def _rename_changelog_change_field(
@@ -57,7 +59,8 @@ def _rename_changelog_change_field(
 ) -> None:
     if not _has_table("entity_changelogs"):
         return
-    op.execute(sa.text("""
+    op.execute(
+        sa.text("""
             UPDATE entity_changelogs
             SET changes = COALESCE((
                 SELECT jsonb_agg(
@@ -74,17 +77,20 @@ def _rename_changelog_change_field(
                     AS items(change_item, ordinality)
             ), '[]'::jsonb)
             WHERE changes @> jsonb_build_array(jsonb_build_object('field', :old_name))
-            """).bindparams(old_name=old_name, new_name=new_name, new_label=new_label))
+            """).bindparams(old_name=old_name, new_name=new_name, new_label=new_label)
+    )
 
 
 def _replace_changelog_summary(old_label: str, new_label: str) -> None:
     if not _has_table("entity_changelogs"):
         return
-    op.execute(sa.text("""
+    op.execute(
+        sa.text("""
             UPDATE entity_changelogs
             SET summary = replace(summary, :old_label, :new_label)
             WHERE summary LIKE ('%' || :old_label || '%')
-            """).bindparams(old_label=old_label, new_label=new_label))
+            """).bindparams(old_label=old_label, new_label=new_label)
+    )
 
 
 def upgrade() -> None:

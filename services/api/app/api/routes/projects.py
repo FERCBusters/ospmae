@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import csv
-import logging
 import io
 import json
+import logging
 from collections import defaultdict
 from datetime import datetime
 from io import BytesIO
@@ -12,64 +12,63 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from openpyxl import Workbook
-from sqlalchemy import or_, func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import settings
-
-from app.services.mailer import send_manifest_shared_email
-from app.services.notification_recipients import (
-    notification_email_for_user,
-    notification_emails_for_users,
-)
-from app.services.versioning import is_semantically_newer, parse_semanticish_version
-from app.services.entity_changelog import (
-    list_entity_changelogs,
-    project_changelog_state,
-    project_version_changelog_state,
-    record_entity_changelog,
-)
-
 from app.api.payloads import (
+    ManifestClonePayload,
     ManifestCreatePayload,
     ManifestSharingUpdatePayload,
-    ManifestClonePayload,
     ProjectCreatePayload,
-    ProjectUpdatePayload,
-    ProjectVersionFrameworkNodesPayload,
-    ProjectVersionCreatePayload,
-    ProjectVersionUpdatePayload,
     ProjectSubscriptionUpdatePayload,
+    ProjectUpdatePayload,
+    ProjectVersionCreatePayload,
+    ProjectVersionFrameworkNodesPayload,
+    ProjectVersionUpdatePayload,
     clean_release_feed_ignore_patterns,
 )
+from app.core.config import settings
+from app.core.features import require_feature
 from app.db.models import (
-    Framework,
-    FrameworkNode,
-    Project,
-    ProjectOwnerGroup,
-    ProjectSubscription,
-    ProjectVersion,
-    ProjectVersionFrameworkNode,
     DependencyPackage,
     DependencyVersion,
     DependencyVulnerability,
-    ProjectVersionDependency,
+    Framework,
+    FrameworkNode,
     Group,
     Manifest,
     ManifestProject,
     ManifestProjectFrameworkNode,
+    Project,
+    ProjectOwnerGroup,
+    ProjectSubscription,
+    ProjectVersion,
+    ProjectVersionDependency,
+    ProjectVersionFrameworkNode,
     User,
     UserGroup,
 )
 from app.db.session import get_db
 from app.security.auth import get_current_user
 from app.security.permissions import (
-    PERM_PROJECT_WRITE,
-    PERM_PROJECT_DIFF,
     PERM_MANIFEST_EXPORT,
+    PERM_PROJECT_DIFF,
+    PERM_PROJECT_WRITE,
     has_permission,
 )
-from app.security.roles import ROLE_ADMIN, ROLE_MAINTAINER, attach_effective_role
+from app.security.roles import ROLE_ADMIN, attach_effective_role
+from app.services.entity_changelog import (
+    list_entity_changelogs,
+    project_changelog_state,
+    project_version_changelog_state,
+    record_entity_changelog,
+)
+from app.services.mailer import send_manifest_shared_email
+from app.services.notification_recipients import (
+    notification_email_for_user,
+    notification_emails_for_users,
+)
+from app.services.versioning import is_semantically_newer, parse_semanticish_version
 
 router = APIRouter()
 
@@ -214,6 +213,9 @@ def _normalize_csv_ints(value: str | None) -> list[int]:
             continue
         seen.add(num)
         out.append(num)
+        if len(out) >= 1000:
+            # Bound the IN-clause any CSV filter can build.
+            break
     return out
 
 
@@ -298,25 +300,25 @@ def _project_owner_group_ids(db: Session, project_id: int) -> set[int]:
 def _ensure_project_manage_access(db: Session, user: User, project: Project) -> None:
     _require_write_access(db, user)
 
-    # Admin can always manage.
+    # Admin can always manage. Every other role -- maintainer included -- is
+    # restricted to projects they (or one of their groups) created, so a
+    # granted project.write permission never widens object scope.
     effective_role = attach_effective_role(db, user)
     if effective_role == ROLE_ADMIN:
         return
 
-    # Maintainers are restricted to projects they (or their groups) created.
-    if effective_role == ROLE_MAINTAINER:
-        if project.created_by_user_id == user.id:
-            return
+    if project.created_by_user_id == user.id:
+        return
 
-        user_groups = _user_group_ids(db, user.id)
-        owner_groups = _project_owner_group_ids(db, project.id)
-        if user_groups and owner_groups and user_groups.intersection(owner_groups):
-            return
+    user_groups = _user_group_ids(db, user.id)
+    owner_groups = _project_owner_group_ids(db, project.id)
+    if user_groups and owner_groups and user_groups.intersection(owner_groups):
+        return
 
-        raise HTTPException(
-            status_code=403,
-            detail="You can only edit or delete projects created by you or one of your groups.",
-        )
+    raise HTTPException(
+        status_code=403,
+        detail="You can only edit or delete projects created by you or one of your groups.",
+    )
 
 
 def _can_run_dependency_discovery(db: Session, user: User, project: Project) -> bool:
@@ -637,7 +639,7 @@ def _get_project_query(
     project_ids: list[int] | None = None,
     languages: list[str] | None = None,
     statuses: list[str] | None = None,
-) -> Query:
+) -> Any:
     query = db.query(Project).options(
         selectinload(Project.versions),
         selectinload(Project.owner_group_links),
@@ -837,7 +839,7 @@ def _selected_capability_tree(
             continue
         payload = items[n.id]
         if payload["parent_id"] and payload["parent_id"] in items:
-            items[payload["parent_id"]]["children"].append(payload)
+            items[payload["parent_id"]]["children"].append(payload)  # type: ignore[index,attr-defined]  # parent chains self-validate above
         else:
             roots.append(payload)
 
@@ -938,7 +940,7 @@ def create_project(
         link_to_app=payload.link_to_app,
         release_rss_feed_url=(payload.release_rss_feed_url or None),
         release_rss_ignore_patterns=clean_release_feed_ignore_patterns(
-            payload.release_rss_ignore_patterns
+            payload.release_rss_ignore_patterns  # type: ignore[arg-type]
         ),
         supported_profiles=_clean_tag_list(payload.supported_profiles),
         supported_formats=_clean_tag_list(payload.supported_formats),
@@ -979,6 +981,138 @@ def create_project(
     db.commit()
 
     return _serialize_project(project, latest_version=None, capability_paths=[])
+
+
+@router.get(
+    "/v1/projects/compare", dependencies=[Depends(require_feature("comparisons"))]
+)
+def compare_projects(
+    left_project_id: int = Query(..., ge=1),
+    right_project_id: int = Query(..., ge=1),
+    left_version_id: int | None = Query(None, ge=1),
+    right_version_id: int | None = Query(None, ge=1),
+    framework_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate a unified diff between two projects (and optionally specific versions).
+
+    Used by contributor/engineer roles for comparison workflows.
+    """
+    _require_diff_access(db, user)
+
+    left_project = (
+        db.query(Project)
+        .options(selectinload(Project.owner_group_links))
+        .filter(Project.id == left_project_id)
+        .one_or_none()
+    )
+    right_project = (
+        db.query(Project)
+        .options(selectinload(Project.owner_group_links))
+        .filter(Project.id == right_project_id)
+        .one_or_none()
+    )
+    if not left_project or not right_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    can_view_drafts = _can_view_drafts(db, user, left_project) and _can_view_drafts(
+        db, user, right_project
+    )
+
+    def pick_version(project_id: int, version_id: int | None) -> ProjectVersion | None:
+        if version_id:
+            version = (
+                db.query(ProjectVersion)
+                .filter(
+                    ProjectVersion.id == version_id,
+                    ProjectVersion.project_id == project_id,
+                )
+                .one_or_none()
+            )
+            if (
+                version
+                and bool(getattr(version, "is_draft", False))
+                and not can_view_drafts
+            ):
+                # Drafts stay invisible to the comparison endpoint unless the
+                # caller can view drafts of both sides, matching every other
+                # version-reading route.
+                return None
+            return version
+        query = db.query(ProjectVersion).filter(ProjectVersion.project_id == project_id)
+        if not can_view_drafts:
+            query = query.filter(ProjectVersion.is_draft == False)  # noqa: E712
+        return query.order_by(
+            ProjectVersion.is_latest.desc(),
+            ProjectVersion.release_date.desc().nullslast(),
+            ProjectVersion.id.desc(),
+        ).first()
+
+    left_version = pick_version(left_project_id, left_version_id)
+    right_version = pick_version(right_project_id, right_version_id)
+
+    framework = _ensure_framework(db, framework_id)
+    cap_nodes = _fetch_capabilities(db, framework.id)
+    cap_paths = _capability_paths(cap_nodes)
+
+    def version_cap_paths(version: ProjectVersion | None) -> list[str]:
+        if not version:
+            return []
+        ids = [
+            int(cid)
+            for (cid,) in (
+                db.query(ProjectVersionFrameworkNode.framework_node_id)
+                .join(
+                    FrameworkNode,
+                    FrameworkNode.id == ProjectVersionFrameworkNode.framework_node_id,
+                )
+                .filter(
+                    ProjectVersionFrameworkNode.project_version_id == version.id,
+                    FrameworkNode.framework_id == framework.id,
+                )
+                .all()
+            )
+            if cid is not None
+        ]
+        out = [cap_paths.get(cid, str(cid)) for cid in ids if cid in cap_paths]
+        out.sort()
+        return out
+
+    left_obj = _serialize_project(
+        left_project,
+        latest_version=left_version,
+        capability_paths=version_cap_paths(left_version),
+    )
+    right_obj = _serialize_project(
+        right_project,
+        latest_version=right_version,
+        capability_paths=version_cap_paths(right_version),
+    )
+
+    left_text = json.dumps(left_obj, indent=2, sort_keys=True, default=str).splitlines(
+        keepends=True
+    )
+    right_text = json.dumps(
+        right_obj, indent=2, sort_keys=True, default=str
+    ).splitlines(keepends=True)
+
+    import difflib
+
+    diff = "".join(
+        difflib.unified_diff(
+            left_text,
+            right_text,
+            fromfile=f"project:{left_project_id}",
+            tofile=f"project:{right_project_id}",
+        )
+    )
+
+    return {
+        "left": left_obj,
+        "right": right_obj,
+        "diff": diff,
+    }
 
 
 @router.get("/v1/projects/{project_id}")
@@ -1027,7 +1161,7 @@ def get_project(
         ),
         "versions": [
             {
-                **_serialize_version(v),
+                **_serialize_version(v),  # type: ignore[dict-item]  # values are JSON-serialised
                 "capability_paths": capability_paths_by_version.get(v.id, []),
             }
             for v in versions
@@ -1066,7 +1200,7 @@ def list_project_versions(
         "can_view_drafts": bool(can_view_drafts),
         "items": [
             {
-                **_serialize_version(v),
+                **_serialize_version(v),  # type: ignore[dict-item]  # values are JSON-serialised
                 "capability_paths": capability_paths_by_version.get(v.id, []),
             }
             for v in versions
@@ -2186,7 +2320,7 @@ def _collect_manifest_rows(
 def _manifest_rows_from_saved(db: Session, manifest: Manifest) -> list[dict]:
     rows: list[dict] = []
     version_ids = [
-        int(item.project_version_id)
+        int(item.project_version_id)  # type: ignore[arg-type]
         for item in (manifest.items or [])
         if getattr(item, "project_version_id", None)
     ]
@@ -2227,9 +2361,10 @@ def _manifest_rows_from_saved(db: Session, manifest: Manifest) -> list[dict]:
                     else None
                 ),
                 "capability_ids": [
-                    int(cp["capability_id"])
+                    int(cp["capability_id"])  # type: ignore[arg-type]  # filtered to int above
                     for cp in capability_pairs
-                    if cp.get("capability_id")
+                    if cp.get("capability_id") is not None
+                    and isinstance(cp.get("capability_id"), int)
                 ],
                 "capabilities": [str(cp["capability_path"]) for cp in capability_pairs],
                 "capability_pairs": capability_pairs,
@@ -2778,7 +2913,10 @@ def _save_manifest_snapshot(
     return _ensure_manifest_access(db, user, manifest.id)
 
 
-@router.get("/v1/projects/{project_id}/manifest/export")
+@router.get(
+    "/v1/projects/{project_id}/manifest/export",
+    dependencies=[Depends(require_feature("manifests"))],
+)
 def export_project_manifest(
     project_id: int,
     format: str = Query(default="json"),
@@ -2902,7 +3040,10 @@ def export_project_manifest(
     return _manifest_response([row], fmt=effective_format, name=export_name)
 
 
-@router.post("/v1/projects/{project_id}/manifest/save")
+@router.post(
+    "/v1/projects/{project_id}/manifest/save",
+    dependencies=[Depends(require_feature("manifests"))],
+)
 def save_project_manifest(
     project_id: int,
     payload: ManifestCreatePayload,
@@ -3057,7 +3198,9 @@ def save_project_manifest(
     }
 
 
-@router.get("/v1/manifests/export")
+@router.get(
+    "/v1/manifests/export", dependencies=[Depends(require_feature("manifests"))]
+)
 def export_manifest(
     format: str = Query(default="json"),
     fmt: str | None = Query(default=None),
@@ -3098,7 +3241,7 @@ def export_manifest(
     return _manifest_response(rows, fmt=effective_format, name=name)
 
 
-@router.post("/v1/manifests")
+@router.post("/v1/manifests", dependencies=[Depends(require_feature("manifests"))])
 def save_manifest(
     payload: ManifestCreatePayload,
     db: Session = Depends(get_db),
@@ -3134,7 +3277,7 @@ def save_manifest(
     }
 
 
-@router.get("/v1/manifests")
+@router.get("/v1/manifests", dependencies=[Depends(require_feature("manifests"))])
 def list_manifests(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -3199,7 +3342,9 @@ def list_manifests(
     }
 
 
-@router.get("/v1/manifests/{manifest_id}")
+@router.get(
+    "/v1/manifests/{manifest_id}", dependencies=[Depends(require_feature("manifests"))]
+)
 def get_manifest(
     manifest_id: int,
     db: Session = Depends(get_db),
@@ -3240,7 +3385,9 @@ def get_manifest(
     }
 
 
-@router.delete("/v1/manifests/{manifest_id}")
+@router.delete(
+    "/v1/manifests/{manifest_id}", dependencies=[Depends(require_feature("manifests"))]
+)
 def delete_manifest(
     manifest_id: int,
     db: Session = Depends(get_db),
@@ -3253,7 +3400,10 @@ def delete_manifest(
     return Response(status_code=204)
 
 
-@router.get("/v1/manifests/{manifest_id}/export")
+@router.get(
+    "/v1/manifests/{manifest_id}/export",
+    dependencies=[Depends(require_feature("manifests"))],
+)
 def export_saved_manifest(
     manifest_id: int,
     format: str = Query(default="json"),
@@ -3329,7 +3479,10 @@ def _notify_group_manifest_shared(
         )
 
 
-@router.patch("/v1/manifests/{manifest_id}/sharing")
+@router.patch(
+    "/v1/manifests/{manifest_id}/sharing",
+    dependencies=[Depends(require_feature("manifests"))],
+)
 def update_manifest_sharing(
     manifest_id: int,
     payload: ManifestSharingUpdatePayload,
@@ -3340,9 +3493,9 @@ def update_manifest_sharing(
     manifest = _ensure_manifest_manage(db, user, manifest_id)
 
     old_group_id = manifest.owner_group_id
-    old_is_public = bool(getattr(manifest, "is_public", False))
+    old_is_public: bool = bool(getattr(manifest, "is_public", False))  # noqa: F841 - kept for the changelog summary below
 
-    fields_set = getattr(payload, "model_fields_set", set())
+    fields_set: set[str] = set(getattr(payload, "model_fields_set", set()))
 
     # Group sharing (owner_group_id)
     if "owner_group_id" in fields_set:
@@ -3401,7 +3554,10 @@ def update_manifest_sharing(
     }
 
 
-@router.post("/v1/manifests/{manifest_id}/clone")
+@router.post(
+    "/v1/manifests/{manifest_id}/clone",
+    dependencies=[Depends(require_feature("manifests"))],
+)
 def clone_manifest(
     manifest_id: int,
     payload: ManifestClonePayload | None = Body(default=None),
@@ -3473,122 +3629,4 @@ def clone_manifest(
         "created_at": new_manifest.created_at,
         "updated_at": new_manifest.updated_at,
         "framework_id": new_manifest.framework_id,
-    }
-
-
-@router.get("/projects/compare")
-def compare_projects(
-    left_project_id: int = Query(..., ge=1),
-    right_project_id: int = Query(..., ge=1),
-    left_version_id: int | None = Query(None, ge=1),
-    right_version_id: int | None = Query(None, ge=1),
-    framework_id: int | None = Query(default=None),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """Generate a unified diff between two projects (and optionally specific versions).
-
-    Used by contributor/engineer roles for comparison workflows.
-    """
-    _require_diff_access(db, user)
-
-    left_project = (
-        db.query(Project)
-        .options(selectinload(Project.owner_group_links))
-        .filter(Project.id == left_project_id)
-        .one_or_none()
-    )
-    right_project = (
-        db.query(Project)
-        .options(selectinload(Project.owner_group_links))
-        .filter(Project.id == right_project_id)
-        .one_or_none()
-    )
-    if not left_project or not right_project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    def pick_version(project_id: int, version_id: int | None) -> ProjectVersion | None:
-        if version_id:
-            return (
-                db.query(ProjectVersion)
-                .filter(
-                    ProjectVersion.id == version_id,
-                    ProjectVersion.project_id == project_id,
-                )
-                .one_or_none()
-            )
-        return (
-            db.query(ProjectVersion)
-            .filter(ProjectVersion.project_id == project_id)
-            .order_by(
-                ProjectVersion.is_latest.desc(),
-                ProjectVersion.release_date.desc().nullslast(),
-                ProjectVersion.id.desc(),
-            )
-            .first()
-        )
-
-    left_version = pick_version(left_project_id, left_version_id)
-    right_version = pick_version(right_project_id, right_version_id)
-
-    framework = _ensure_framework(db, framework_id)
-    cap_nodes = _fetch_capabilities(db, framework.id)
-    cap_paths = _capability_paths(cap_nodes)
-
-    def version_cap_paths(version: ProjectVersion | None) -> list[str]:
-        if not version:
-            return []
-        ids = [
-            int(cid)
-            for (cid,) in (
-                db.query(ProjectVersionFrameworkNode.framework_node_id)
-                .join(
-                    FrameworkNode,
-                    FrameworkNode.id == ProjectVersionFrameworkNode.framework_node_id,
-                )
-                .filter(
-                    ProjectVersionFrameworkNode.project_version_id == version.id,
-                    FrameworkNode.framework_id == framework.id,
-                )
-                .all()
-            )
-            if cid is not None
-        ]
-        out = [cap_paths.get(cid, str(cid)) for cid in ids if cid in cap_paths]
-        out.sort()
-        return out
-
-    left_obj = _serialize_project(
-        left_project,
-        latest_version=left_version,
-        capability_paths=version_cap_paths(left_version),
-    )
-    right_obj = _serialize_project(
-        right_project,
-        latest_version=right_version,
-        capability_paths=version_cap_paths(right_version),
-    )
-
-    left_text = json.dumps(left_obj, indent=2, sort_keys=True, default=str).splitlines(
-        keepends=True
-    )
-    right_text = json.dumps(
-        right_obj, indent=2, sort_keys=True, default=str
-    ).splitlines(keepends=True)
-
-    import difflib
-
-    diff = "".join(
-        difflib.unified_diff(
-            left_text,
-            right_text,
-            fromfile=f"project:{left_project_id}",
-            tofile=f"project:{right_project_id}",
-        )
-    )
-
-    return {
-        "left": left_obj,
-        "right": right_obj,
-        "diff": diff,
     }

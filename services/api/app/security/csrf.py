@@ -38,7 +38,7 @@ def set_csrf_cookie(response: Response, token: str) -> None:
         value=token,
         httponly=False,
         secure=bool(settings.cookie_secure),
-        samesite=samesite,
+        samesite=samesite,  # type: ignore[arg-type]
         domain=(settings.cookie_domain or "").strip() or None,
         path="/",
     )

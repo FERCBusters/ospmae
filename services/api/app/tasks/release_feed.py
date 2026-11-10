@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urlparse, urljoin
-import re
-import xml.etree.ElementTree as ET
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from celery.utils.log import get_task_logger
@@ -23,17 +23,17 @@ from app.db.models import (
     UserGroup,
 )
 from app.db.session import SessionLocal
-from app.services.mailer import send_project_version_draft_email
-from app.services.notification_recipients import notification_emails_for_users
+from app.security.url_safety import (
+    contains_xml_dtd_or_entity,
+    validate_public_http_url_resolved,
+)
 from app.services.entity_changelog import (
     project_version_changelog_state,
     record_entity_changelog,
 )
+from app.services.mailer import send_project_version_draft_email
+from app.services.notification_recipients import notification_emails_for_users
 from app.services.versioning import is_semantically_lower
-from app.security.url_safety import (
-    validate_public_http_url_resolved,
-    contains_xml_dtd_or_entity,
-)
 
 log = get_task_logger(__name__)
 
@@ -145,7 +145,7 @@ def _parse_feed_entries(xml_data: bytes) -> list[dict[str, Any]]:
     if contains_xml_dtd_or_entity(xml_data):
         raise ValueError("DTD/ENTITY not allowed in release feeds")
 
-    root = ET.fromstring(xml_data)
+    root = ET.fromstring(xml_data)  # noqa: S314 - DTD/entity screened above
     root_name = _localname(root.tag).lower()
 
     entries: list[dict[str, Any]] = []
@@ -344,7 +344,14 @@ def _guess_source_code_url_from_release_link(link: str | None) -> str | None:
 
         # GitHub: https://github.com/<owner>/<repo>/releases/tag/<tag>
         if host == "github.com" and len(parts) >= 2:
-            return f"{p.scheme}://{p.netloc}/{parts[0]}/{parts[1]}"
+            candidate = f"https://github.com/{parts[0]}/{parts[1]}"
+            # A feed entry drives later git clones, so the derived link passes
+            # the same repo-URL validation as operator-supplied ones: no other
+            # scheme, no embedded credentials, allowlisted host.
+            from app.depscan.scan import validate_repo_url
+
+            validate_repo_url(candidate)
+            return candidate
     except Exception:
         return None
     return None
@@ -468,6 +475,11 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
     if not bool(getattr(settings, "release_feed_poll_enabled", True)):
         return {"enabled": False, "checked": 0, "created": 0, "ignored": 0}
 
+    from app.core.features import is_enabled
+
+    if not is_enabled("release_feed"):
+        return {"enabled": False, "checked": 0, "created": 0, "ignored": 0}
+
     db = SessionLocal()
     checked = 0
     created = 0
@@ -573,6 +585,11 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                 else:
                     # First run: only consider newest entry, and only if it isn't already present.
                     new_entries = [entries[-1]]
+
+                # One feed poll must not stampede the catalogue: a hostile or
+                # noisy feed cannot fan out thousands of versions and mails in
+                # one cycle.
+                new_entries = new_entries[-10:]
 
                 # Record newest entry id so we don't keep reprocessing.
                 if newest_id:

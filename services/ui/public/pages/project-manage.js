@@ -18,7 +18,7 @@
     activeFramework: null,
 
     projects: [],
-    query: '',
+    query: "",
 
     editingProject: null,
     editingVersion: null,
@@ -37,80 +37,92 @@
   };
 
   const el = {
-    projectBrowserCard: document.getElementById('projectBrowserCard'),
-    manageSearchInput: document.getElementById('manageSearchInput'),
-    manageSearchBtn: document.getElementById('manageSearchBtn'),
-    manageResetBtn: document.getElementById('manageResetBtn'),
-    btnCreateProject: document.getElementById('btnCreateProject'),
-    manageList: document.getElementById('manageList'),
+    projectBrowserCard: document.getElementById("projectBrowserCard"),
+    manageSearchInput: document.getElementById("manageSearchInput"),
+    manageSearchBtn: document.getElementById("manageSearchBtn"),
+    manageResetBtn: document.getElementById("manageResetBtn"),
+    btnCreateProject: document.getElementById("btnCreateProject"),
+    manageList: document.getElementById("manageList"),
 
-    projectEditorCard: document.getElementById('projectEditorCard'),
-    formTitle: document.getElementById('formTitle'),
-    btnBackToList: document.getElementById('btnBackToList'),
+    projectEditorCard: document.getElementById("projectEditorCard"),
+    formTitle: document.getElementById("formTitle"),
+    btnBackToList: document.getElementById("btnBackToList"),
 
-    machine_name: document.getElementById('machine_name'),
-    display_name: document.getElementById('display_name'),
-    organisation: document.getElementById('organisation'),
-    project_type: document.getElementById('project_type'),
-    programming_languages: document.getElementById('programming_languages'),
-    license: document.getElementById('license'),
-    link_to_app: document.getElementById('link_to_app'),
-    release_rss_feed_url: document.getElementById('release_rss_feed_url'),
-    release_rss_ignore_patterns: document.getElementById('release_rss_ignore_patterns'),
+    machine_name: document.getElementById("machine_name"),
+    display_name: document.getElementById("display_name"),
+    organisation: document.getElementById("organisation"),
+    project_type: document.getElementById("project_type"),
+    programming_languages: document.getElementById("programming_languages"),
+    license: document.getElementById("license"),
+    link_to_app: document.getElementById("link_to_app"),
+    release_rss_feed_url: document.getElementById("release_rss_feed_url"),
+    release_rss_ignore_patterns: document.getElementById(
+      "release_rss_ignore_patterns",
+    ),
 
-    capability: document.getElementById('capability'),
-    supported_profiles: document.getElementById('supported_profiles'),
-    supported_formats: document.getElementById('supported_formats'),
-    supported_issuance_protocols: document.getElementById('supported_issuance_protocols'),
-    supported_presentation_protocols: document.getElementById('supported_presentation_protocols'),
-    supported_key_managements: document.getElementById('supported_key_managements'),
-    supported_signing_algorithms: document.getElementById('supported_signing_algorithms'),
+    capability: document.getElementById("capability"),
+    supported_profiles: document.getElementById("supported_profiles"),
+    supported_formats: document.getElementById("supported_formats"),
+    supported_issuance_protocols: document.getElementById(
+      "supported_issuance_protocols",
+    ),
+    supported_presentation_protocols: document.getElementById(
+      "supported_presentation_protocols",
+    ),
+    supported_key_managements: document.getElementById(
+      "supported_key_managements",
+    ),
+    supported_signing_algorithms: document.getElementById(
+      "supported_signing_algorithms",
+    ),
 
-    saveProjectBtn: document.getElementById('saveProjectBtn'),
-    deleteProjectBtn: document.getElementById('deleteProjectBtn'),
+    saveProjectBtn: document.getElementById("saveProjectBtn"),
+    deleteProjectBtn: document.getElementById("deleteProjectBtn"),
 
-    newVersionBtn: document.getElementById('newVersionBtn'),
-    versionsList: document.getElementById('versionsList'),
+    newVersionBtn: document.getElementById("newVersionBtn"),
+    versionsList: document.getElementById("versionsList"),
 
-    versionEditor: document.getElementById('versionEditor'),
-    versionFormTitle: document.getElementById('versionFormTitle'),
-    versionEditContext: document.getElementById('versionEditContext'),
-    versionDraftNotice: document.getElementById('versionDraftNotice'),
+    versionEditor: document.getElementById("versionEditor"),
+    versionFormTitle: document.getElementById("versionFormTitle"),
+    versionEditContext: document.getElementById("versionEditContext"),
+    versionDraftNotice: document.getElementById("versionDraftNotice"),
 
-    version: document.getElementById('version'),
-    status: document.getElementById('status'),
-    release_date: document.getElementById('release_date'),
-    link_to_source_code: document.getElementById('link_to_source_code'),
-    is_draft: document.getElementById('is_draft'),
-    is_latest: document.getElementById('is_latest'),
-    notes: document.getElementById('notes'),
+    version: document.getElementById("version"),
+    status: document.getElementById("status"),
+    release_date: document.getElementById("release_date"),
+    link_to_source_code: document.getElementById("link_to_source_code"),
+    is_draft: document.getElementById("is_draft"),
+    is_latest: document.getElementById("is_latest"),
+    notes: document.getElementById("notes"),
 
-    frameworkSelect: document.getElementById('frameworkSelect'),
-    capabilitySearch: document.getElementById('capabilitySearch'),
-    capabilityTree: document.getElementById('capabilityTree'),
+    frameworkSelect: document.getElementById("frameworkSelect"),
+    capabilitySearch: document.getElementById("capabilitySearch"),
+    capabilityTree: document.getElementById("capabilityTree"),
 
-    saveVersionBtn: document.getElementById('saveVersionBtn'),
-    deleteVersionBtn: document.getElementById('deleteVersionBtn'),
-    cancelVersionBtn: document.getElementById('cancelVersionBtn'),
+    saveVersionBtn: document.getElementById("saveVersionBtn"),
+    deleteVersionBtn: document.getElementById("deleteVersionBtn"),
+    cancelVersionBtn: document.getElementById("cancelVersionBtn"),
   };
 
   function escapeHtml(v) {
-    return OSPMAE.escapeHtml ? OSPMAE.escapeHtml(v) : String(v ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
+    return OSPMAE.escapeHtml
+      ? OSPMAE.escapeHtml(v)
+      : String(v ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
   }
 
   function toQueryString(query) {
     const params = new URLSearchParams();
     Object.entries(query || {}).forEach(([k, v]) => {
-      if (v === undefined || v === null || v === '') return;
+      if (v === undefined || v === null || v === "") return;
       params.set(k, String(v));
     });
     const s = params.toString();
-    return s ? `?${s}` : '';
+    return s ? `?${s}` : "";
   }
 
   function setMultiSelectValues(selectEl, values) {
@@ -123,7 +135,9 @@
 
   function getMultiSelectValues(selectEl) {
     if (!selectEl) return [];
-    const vals = Array.from(selectEl.selectedOptions || []).map((o) => String(o.value || '').trim()).filter(Boolean);
+    const vals = Array.from(selectEl.selectedOptions || [])
+      .map((o) => String(o.value || "").trim())
+      .filter(Boolean);
     // de-dupe while preserving order
     const seen = new Set();
     const out = [];
@@ -136,41 +150,45 @@
   }
 
   function releaseIgnorePatternsToText(patterns) {
-    if (!Array.isArray(patterns)) return '';
+    if (!Array.isArray(patterns)) return "";
     return patterns
       .map((rule) => {
-        const pattern = String(rule?.pattern || '').trim();
-        if (!pattern) return '';
-        const matchType = String(rule?.match_type || rule?.type || 'contains').trim().toLowerCase();
-        return matchType === 'regex' ? `regex:${pattern}` : pattern;
+        const pattern = String(rule?.pattern || "").trim();
+        if (!pattern) return "";
+        const matchType = String(rule?.match_type || rule?.type || "contains")
+          .trim()
+          .toLowerCase();
+        return matchType === "regex" ? `regex:${pattern}` : pattern;
       })
       .filter(Boolean)
-      .join('\n');
+      .join("\n");
   }
 
   function releaseIgnorePatternsFromText(value) {
-    const lines = String(value || '')
+    const lines = String(value || "")
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
     const out = [];
     const seen = new Set();
     for (const line of lines) {
-      let matchType = 'contains';
+      let matchType = "contains";
       let pattern = line;
       const lower = line.toLowerCase();
-      if (lower.startsWith('regex:')) {
-        matchType = 'regex';
+      if (lower.startsWith("regex:")) {
+        matchType = "regex";
         pattern = line.slice(6).trim();
         try {
           // Validate early so users see the issue before the API rejects it.
           // Matching is case-insensitive server-side unless case_sensitive is true.
           // eslint-disable-next-line no-new
-          new RegExp(pattern, 'i');
+          new RegExp(pattern, "i");
         } catch (err) {
-          throw new Error(`Invalid release ignore regex "${pattern}": ${err.message || err}`);
+          throw new Error(
+            `Invalid release ignore regex "${pattern}": ${err.message || err}`,
+          );
         }
-      } else if (lower.startsWith('contains:')) {
+      } else if (lower.startsWith("contains:")) {
         pattern = line.slice(9).trim();
       }
       if (!pattern) continue;
@@ -191,7 +209,9 @@
       parent_id: parentId,
       children: [],
     };
-    node.children = (raw.children || []).map((c) => normalizeNode(c, level + 1, node.id));
+    node.children = (raw.children || []).map((c) =>
+      normalizeNode(c, level + 1, node.id),
+    );
     return node;
   }
 
@@ -215,20 +235,20 @@
 
   function groupKeyForNodeId(nodeId) {
     const chain = ancestryFor(nodeId);
-    if (!chain.length) return 'technology_capabilities';
-    return chain[1]?.key || chain[0]?.key || 'technology_capabilities';
+    if (!chain.length) return "technology_capabilities";
+    return chain[1]?.key || chain[0]?.key || "technology_capabilities";
   }
 
   function colorForNodeId(nodeId) {
     const fw = state.activeFramework;
     const groupKey = groupKeyForNodeId(nodeId);
-    const prefix = fw?.machine_name ? `${fw.machine_name}:` : '';
+    const prefix = fw?.machine_name ? `${fw.machine_name}:` : "";
     return nodeColor(`${prefix}${groupKey}`);
   }
 
   function showListView() {
-    el.projectBrowserCard.style.display = '';
-    el.projectEditorCard.style.display = 'none';
+    el.projectBrowserCard.style.display = "";
+    el.projectEditorCard.style.display = "none";
     state.editingProject = null;
     state.editingVersion = null;
     state.creatingProject = false;
@@ -236,30 +256,30 @@
   }
 
   function showEditorView() {
-    el.projectBrowserCard.style.display = 'none';
-    el.projectEditorCard.style.display = '';
+    el.projectBrowserCard.style.display = "none";
+    el.projectEditorCard.style.display = "";
   }
 
   function parseTags(value) {
     if (!value) return [];
     return String(value)
-      .split(',')
+      .split(",")
       .map((x) => x.trim())
       .filter(Boolean);
   }
 
   function fmtDateInput(value) {
-    if (!value) return '';
+    if (!value) return "";
     const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return '';
+    if (Number.isNaN(d.getTime())) return "";
     const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
     return `${yyyy}-${mm}-${dd}`;
   }
 
   function safeJsonParse(text) {
-    const raw = String(text || '').trim();
+    const raw = String(text || "").trim();
     if (!raw) return null;
     try {
       return JSON.parse(raw);
@@ -272,8 +292,11 @@
     if (!el.frameworkSelect) return;
     const options = getFrameworks();
     el.frameworkSelect.innerHTML = options
-      .map((f) => `<option value="${escapeHtml(f.machine_name)}">${escapeHtml(f.display_name || f.machine_name)}</option>`)
-      .join('');
+      .map(
+        (f) =>
+          `<option value="${escapeHtml(f.machine_name)}">${escapeHtml(f.display_name || f.machine_name)}</option>`,
+      )
+      .join("");
     if (state.activeFramework?.machine_name) {
       el.frameworkSelect.value = state.activeFramework.machine_name;
     }
@@ -300,26 +323,34 @@
       state.expandedNodeIds.add(root.id);
     });
     (flat || []).forEach((n) => {
-      if (n?.id) state.nodePathById.set(Number(n.id), n.path || n.display_name || n.key || '');
+      if (n?.id)
+        state.nodePathById.set(
+          Number(n.id),
+          n.path || n.display_name || n.key || "",
+        );
     });
 
     // Purge invalid selections
     const valid = new Set(Array.from(state.nodeById.keys()));
-    state.selectedNodeIds = new Set(Array.from(state.selectedNodeIds).filter((id) => valid.has(id)));
+    state.selectedNodeIds = new Set(
+      Array.from(state.selectedNodeIds).filter((id) => valid.has(id)),
+    );
 
     renderNodeTree();
   }
 
   function shouldShowNode(node, termLower) {
     if (!termLower) return true;
-    const path = state.nodePathById.get(node.id) || '';
+    const path = state.nodePathById.get(node.id) || "";
     const direct = [node.display_name, node.key, path]
       .filter(Boolean)
-      .join(' ')
+      .join(" ")
       .toLowerCase()
       .includes(termLower);
     if (direct) return true;
-    return (node.children || []).some((child) => shouldShowNode(child, termLower));
+    return (node.children || []).some((child) =>
+      shouldShowNode(child, termLower),
+    );
   }
 
   function renderSelectedNodePills() {
@@ -330,7 +361,9 @@
     const nodes = Array.from(state.selectedNodeIds)
       .map((id) => state.nodeById.get(id))
       .filter(Boolean)
-      .sort((a, b) => (a.display_name || '').localeCompare(b.display_name || ''));
+      .sort((a, b) =>
+        (a.display_name || "").localeCompare(b.display_name || ""),
+      );
 
     return nodes
       .map((node) => {
@@ -343,68 +376,76 @@
           </button>
         `;
       })
-      .join('');
+      .join("");
   }
 
   function renderNodeTree() {
     if (!el.capabilityTree) return;
 
     const tree = state.nodeTree || [];
-    const term = (el.capabilitySearch.value || '').trim().toLowerCase();
+    const term = (el.capabilitySearch.value || "").trim().toLowerCase();
 
     const renderNode = (node, depth = 0) => {
-      if (!shouldShowNode(node, term)) return '';
-      const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+      if (!shouldShowNode(node, term)) return "";
+      const hasChildren =
+        Array.isArray(node.children) && node.children.length > 0;
       const selected = state.selectedNodeIds.has(node.id);
       const autoExpand = Boolean(term);
-      const isExpanded = hasChildren && (autoExpand || state.expandedNodeIds.has(node.id));
+      const isExpanded =
+        hasChildren && (autoExpand || state.expandedNodeIds.has(node.id));
       const color = colorForNodeId(node.id);
       const path = state.nodePathById.get(node.id) || node.display_name;
 
       const childrenHtml = isExpanded
-        ? (node.children || []).map((c) => renderNode(c, depth + 1)).join('')
-        : '';
+        ? (node.children || []).map((c) => renderNode(c, depth + 1)).join("")
+        : "";
 
       return `
         <div class="cap-tree-node depth-${Math.min(depth, 4)}" data-node-id="${node.id}">
           <div class="cap-node-row">
-            ${hasChildren
-              ? `<button type="button" class="cap-toggle ${isExpanded ? 'expanded' : ''}" data-toggle-node="${node.id}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} ${escapeHtml(node.display_name)}">${isExpanded ? '▾' : '▸'}</button>`
-              : '<span class="cap-toggle-spacer" aria-hidden="true"></span>'}
-            <button type="button" class="capability-pill ${selected ? 'selected' : ''}" data-node-id="${node.id}" style="--cap-color:${escapeHtml(color)}" title="${escapeHtml(path)}">
+            ${
+              hasChildren
+                ? `<button type="button" class="cap-toggle ${isExpanded ? "expanded" : ""}" data-toggle-node="${node.id}" aria-label="${isExpanded ? "Collapse" : "Expand"} ${escapeHtml(node.display_name)}">${isExpanded ? "▾" : "▸"}</button>`
+                : '<span class="cap-toggle-spacer" aria-hidden="true"></span>'
+            }
+            <button type="button" class="capability-pill ${selected ? "selected" : ""}" data-node-id="${node.id}" style="--cap-color:${escapeHtml(color)}" title="${escapeHtml(path)}">
               <span class="pill-label">${escapeHtml(node.display_name)}</span>
             </button>
           </div>
-          ${childrenHtml ? `<div class="cap-children">${childrenHtml}</div>` : ''}
+          ${childrenHtml ? `<div class="cap-children">${childrenHtml}</div>` : ""}
         </div>
       `;
     };
 
     el.capabilityTree.innerHTML = `
       <div class="selected-pills" style="margin-bottom:8px;">${renderSelectedNodePills()}</div>
-      <div class="capability-tree-wrap">${tree.map((n) => renderNode(n, 0)).join('') || '<div class="small">No categories available.</div>'}</div>
+      <div class="capability-tree-wrap">${tree.map((n) => renderNode(n, 0)).join("") || '<div class="small">No categories available.</div>'}</div>
     `;
 
-    el.capabilityTree.querySelectorAll('button[data-node-id]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = Number(btn.dataset.nodeId);
-        if (Number.isNaN(id)) return;
-        if (state.selectedNodeIds.has(id)) state.selectedNodeIds.delete(id);
-        else state.selectedNodeIds.add(id);
-        state.dirtyNodeSelection = true;
-        renderNodeTree();
+    el.capabilityTree
+      .querySelectorAll("button[data-node-id]")
+      .forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = Number(btn.dataset.nodeId);
+          if (Number.isNaN(id)) return;
+          if (state.selectedNodeIds.has(id)) state.selectedNodeIds.delete(id);
+          else state.selectedNodeIds.add(id);
+          state.dirtyNodeSelection = true;
+          renderNodeTree();
+        });
       });
-    });
 
-    el.capabilityTree.querySelectorAll('button[data-toggle-node]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = Number(btn.dataset.toggleNode);
-        if (Number.isNaN(id)) return;
-        if (state.expandedNodeIds.has(id)) state.expandedNodeIds.delete(id);
-        else state.expandedNodeIds.add(id);
-        renderNodeTree();
+    el.capabilityTree
+      .querySelectorAll("button[data-toggle-node]")
+      .forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = Number(btn.dataset.toggleNode);
+          if (Number.isNaN(id)) return;
+          if (state.expandedNodeIds.has(id)) state.expandedNodeIds.delete(id);
+          else state.expandedNodeIds.add(id);
+          renderNodeTree();
+        });
       });
-    });
   }
 
   function renderProjectList() {
@@ -416,14 +457,14 @@
 
     el.manageList.innerHTML = list
       .map((c) => {
-        const latest = c.latest_version?.version || '—';
+        const latest = c.latest_version?.version || "—";
         const capCount = (c.capability_paths || []).length;
         return `
           <div class="card" style="margin-bottom:10px; padding:12px;">
             <div class="row" style="justify-content:space-between; gap:10px; align-items:flex-start;">
               <div>
                 <div style="font-weight:700;">${escapeHtml(c.display_name || c.machine_name)}</div>
-                <div class="small muted">${escapeHtml(c.organisation || '—')} · ${escapeHtml(c.project_type || 'n/a')}</div>
+                <div class="small muted">${escapeHtml(c.organisation || "—")} · ${escapeHtml(c.project_type || "n/a")}</div>
                 <div class="small" style="margin-top:4px;">Latest: ${escapeHtml(latest)} · Categories (current framework): ${capCount}</div>
               </div>
               <div style="display:flex; gap:8px;">
@@ -434,15 +475,17 @@
           </div>
         `;
       })
-      .join('');
+      .join("");
 
-    el.manageList.querySelectorAll('button[data-action="edit"]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = Number(btn.dataset.id);
-        if (Number.isNaN(id)) return;
-        openProject(id);
+    el.manageList
+      .querySelectorAll('button[data-action="edit"]')
+      .forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = Number(btn.dataset.id);
+          if (Number.isNaN(id)) return;
+          openProject(id);
+        });
       });
-    });
   }
 
   async function loadProjectList() {
@@ -457,49 +500,84 @@
   }
 
   function fillProjectForm(project) {
-    el.machine_name.value = project?.machine_name || '';
-    el.display_name.value = project?.display_name || '';
-    el.organisation.value = project?.organisation || '';
-    el.project_type.value = project?.project_type || '';
-    el.license.value = project?.license || '';
-    setMultiSelectValues(el.programming_languages, project?.programming_languages || []);
-    el.link_to_app.value = project?.link_to_app || '';
-    if (el.release_rss_feed_url) el.release_rss_feed_url.value = project?.release_rss_feed_url || '';
+    el.machine_name.value = project?.machine_name || "";
+    el.display_name.value = project?.display_name || "";
+    el.organisation.value = project?.organisation || "";
+    el.project_type.value = project?.project_type || "";
+    el.license.value = project?.license || "";
+    setMultiSelectValues(
+      el.programming_languages,
+      project?.programming_languages || [],
+    );
+    el.link_to_app.value = project?.link_to_app || "";
+    if (el.release_rss_feed_url)
+      el.release_rss_feed_url.value = project?.release_rss_feed_url || "";
     if (el.release_rss_ignore_patterns) {
-      el.release_rss_ignore_patterns.value = releaseIgnorePatternsToText(project?.release_rss_ignore_patterns || []);
+      el.release_rss_ignore_patterns.value = releaseIgnorePatternsToText(
+        project?.release_rss_ignore_patterns || [],
+      );
     }
 
-    el.capability.value = project?.capability || '';
+    el.capability.value = project?.capability || "";
 
     // Multi-select combobox fields
-    setMultiSelectValues(el.supported_profiles, project?.supported_profiles || []);
-    setMultiSelectValues(el.supported_formats, project?.supported_formats || []);
-    setMultiSelectValues(el.supported_issuance_protocols, project?.supported_issuance_protocols || []);
-    setMultiSelectValues(el.supported_presentation_protocols, project?.supported_presentation_protocols || []);
-    setMultiSelectValues(el.supported_key_managements, project?.supported_key_managements || []);
-    setMultiSelectValues(el.supported_signing_algorithms, project?.supported_signing_algorithms || []);
+    setMultiSelectValues(
+      el.supported_profiles,
+      project?.supported_profiles || [],
+    );
+    setMultiSelectValues(
+      el.supported_formats,
+      project?.supported_formats || [],
+    );
+    setMultiSelectValues(
+      el.supported_issuance_protocols,
+      project?.supported_issuance_protocols || [],
+    );
+    setMultiSelectValues(
+      el.supported_presentation_protocols,
+      project?.supported_presentation_protocols || [],
+    );
+    setMultiSelectValues(
+      el.supported_key_managements,
+      project?.supported_key_managements || [],
+    );
+    setMultiSelectValues(
+      el.supported_signing_algorithms,
+      project?.supported_signing_algorithms || [],
+    );
   }
 
   function buildProjectPayload(isUpdate = false) {
     const payload = {
-      machine_name: (el.machine_name.value || '').trim() || undefined,
-      display_name: (el.display_name.value || '').trim() || undefined,
-      organisation: (el.organisation.value || '').trim() || null,
-      project_type: (el.project_type.value || '').trim() || null,
-      license: (el.license.value || '').trim() || null,
+      machine_name: (el.machine_name.value || "").trim() || undefined,
+      display_name: (el.display_name.value || "").trim() || undefined,
+      organisation: (el.organisation.value || "").trim() || null,
+      project_type: (el.project_type.value || "").trim() || null,
+      license: (el.license.value || "").trim() || null,
       programming_languages: getMultiSelectValues(el.programming_languages),
-      link_to_app: (el.link_to_app.value || '').trim() || null,
-      release_rss_feed_url: (el.release_rss_feed_url?.value || '').trim() || null,
-      release_rss_ignore_patterns: releaseIgnorePatternsFromText(el.release_rss_ignore_patterns?.value || ''),
+      link_to_app: (el.link_to_app.value || "").trim() || null,
+      release_rss_feed_url:
+        (el.release_rss_feed_url?.value || "").trim() || null,
+      release_rss_ignore_patterns: releaseIgnorePatternsFromText(
+        el.release_rss_ignore_patterns?.value || "",
+      ),
 
-      capability: (el.capability.value || '').trim() || null,
+      capability: (el.capability.value || "").trim() || null,
 
       supported_profiles: getMultiSelectValues(el.supported_profiles),
       supported_formats: getMultiSelectValues(el.supported_formats),
-      supported_issuance_protocols: getMultiSelectValues(el.supported_issuance_protocols),
-      supported_presentation_protocols: getMultiSelectValues(el.supported_presentation_protocols),
-      supported_key_managements: getMultiSelectValues(el.supported_key_managements),
-      supported_signing_algorithms: getMultiSelectValues(el.supported_signing_algorithms),
+      supported_issuance_protocols: getMultiSelectValues(
+        el.supported_issuance_protocols,
+      ),
+      supported_presentation_protocols: getMultiSelectValues(
+        el.supported_presentation_protocols,
+      ),
+      supported_key_managements: getMultiSelectValues(
+        el.supported_key_managements,
+      ),
+      supported_signing_algorithms: getMultiSelectValues(
+        el.supported_signing_algorithms,
+      ),
     };
 
     if (isUpdate) {
@@ -508,8 +586,8 @@
         if (payload[k] === undefined) delete payload[k];
       });
     } else {
-      if (!payload.machine_name) throw new Error('machine_name is required');
-      if (!payload.display_name) throw new Error('display_name is required');
+      if (!payload.machine_name) throw new Error("machine_name is required");
+      if (!payload.display_name) throw new Error("display_name is required");
     }
 
     return payload;
@@ -521,37 +599,44 @@
   }
 
   function versionLabel(version) {
-    return String(version?.version || '').trim() || 'this version';
+    return String(version?.version || "").trim() || "this version";
   }
 
-  function renderVersionEditorContext(mode = 'edit') {
+  function renderVersionEditorContext(mode = "edit") {
     if (!el.versionEditContext) return;
 
     if (!state.editingVersion && !state.creatingVersion) {
-      el.versionEditContext.classList.remove('active');
-      el.versionEditContext.innerHTML = '';
+      el.versionEditContext.classList.remove("active");
+      el.versionEditContext.innerHTML = "";
       return;
     }
 
     const v = state.editingVersion || {};
-    const label = state.creatingVersion ? 'new version' : versionLabel(v);
+    const label = state.creatingVersion ? "new version" : versionLabel(v);
     const latest = currentLatestVersion();
-    const latestText = latest ? `Current latest: ${escapeHtml(latest.version || '—')}` : 'No published latest version yet';
+    const latestText = latest
+      ? `Current latest: ${escapeHtml(latest.version || "—")}`
+      : "No published latest version yet";
     const badges = [];
-    if (v.is_latest) badges.push('<span class="badge text-bg-success ms-2">Latest</span>');
-    if (v.is_draft) badges.push('<span class="badge text-bg-warning ms-2">Draft</span>');
+    if (v.is_latest)
+      badges.push('<span class="badge text-bg-success ms-2">Latest</span>');
+    if (v.is_draft)
+      badges.push('<span class="badge text-bg-warning ms-2">Draft</span>');
 
-    el.versionEditContext.classList.add('active');
+    el.versionEditContext.classList.add("active");
     el.versionEditContext.innerHTML = `
-      <div class="fw-semibold"><i class="bi bi-pencil-square me-1" aria-hidden="true"></i>${state.creatingVersion ? 'Creating' : 'Editing'} ${escapeHtml(label)}${badges.join('')}</div>
+      <div class="fw-semibold"><i class="bi bi-pencil-square me-1" aria-hidden="true"></i>${state.creatingVersion ? "Creating" : "Editing"} ${escapeHtml(label)}${badges.join("")}</div>
       <div class="small text-secondary">${escapeHtml(latestText)}. Save changes in this form to update this version.</div>
     `;
   }
 
   function isPublishingDraftFromForm() {
-    return !!state.editingVersion?.id && !!state.editingVersion?.is_draft && !el.is_draft?.checked;
+    return (
+      !!state.editingVersion?.id &&
+      !!state.editingVersion?.is_draft &&
+      !el.is_draft?.checked
+    );
   }
-
 
   function syncLatestSwitchForDraftState() {
     if (!el.is_latest) return;
@@ -565,38 +650,46 @@
   function updateDraftPublishNotice() {
     if (!el.versionDraftNotice) return;
     if (!isPublishingDraftFromForm()) {
-      el.versionDraftNotice.style.display = 'none';
-      el.versionDraftNotice.innerHTML = '';
+      el.versionDraftNotice.style.display = "none";
+      el.versionDraftNotice.innerHTML = "";
       return;
     }
 
-    const label = (el.version.value || state.editingVersion?.version || 'this version').trim();
+    const label = (
+      el.version.value ||
+      state.editingVersion?.version ||
+      "this version"
+    ).trim();
     const latest = currentLatestVersion();
     const latestPart = latest
-      ? ` The current latest version is <strong>${escapeHtml(latest.version || '—')}</strong>.`
-      : ' There is currently no published latest version for this project.';
+      ? ` The current latest version is <strong>${escapeHtml(latest.version || "—")}</strong>.`
+      : " There is currently no published latest version for this project.";
 
     el.versionDraftNotice.innerHTML = `
       <div class="fw-semibold"><i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>Publishing draft ${escapeHtml(label)}</div>
       <div class="small">Taking this version out of Draft will make it visible in general browsing.${latestPart} OSPMAE will elevate it to Latest only if it is newer than the current latest semantic version. You can force promotion by ticking Latest before saving.</div>
     `;
-    el.versionDraftNotice.style.display = '';
+    el.versionDraftNotice.style.display = "";
   }
 
   function surfaceVersionEditor() {
     if (!el.versionEditor) return;
-    el.versionEditor.classList.add('version-editor-active');
-    el.versionEditor.classList.remove('version-editor-pulse');
+    el.versionEditor.classList.add("version-editor-active");
+    el.versionEditor.classList.remove("version-editor-pulse");
     // Restart the highlight animation even when the same version is clicked twice.
     void el.versionEditor.offsetWidth;
-    el.versionEditor.classList.add('version-editor-pulse');
+    el.versionEditor.classList.add("version-editor-pulse");
     try {
-      el.versionEditor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.versionEditor.scrollIntoView({ behavior: "smooth", block: "center" });
     } catch (_) {
       el.versionEditor.scrollIntoView();
     }
     window.setTimeout(() => {
-      try { el.version?.focus({ preventScroll: true }); } catch (_) { el.version?.focus(); }
+      try {
+        el.version?.focus({ preventScroll: true });
+      } catch (_) {
+        el.version?.focus();
+      }
     }, 350);
   }
 
@@ -605,18 +698,30 @@
 
     const rows = versions
       .slice()
-      .sort((a, b) => String(b.release_date || '').localeCompare(String(a.release_date || '')))
+      .sort((a, b) =>
+        String(b.release_date || "").localeCompare(
+          String(a.release_date || ""),
+        ),
+      )
       .map((v) => {
         const isSelected = state.editingVersion?.id === v.id;
         const capCount = (v.capability_paths || []).length;
-        const latest = v.is_latest ? '<span class="badge text-bg-success ms-2">Latest</span>' : '';
-        const draft = v.is_draft ? '<span class="badge text-bg-warning ms-2">Draft</span>' : '';
-        const editing = isSelected ? '<span class="badge text-bg-primary ms-2">Editing now</span>' : '';
-        const date = v.release_date ? fmtDateInput(v.release_date) : '—';
-        const buttonClass = isSelected ? 'btn btn-primary btn-sm' : 'btn btn-outline-primary btn-sm';
-        const buttonText = isSelected ? 'Editing' : 'Edit';
+        const latest = v.is_latest
+          ? '<span class="badge text-bg-success ms-2">Latest</span>'
+          : "";
+        const draft = v.is_draft
+          ? '<span class="badge text-bg-warning ms-2">Draft</span>'
+          : "";
+        const editing = isSelected
+          ? '<span class="badge text-bg-primary ms-2">Editing now</span>'
+          : "";
+        const date = v.release_date ? fmtDateInput(v.release_date) : "—";
+        const buttonClass = isSelected
+          ? "btn btn-primary btn-sm"
+          : "btn btn-outline-primary btn-sm";
+        const buttonText = isSelected ? "Editing" : "Edit";
         return `
-          <div class="card version-row ${isSelected ? 'version-row-selected' : ''}" data-version-id="${v.id}">
+          <div class="card version-row ${isSelected ? "version-row-selected" : ""}" data-version-id="${v.id}">
             <div class="row" style="justify-content:space-between; gap:10px;">
               <div>
                 <div style="font-weight:700;">${escapeHtml(v.version)}${latest}${draft}${editing}</div>
@@ -627,52 +732,61 @@
           </div>
         `;
       })
-      .join('');
+      .join("");
 
-    el.versionsList.innerHTML = rows || '<div class="muted">No versions created yet.</div>';
+    el.versionsList.innerHTML =
+      rows || '<div class="muted">No versions created yet.</div>';
 
-    el.versionsList.querySelectorAll('button[data-action="edit-version"]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = Number(btn.dataset.id);
-        if (Number.isNaN(id)) return;
-        const v = (state.editingProject.versions || []).find((x) => x.id === id);
-        if (v) openVersion(v);
+    el.versionsList
+      .querySelectorAll('button[data-action="edit-version"]')
+      .forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const id = Number(btn.dataset.id);
+          if (Number.isNaN(id)) return;
+          const v = (state.editingProject.versions || []).find(
+            (x) => x.id === id,
+          );
+          if (v) openVersion(v);
+        });
       });
-    });
   }
 
   function fillVersionForm(version) {
-    el.version.value = version?.version || '';
-    el.status.value = version?.status || '';
+    el.version.value = version?.version || "";
+    el.status.value = version?.status || "";
     el.release_date.value = fmtDateInput(version?.release_date);
-    el.link_to_source_code.value = version?.link_to_source_code || '';
+    el.link_to_source_code.value = version?.link_to_source_code || "";
     if (el.is_draft) el.is_draft.checked = !!version?.is_draft;
-    if (el.is_latest) el.is_latest.checked = !!version?.is_latest && !version?.is_draft;
+    if (el.is_latest)
+      el.is_latest.checked = !!version?.is_latest && !version?.is_draft;
     state.latestTouched = false;
     syncLatestSwitchForDraftState();
-    el.notes.value = version?.notes || '';
+    el.notes.value = version?.notes || "";
     updateDraftPublishNotice();
   }
 
   function buildVersionPayload(isUpdate = false) {
     const payload = {
-      version: (el.version.value || '').trim() || undefined,
-      status: (el.status.value || '').trim() || null,
-      release_date: (el.release_date.value || '').trim() || null,
-      link_to_source_code: (el.link_to_source_code.value || '').trim() || null,
+      version: (el.version.value || "").trim() || undefined,
+      status: (el.status.value || "").trim() || null,
+      release_date: (el.release_date.value || "").trim() || null,
+      link_to_source_code: (el.link_to_source_code.value || "").trim() || null,
       is_draft: !!el.is_draft?.checked,
-      notes: (el.notes.value || '').trim() || null,
+      notes: (el.notes.value || "").trim() || null,
     };
 
     const latestChecked = !!el.is_latest?.checked && !payload.is_draft;
     if (latestChecked) {
       payload.is_latest = true;
-    } else if (!payload.is_draft && (state.latestTouched || (isUpdate && !!state.editingVersion?.is_latest))) {
+    } else if (
+      !payload.is_draft &&
+      (state.latestTouched || (isUpdate && !!state.editingVersion?.is_latest))
+    ) {
       payload.is_latest = false;
     }
 
     if (!isUpdate) {
-      if (!payload.version) throw new Error('version is required');
+      if (!payload.version) throw new Error("version is required");
     } else {
       Object.keys(payload).forEach((k) => {
         if (payload[k] === undefined) delete payload[k];
@@ -690,7 +804,9 @@
       return;
     }
 
-    const res = await apiFetch(`/v1/project-versions/${versionId}/framework-nodes${toQueryString({ framework_id: state.activeFramework.id })}`);
+    const res = await apiFetch(
+      `/v1/project-versions/${versionId}/framework-nodes${toQueryString({ framework_id: state.activeFramework.id })}`,
+    );
     const nodeIds = Array.isArray(res?.node_ids) ? res.node_ids : [];
     state.selectedNodeIds = new Set(nodeIds.map((n) => Number(n)));
     state.dirtyNodeSelection = false;
@@ -700,26 +816,26 @@
   async function openVersion(version) {
     state.editingVersion = version;
     state.creatingVersion = false;
-    el.versionEditor.style.display = '';
+    el.versionEditor.style.display = "";
     el.versionFormTitle.textContent = `Edit version: ${version.version}`;
     fillVersionForm(version);
-    renderVersionEditorContext('edit');
+    renderVersionEditorContext("edit");
     renderVersionsList();
     surfaceVersionEditor();
 
     await loadTaxonomy();
     await loadVersionFrameworkNodes(version.id);
 
-    el.deleteVersionBtn.style.display = '';
+    el.deleteVersionBtn.style.display = "";
   }
 
   function startCreateVersion() {
     state.editingVersion = null;
     state.creatingVersion = true;
-    el.versionEditor.style.display = '';
-    el.versionFormTitle.textContent = 'Create new version';
+    el.versionEditor.style.display = "";
+    el.versionFormTitle.textContent = "Create new version";
     fillVersionForm({});
-    renderVersionEditorContext('create');
+    renderVersionEditorContext("create");
     renderVersionsList();
     surfaceVersionEditor();
 
@@ -728,12 +844,14 @@
     state.dirtyNodeSelection = false;
     renderNodeTree();
 
-    el.deleteVersionBtn.style.display = 'none';
+    el.deleteVersionBtn.style.display = "none";
   }
 
   async function openProject(projectId) {
     const fwId = state.activeFramework?.id;
-    const full = await apiFetch(`/v1/projects/${projectId}${toQueryString({ framework_id: fwId || undefined })}`);
+    const full = await apiFetch(
+      `/v1/projects/${projectId}${toQueryString({ framework_id: fwId || undefined })}`,
+    );
     state.editingProject = full;
     state.creatingProject = false;
 
@@ -741,12 +859,15 @@
     el.formTitle.textContent = `Edit project: ${full.display_name || full.machine_name}`;
     fillProjectForm(full);
 
-    el.deleteProjectBtn.style.display = '';
-    el.newVersionBtn.style.display = '';
+    el.deleteProjectBtn.style.display = "";
+    el.newVersionBtn.style.display = "";
 
     // Close version editor until one is selected.
-    el.versionEditor.style.display = 'none';
-    el.versionEditor.classList.remove('version-editor-active', 'version-editor-pulse');
+    el.versionEditor.style.display = "none";
+    el.versionEditor.classList.remove(
+      "version-editor-active",
+      "version-editor-pulse",
+    );
     state.editingVersion = null;
     state.creatingVersion = false;
     renderVersionEditorContext();
@@ -764,16 +885,20 @@
     state.creatingProject = true;
 
     showEditorView();
-    el.formTitle.textContent = 'Create project';
+    el.formTitle.textContent = "Create project";
     fillProjectForm({});
 
-    el.deleteProjectBtn.style.display = 'none';
-    el.newVersionBtn.style.display = 'none';
+    el.deleteProjectBtn.style.display = "none";
+    el.newVersionBtn.style.display = "none";
 
-    el.versionsList.innerHTML = '<div class="muted">Create the project first to add versions.</div>';
+    el.versionsList.innerHTML =
+      '<div class="muted">Create the project first to add versions.</div>';
 
-    el.versionEditor.style.display = 'none';
-    el.versionEditor.classList.remove('version-editor-active', 'version-editor-pulse');
+    el.versionEditor.style.display = "none";
+    el.versionEditor.classList.remove(
+      "version-editor-active",
+      "version-editor-pulse",
+    );
     state.editingVersion = null;
     state.creatingVersion = false;
     renderVersionEditorContext();
@@ -786,31 +911,34 @@
     try {
       payload = buildProjectPayload(isUpdate);
     } catch (err) {
-      OSPMAE.toast(err.message || 'Invalid project form value.', 'warn');
+      OSPMAE.toast(err.message || "Invalid project form value.", "warn");
       return;
     }
 
     if (isUpdate) {
-      const updated = await apiFetch(`/v1/projects/${state.editingProject.id}`, {
-        method: 'PUT',
-        // app.js apiRequest JSON-encodes plain objects automatically.
-        // Passing a pre-stringified body causes the API to receive a JSON string,
-        // which FastAPI/Pydantic rejects ("Input should be a valid dictionary...").
-        body: payload,
-      });
+      const updated = await apiFetch(
+        `/v1/projects/${state.editingProject.id}`,
+        {
+          method: "PUT",
+          // app.js apiRequest JSON-encodes plain objects automatically.
+          // Passing a pre-stringified body causes the API to receive a JSON string,
+          // which FastAPI/Pydantic rejects ("Input should be a valid dictionary...").
+          body: payload,
+        },
+      );
       state.editingProject = { ...state.editingProject, ...updated };
-      OSPMAE.toast('Project updated.');
+      OSPMAE.toast("Project updated.");
     } else {
-      const created = await apiFetch('/v1/projects', {
-        method: 'POST',
+      const created = await apiFetch("/v1/projects", {
+        method: "POST",
         body: payload,
       });
       state.editingProject = created;
       state.creatingProject = false;
-      el.deleteProjectBtn.style.display = '';
-      el.newVersionBtn.style.display = '';
+      el.deleteProjectBtn.style.display = "";
+      el.newVersionBtn.style.display = "";
       el.formTitle.textContent = `Edit project: ${created.display_name || created.machine_name}`;
-      OSPMAE.toast('Project created.');
+      OSPMAE.toast("Project created.");
     }
 
     await loadProjectList();
@@ -818,20 +946,25 @@
 
   async function deleteProject() {
     if (!state.editingProject?.id) return;
-    if (!confirm('Delete this project and all versions? This cannot be undone.')) return;
-    await apiFetch(`/v1/projects/${state.editingProject.id}`, { method: 'DELETE' });
-    OSPMAE.toast('Project deleted.');
+    if (
+      !confirm("Delete this project and all versions? This cannot be undone.")
+    )
+      return;
+    await apiFetch(`/v1/projects/${state.editingProject.id}`, {
+      method: "DELETE",
+    });
+    OSPMAE.toast("Project deleted.");
     showListView();
     await loadProjectList();
   }
 
   async function saveVersion() {
     if (!state.editingProject?.id) {
-      OSPMAE.toast('Save the project first.', 'warn');
+      OSPMAE.toast("Save the project first.", "warn");
       return;
     }
     if (!state.activeFramework?.id) {
-      OSPMAE.toast('Pick a framework first.', 'warn');
+      OSPMAE.toast("Pick a framework first.", "warn");
       return;
     }
 
@@ -840,9 +973,15 @@
 
     if (isPublishingDraftFromForm()) {
       const latest = currentLatestVersion();
-      const latestText = latest ? ` Current latest: ${latest.version || '—'}.` : ' There is currently no published latest version.';
-      const label = payload.version || state.editingVersion?.version || 'this version';
-      const explicitLatest = payload.is_latest === true ? ' You have explicitly marked it as Latest.' : ' OSPMAE will only elevate it automatically if it is newer than the current latest semantic version.';
+      const latestText = latest
+        ? ` Current latest: ${latest.version || "—"}.`
+        : " There is currently no published latest version.";
+      const label =
+        payload.version || state.editingVersion?.version || "this version";
+      const explicitLatest =
+        payload.is_latest === true
+          ? " You have explicitly marked it as Latest."
+          : " OSPMAE will only elevate it automatically if it is newer than the current latest semantic version.";
       if (!confirm(`Publish draft ${label}?${latestText}${explicitLatest}`)) {
         return;
       }
@@ -852,24 +991,27 @@
 
     if (isUpdate) {
       const updated = await apiFetch(`/v1/project-versions/${versionId}`, {
-        method: 'PUT',
+        method: "PUT",
         body: payload,
       });
       state.editingVersion = { ...state.editingVersion, ...updated };
       state.latestTouched = false;
-      OSPMAE.toast('Version updated.');
+      OSPMAE.toast("Version updated.");
     } else {
-      const created = await apiFetch(`/v1/projects/${state.editingProject.id}/versions`, {
-        method: 'POST',
-        body: payload,
-      });
+      const created = await apiFetch(
+        `/v1/projects/${state.editingProject.id}/versions`,
+        {
+          method: "POST",
+          body: payload,
+        },
+      );
       versionId = created.id;
       state.editingVersion = created;
       state.latestTouched = false;
       state.creatingVersion = false;
-      el.deleteVersionBtn.style.display = '';
+      el.deleteVersionBtn.style.display = "";
       el.versionFormTitle.textContent = `Edit version: ${created.version}`;
-      OSPMAE.toast('Version created.');
+      OSPMAE.toast("Version created.");
     }
 
     // Persist node mappings for the current framework.
@@ -878,7 +1020,7 @@
       node_ids: Array.from(state.selectedNodeIds).sort((a, b) => a - b),
     };
     await apiFetch(`/v1/project-versions/${versionId}/framework-nodes`, {
-      method: 'PUT',
+      method: "PUT",
       body: nodePayload,
     });
     state.dirtyNodeSelection = false;
@@ -890,19 +1032,27 @@
 
   async function deleteVersion() {
     if (!state.editingVersion?.id) return;
-    if (!confirm('Delete this version? This cannot be undone.')) return;
-    await apiFetch(`/v1/project-versions/${state.editingVersion.id}`, { method: 'DELETE' });
-    OSPMAE.toast('Version deleted.');
+    if (!confirm("Delete this version? This cannot be undone.")) return;
+    await apiFetch(`/v1/project-versions/${state.editingVersion.id}`, {
+      method: "DELETE",
+    });
+    OSPMAE.toast("Version deleted.");
     await openProject(state.editingProject.id);
     await loadProjectList();
   }
 
   function cancelVersionEdit() {
-    if (state.dirtyNodeSelection && !confirm('Discard unsaved category mapping changes?')) {
+    if (
+      state.dirtyNodeSelection &&
+      !confirm("Discard unsaved category mapping changes?")
+    ) {
       return;
     }
-    el.versionEditor.style.display = 'none';
-    el.versionEditor.classList.remove('version-editor-active', 'version-editor-pulse');
+    el.versionEditor.style.display = "none";
+    el.versionEditor.classList.remove(
+      "version-editor-active",
+      "version-editor-pulse",
+    );
     state.editingVersion = null;
     state.creatingVersion = false;
     state.selectedNodeIds.clear();
@@ -913,7 +1063,10 @@
   }
 
   async function onFrameworkChange() {
-    if (state.dirtyNodeSelection && !confirm('Discard unsaved category mapping changes?')) {
+    if (
+      state.dirtyNodeSelection &&
+      !confirm("Discard unsaved category mapping changes?")
+    ) {
       // revert UI selection
       if (el.frameworkSelect && state.activeFramework?.machine_name) {
         el.frameworkSelect.value = state.activeFramework.machine_name;
@@ -943,81 +1096,91 @@
   }
 
   function wireEvents() {
-    el.manageSearchBtn.addEventListener('click', () => {
-      state.query = (el.manageSearchInput.value || '').trim();
+    el.manageSearchBtn.addEventListener("click", () => {
+      state.query = (el.manageSearchInput.value || "").trim();
       loadProjectList();
     });
 
-    el.manageSearchInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        state.query = (el.manageSearchInput.value || '').trim();
+    el.manageSearchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        state.query = (el.manageSearchInput.value || "").trim();
         loadProjectList();
       }
     });
 
-    el.manageResetBtn.addEventListener('click', () => {
-      el.manageSearchInput.value = '';
-      state.query = '';
+    el.manageResetBtn.addEventListener("click", () => {
+      el.manageSearchInput.value = "";
+      state.query = "";
       loadProjectList();
     });
 
-    el.btnCreateProject.addEventListener('click', () => {
+    el.btnCreateProject.addEventListener("click", () => {
       startCreateProject();
     });
 
-    el.btnBackToList.addEventListener('click', () => {
-      if (state.dirtyNodeSelection && !confirm('Discard unsaved category mapping changes?')) return;
+    el.btnBackToList.addEventListener("click", () => {
+      if (
+        state.dirtyNodeSelection &&
+        !confirm("Discard unsaved category mapping changes?")
+      )
+        return;
       showListView();
       loadProjectList();
     });
 
-    el.saveProjectBtn.addEventListener('click', () => {
+    el.saveProjectBtn.addEventListener("click", () => {
       try {
         saveProject();
       } catch (err) {
-        OSPMAE.toast(err.message || 'Failed to save project', 'error');
+        OSPMAE.toast(err.message || "Failed to save project", "error");
       }
     });
 
-    el.deleteProjectBtn.addEventListener('click', () => {
-      deleteProject().catch((err) => OSPMAE.toast(err.message || 'Failed to delete project', 'error'));
+    el.deleteProjectBtn.addEventListener("click", () => {
+      deleteProject().catch((err) =>
+        OSPMAE.toast(err.message || "Failed to delete project", "error"),
+      );
     });
 
-    el.newVersionBtn.addEventListener('click', () => {
+    el.newVersionBtn.addEventListener("click", () => {
       startCreateVersion();
     });
 
-    el.saveVersionBtn.addEventListener('click', () => {
+    el.saveVersionBtn.addEventListener("click", () => {
       try {
         saveVersion();
       } catch (err) {
-        OSPMAE.toast(err.message || 'Failed to save version', 'error');
+        OSPMAE.toast(err.message || "Failed to save version", "error");
       }
     });
 
-    el.deleteVersionBtn.addEventListener('click', () => {
-      deleteVersion().catch((err) => OSPMAE.toast(err.message || 'Failed to delete version', 'error'));
+    el.deleteVersionBtn.addEventListener("click", () => {
+      deleteVersion().catch((err) =>
+        OSPMAE.toast(err.message || "Failed to delete version", "error"),
+      );
     });
 
-    el.cancelVersionBtn.addEventListener('click', () => {
+    el.cancelVersionBtn.addEventListener("click", () => {
       cancelVersionEdit();
     });
 
-    el.is_draft?.addEventListener('change', () => {
+    el.is_draft?.addEventListener("change", () => {
       syncLatestSwitchForDraftState();
       updateDraftPublishNotice();
     });
-    el.is_latest?.addEventListener('change', () => {
+    el.is_latest?.addEventListener("change", () => {
       state.latestTouched = true;
     });
-    el.version?.addEventListener('input', updateDraftPublishNotice);
-    el.release_date?.addEventListener('change', updateDraftPublishNotice);
+    el.version?.addEventListener("input", updateDraftPublishNotice);
+    el.release_date?.addEventListener("change", updateDraftPublishNotice);
 
-    el.frameworkSelect?.addEventListener('change', () => {
-      onFrameworkChange().catch((err) => OSPMAE.toast(err.message || 'Failed to switch framework', 'error'));
+    el.frameworkSelect?.addEventListener("change", () => {
+      onFrameworkChange().catch((err) =>
+        OSPMAE.toast(err.message || "Failed to switch framework", "error"),
+      );
     });
 
-    el.capabilitySearch?.addEventListener('input', () => {
+    el.capabilitySearch?.addEventListener("input", () => {
       renderNodeTree();
     });
   }
@@ -1027,7 +1190,7 @@
     if (!state.me) return;
 
     if (!canMaintainProjects()) {
-      window.location.href = '/index.html';
+      window.location.href = "/index.html";
       return;
     }
 
@@ -1043,12 +1206,12 @@
 
     // URL convenience.
     const params = new URLSearchParams(window.location.search);
-    const create = params.get('create');
-    const id = params.get('id');
+    const create = params.get("create");
+    const id = params.get("id");
 
     await loadProjectList();
 
-    if (create === '1') {
+    if (create === "1") {
       startCreateProject();
       return;
     }
@@ -1064,10 +1227,10 @@
     await loadTaxonomy();
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener("DOMContentLoaded", () => {
     init().catch((err) => {
       console.error(err);
-      OSPMAE.toast(err.message || 'Failed to load page', 'error');
+      OSPMAE.toast(err.message || "Failed to load page", "error");
     });
   });
 })();

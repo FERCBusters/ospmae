@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from celery import Celery
 from datetime import timedelta
+
+from celery import Celery
 
 from app.core.config import settings
 
@@ -43,8 +44,13 @@ celery_app.conf.update(
 )
 
 
-# Periodically dispatch queued dependency discovery jobs.
-if bool(getattr(settings, "dependency_discovery_enabled", True)):
+# Periodically dispatch queued dependency discovery jobs. The schedule and
+# the tasks themselves are disabled when the dependency-scan feature is off.
+from app.core.features import is_enabled as _feature_on
+
+if bool(getattr(settings, "dependency_discovery_enabled", True)) and _feature_on(
+    "dependency_scans"
+):
     celery_app.conf.beat_schedule = {
         **(celery_app.conf.beat_schedule or {}),
         "dispatch-queued-dependency-discoveries": {
@@ -55,7 +61,9 @@ if bool(getattr(settings, "dependency_discovery_enabled", True)):
 
 
 # Periodically poll project release feeds and create draft versions.
-if bool(getattr(settings, "release_feed_poll_enabled", True)):
+if bool(getattr(settings, "release_feed_poll_enabled", True)) and _feature_on(
+    "release_feed"
+):
     minutes = int(getattr(settings, "release_feed_poll_minutes", 15) or 15)
     if minutes < 1:
         minutes = 15
@@ -66,3 +74,14 @@ if bool(getattr(settings, "release_feed_poll_enabled", True)):
             "schedule": timedelta(minutes=minutes),
         },
     }
+
+
+# Housekeeping: expired login states, used/expired reset and verification
+# tokens and stale rate-limit ledger rows never accumulate without bound.
+celery_app.conf.beat_schedule = {
+    **(celery_app.conf.beat_schedule or {}),
+    "sweep-expired-rows": {
+        "task": "app.tasks.maintenance.sweep_expired_rows",
+        "schedule": timedelta(minutes=15),
+    },
+}

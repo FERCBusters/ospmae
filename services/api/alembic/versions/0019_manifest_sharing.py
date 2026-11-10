@@ -7,8 +7,8 @@ Create Date: 2026-02-27
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0019_manifest_sharing"
 down_revision = "0018_project_subs"

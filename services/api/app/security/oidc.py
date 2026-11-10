@@ -10,7 +10,6 @@ from authlib.integrations.httpx_client import AsyncOAuth2Client
 from authlib.jose import jwt
 from authlib.oidc.core import CodeIDToken
 from fastapi import HTTPException, Request
-from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -91,16 +90,10 @@ def _oidc_provider() -> SsoProvider:
         token_endpoint=_first_nonempty(_setting("oidc_token_endpoint", "")),
         jwks_uri=_first_nonempty(_setting("oidc_jwks_uri", "")),
         issuer=_first_nonempty(_setting("oidc_issuer", "")),
-        userinfo_endpoint=_first_nonempty(
-            _setting("oidc_userinfo_endpoint", "")
-        ),
-        scopes=_first_nonempty(
-            _setting("oidc_scopes", ""), "openid email profile"
-        ),
+        userinfo_endpoint=_first_nonempty(_setting("oidc_userinfo_endpoint", "")),
+        scopes=_first_nonempty(_setting("oidc_scopes", ""), "openid email profile"),
         redirect_uri=_first_nonempty(_setting("oidc_redirect_uri", "")),
-        end_session_endpoint=_first_nonempty(
-            _setting("oidc_end_session_endpoint", "")
-        ),
+        end_session_endpoint=_first_nonempty(_setting("oidc_end_session_endpoint", "")),
         post_logout_redirect_uri=_first_nonempty(
             _setting("oidc_post_logout_redirect_uri", "")
         ),
@@ -118,9 +111,7 @@ def _oidc_provider() -> SsoProvider:
         auto_link_existing=bool(_setting("oidc_auto_link_existing", True)),
         token_endpoint_auth_method="client_secret_basic",
         supports_id_token=True,
-        id_token_leeway_seconds=int(
-            _setting("oidc_id_token_leeway_seconds", 60) or 0
-        ),
+        id_token_leeway_seconds=int(_setting("oidc_id_token_leeway_seconds", 60) or 0),
     )
 
 
@@ -273,6 +264,9 @@ def _required_missing(provider: SsoProvider) -> list[str]:
         missing.append(f"{prefix}_AUTHORIZATION_ENDPOINT")
     if not provider.token_endpoint:
         missing.append(f"{prefix}_TOKEN_ENDPOINT")
+    if not provider.redirect_uri:
+        # Never derived from request hosts: the callback address is fixed.
+        missing.append(f"{prefix}_REDIRECT_URI")
     if provider.kind == "oidc":
         if not provider.jwks_uri:
             missing.append(f"{prefix}_JWKS_URI")
@@ -342,21 +336,16 @@ def _redirect_uri_from_request(request: Request, provider: SsoProvider) -> str:
     if configured:
         return configured
 
-    try:
-        base = str(request.base_url).rstrip("/")
-    except Exception:
-        base = ""
-    if not base:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Unable to derive redirect URI; configure an explicit provider "
-                "redirect URI in the environment"
-            ),
-        )
-    if provider.legacy_oidc_routes:
-        return f"{base}/v1/auth/oidc/callback"
-    return f"{base}/v1/auth/sso/{provider.key}/callback"
+    # A callback address is never derived from the request: the Host header is
+    # client-controlled and a derived redirect_uri could be steered by it.
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            f"{provider.label} SSO requires an explicit redirect URI "
+            "(OSPMAE_OIDC_REDIRECT_URI or the provider-specific setting); it is "
+            "not derived from request hosts"
+        ),
+    )
 
 
 def create_login_state(db: Session, *, next_url: str | None) -> OidcLoginState:
@@ -404,12 +393,9 @@ def pop_login_state(db: Session, *, state: str) -> OidcLoginState | None:
 
 
 def _normalize_next(next_url: str | None) -> str | None:
-    raw = (next_url or "").strip()
-    if not raw:
-        return None
-    if raw.startswith("/") and not raw.startswith("//") and "://" not in raw:
-        return raw
-    return None
+    from app.security.url_safety import safe_relative_route_path
+
+    return safe_relative_route_path(next_url)
 
 
 def _allowed_by_domain(provider: SsoProvider, email: str | None) -> bool:
@@ -458,13 +444,6 @@ def _derive_username(provider: SsoProvider, claims: dict[str, Any]) -> str | Non
     return None
 
 
-def _derive_link_username(provider: SsoProvider, claims: dict[str, Any]) -> str | None:
-    order = _split_csv(provider.username_claims or "preferred_username,email")
-    if not order:
-        order = ["preferred_username", "email"]
-    return _clean_username(_claim_first(claims, order))
-
-
 def _unique_username(db: Session, base: str) -> str:
     base_clean = (base or "").strip()[:160] or "user"
     if not get_user_by_username(db, base_clean):
@@ -496,46 +475,33 @@ def _email_is_verified(provider: SsoProvider, claims: dict[str, Any]) -> bool:
 
 
 def _single_active_user_by_email(db: Session, email: str) -> User | None:
+    """Find the one active account holding this *verified* mailbox.
+
+    Only ``user_emails`` rows marked verified participate: a self-asserted,
+    never-proofed address must not route a provider login into an account.
+    """
+
     normalized = (email or "").strip().lower()
     if not normalized:
         return None
 
     users_by_id: dict[int, User] = {}
 
-    for user in (
-        db.query(User)
-        .filter(User.email.isnot(None))
-        .filter(func.lower(User.email) == normalized)
+    for row in (
+        db.query(UserEmail)
+        .filter(UserEmail.email_lower == normalized, UserEmail.is_verified == True)  # noqa: E712
         .all()
     ):
-        users_by_id[int(user.id)] = user
+        user = db.query(User).filter(User.id == row.user_id).one_or_none()
+        if user and bool(getattr(user, "is_active", False)):
+            users_by_id[int(user.id)] = user
 
-    for user in (
-        db.query(User)
-        .join(UserIdentity, UserIdentity.user_id == User.id)
-        .filter(UserIdentity.email.isnot(None))
-        .filter(func.lower(UserIdentity.email) == normalized)
-        .all()
-    ):
-        users_by_id[int(user.id)] = user
-
-    for user in (
-        db.query(User)
-        .join(UserEmail, UserEmail.user_id == User.id)
-        .filter(UserEmail.email_lower == normalized)
-        .all()
-    ):
-        users_by_id[int(user.id)] = user
-
-    active = [u for u in users_by_id.values() if bool(getattr(u, "is_active", False))]
-    if not active:
-        return None
-    if len(active) > 1:
+    if len(users_by_id) > 1:
         raise HTTPException(
             status_code=409,
             detail="Multiple active OSPMAE users already use this SSO email address",
         )
-    return active[0]
+    return next(iter(users_by_id.values()), None)
 
 
 def _identity_kwargs(
@@ -582,7 +548,7 @@ def _ensure_user_email(
     if primary:
         (
             db.query(UserEmail)
-            .filter(UserEmail.user_id == user.id, UserEmail.is_primary == True)
+            .filter(UserEmail.user_id == user.id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
             .update({"is_primary": False}, synchronize_session=False)
         )  # noqa: E712
 
@@ -692,20 +658,11 @@ def _get_or_create_user_for_identity(
         raise HTTPException(status_code=403, detail="Email domain is not allowed")
 
     if bool(provider.auto_link_existing):
-        link_username = _derive_link_username(provider, claims)
-        if link_username:
-            user = (
-                db.query(User)
-                .filter(func.lower(User.username) == link_username.lower())
-                .one_or_none()
-            )
-            if user:
-                if not user.is_active:
-                    raise HTTPException(status_code=403, detail="User is inactive")
-                return _link_identity(
-                    db, user=user, provider=provider, subject=subject, claims=claims
-                )
-
+        # Automatic linking needs proof on both sides: the provider must mark
+        # the address verified, and OSPMAE must already hold that mailbox as a
+        # verified email. Usernames are never linked -- an identity provider's
+        # preferred_username claim is selectable by whoever registers it, so
+        # matching a local account on it would hand that account over.
         if email and _email_is_verified(provider, claims):
             user = _single_active_user_by_email(db, email)
             if user:

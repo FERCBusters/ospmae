@@ -1,0 +1,65 @@
+# Working on OSPMAE
+
+## Scope and structure
+
+- Read the relevant code and tests before editing. Prefer small changes to the layer that owns the behavior, using existing helpers and services.
+- Keep HTTP handlers focused on validation, authorization and responses. Shared security boundaries live in `services/api/app/security/`; background scanning lives in `services/api/app/tasks/`, `depscan/`; reusable domain operations belong beside their feature. Feature switches live in `app/core/features.py` and gate routes at `app/api/routes/__init__.py` plus per-project manifest routes.
+- Use the design system and shared UI helpers (the `@fercbusters/mosp-design-system` npm dependency pinned by commit in `services/ui/package.json`, vendored into `public/vendor/` by `scripts/vendor-assets.mjs`). The unified navbar is `initNavbar()` driven by `public/mosp-ui-config.js`. Keep API authorization authoritative even when the UI hides an action.
+- Remove code only after checking all callers, configuration references and runtime entry points. Do not introduce compatibility machinery without a concrete supported use case.
+- Before writing a helper, search for an existing one and reuse or extend it. Shared homes include `security/client_addr.py` (`public_client_address` and `allowance_address` for every client-address decision), `security/url_safety.py` (`validate_repo_url` in `depscan/scan.py`, `safe_relative_route_path` for redirect and stored paths, `contains_xml_dtd_or_entity` for feed parsing), `security/rate_limit.py` (`check_rate_limit`/`record_rate_limit_attempt` for database-backed allowances; the in-memory `_MemoryWindowLimiter` in `main.py` bounds unauthenticated audit rows and WebSocket handshakes), `security/sessions.py` (sessions and their absolute ceiling), `tasks/maintenance.py` (retention sweeping), and, in the UI, `app.js` (`applyUiThemePreference`, `safeHref`, `featureOn`/`gateFeature`). A second copy of a helper is a defect even when it starts out identical.
+- Where a behaviour must be the same everywhere (resolving a client address, validating a repository URL, normalising a same-origin path, counting an allowance), give it one shared helper, route every caller through it, and add a contract test that refuses a hand-rolled copy and proves it would catch one. Consistency is a security property: the copy that drifts is the one that fails. Prefer extending a shared helper to adding a local variant, and remove the duplicates a change touches.
+- Trust declared types. Read typed settings, ORM columns and values the code has just built directly, without `getattr`, `isinstance`, `or ""` or `bool()`/`int()` wrappers. Keep such guards where data is untrusted or genuinely optional: upstream scan output, feed payloads, request payloads and nullable columns.
+- Every optional area honours `OSPMAE_FEATURE_*`. New feature-gated routes join a gated router (disabled features answer 404), gated Celery tasks return a no-op with a reason, and the UI hides a feature through `featureOn`/`gateFeature` plus `FEATURE_PAGES`. Extend the same pattern for the next optional area.
+
+## Security invariants
+
+- All HTTP routes enter the main application's authentication, CSRF and audit middleware. Public exceptions (login POST) live in `main.py` with the reason beside them. New protected routes need explicit permission/ownership checks and regression tests against the assembled application; object scope (project ownership) is `projects._ensure_project_manage_access` for every non-admin role.
+- Password sign-in costs one full PBKDF2 verification for every outcome: unknown, inactive and wrong-password rejections all verify against `_DUMMY_PASSWORD_HASH` so timing carries no account existence signal, and the per-username failure allowance blocks sustained guessing while a correct password always signs in (`login_fail_user`/`login_verify_user` budgets).
+- Password-reset and mailbox-verification links carry one-time hashed tokens with server-side expiry; reset links fail closed unless `OSPMAE_PUBLIC_BASE_URL` is set, and e-mail links take their host from that setting. Self-asserted addresses start unverified and gain verification only through the mailed proof; SSO linking requires a verified mailbox on both provider and account sides. Username claims are limits keys, they join nothing.
+- Unsafe cookie-authenticated requests carry the CSRF header (exemption: login POST). WebSockets keep their own Origin check, authentication, per-user connection cap and per-address handshake allowance; HTTP middleware covers them separately.
+- Client addresses resolve through `public_client_address`, walking `X-Forwarded-For` right-to-left while hops stay inside `OSPMAE_TRUSTED_PROXY_CIDRS`; per-address allowances count IPv4 addresses and IPv6 /64 networks. Direct clients keep their socket peer.
+- Trusted header identity (`OSPMAE_TRUST_REMOTE_USER`) requires a socket peer inside the trusted CIDRs and honours the single configured header only; the supplied nginx clears every client-supplied identity header.
+- Always validate HTTPS certificate chains and hostnames. Do not add `verify=False`, `CERT_NONE`, disabled hostname checks or a fallback after TLS verification fails.
+- Repository URLs validate through `depscan.scan.validate_repo_url` (scheme, host allowlist, userinfo and control-character refusals, credential redaction through `redact_url`) before `git`, Syft or Grype run. Git children get the fixed `_git_env` environment with redirect following disabled; upstream release feeds validate the derived source URL and screen DTD/ENTITY declarations across the whole bounded payload before parsing. Lockfile parsers read with `parsers._bounded_read` (stat-before-read) and the traversal caps stay in force.
+- Use bound SQL parameters and ORM expressions. Dynamic identifiers/orderings require fixed allowlists or capped lists (`_normalize_csv_ints`). Treat scanner output and package names as untrusted display values (`_clean_display_value`) and payload text as untrusted in the UI (`esc()`/`textContent`).
+- Fail closed on authentication or authorization uncertainty. Keep errors useful without disclosing credentials, tokens, or upstream response bodies; quiet auth endpoints answer identically whether or not a name exists.
+- Object uploads or exported files carry neutral media types and fixed names; keep serving files as attachments with their export names bounded.
+
+## Validation
+
+- Use `.github/workflows/tests.yml` and `tests.sh` as the authoritative test workflow. Run against a disposable PostgreSQL database; the suite changes database contents. Never point tests at an operational installation.
+- For focused local work, run the affected backend tests and `bash tests-ui.sh` (UI tests need `npm ci --prefix services/ui/tests`). SQLite runs cover the full API surface and skip nothing; PostgreSQL-specific migration, locking and concurrency behavior still needs the CI path.
+- For security changes, add a reproducible negative test demonstrating the attack prerequisite and rejection, including the boundary thread: per-address allowances, feature gates on multiple features at once, and assembly-level CSRF/origin checks.
+- Update `services/api/pyproject.toml` and the poetry lock format together for Python dependencies. Preserve pinned third-party Actions, image digests and the design-system revision. Pin a new third-party image with `python3 tools/docker_image_pins.py update`.
+- Keep `ruff check ../..` and `ruff format --check ../..` (from `services/api`) clean; CI runs both. Keep imports at the top of each module.
+- Keep `mypy app` (from `services/api`) free of findings. Make types visible to the checker with annotations and narrowing the code can rely on, and `# type: ignore[code]` only with its reason on the same line.
+- Validate the exact final working tree after formatter or lint fixes. Include a fresh-process application import; earlier results from a different tree do not validate the delivered code.
+- Report what passed, what failed and what could not run. A green SQLite test run establishes the contracts it covers; production browser validation and Postgres CI still belong to their own kind of verification.
+- Raise the coverage floors in `coverage-requirement.txt` / `coverage-requirement-ui.txt` as tests land; 100 is the goal recorded by the same tooling.
+
+## Security re-review whenever completing a round of work
+
+Whenever completing a round of work, work through the required security re-review checklist in SECURITY.md, record evidence and untested limitations, and re-review whether the changes weaken any security property. Example hazards: account takeover (session fixation/replay/races), privilege escalation or auth bypass, injections, XSS, SSRF, CSRF, trivial DoS or reDoS, open redirects, memory leaks, unbounded requests, middleware bypass through route nesting, TLS validation gaps, undesired redirects, weak OIDC parameter checking, token replay, credential mixing between scan outputs, stale records, sensitive values in logs or errors, client-trust mistakes, redaction gaps, cryptographic failure, race conditions and missing rate limits.
+
+Fix each confirmed issue across its whole class. Name the property it violates, search the codebase for every path sharing that property (other callers, parsers, limits, routes and tasks of the same shape), fix them all, and enforce the property with a codebase-wide contract test that includes a check proving the test detects the original defect. For a resource bound, test the costliest input shape at the largest size the boundary accepts and measure the resource against its budget.
+
+Be as comprehensive in any security review of your completed work as you possibly can, whilst also being realistic about viability of attack vectors.
+
+## Documentation and delivery
+
+- README.md describes current product capabilities and setup. SECURITY.md describes the current security model, realistic risks and reporting policy; keep findings and fix history out of it.
+- Write in present tense, without release-update narratives or developer handover instructions in user-facing documentation.
+- Avoid contrastive-negation language. Write in British English.
+
+## Backend architecture
+
+- The request path is middleware → HTTP adapter → domain operation → persistence. Middleware handles cross-cutting request policy for every route in one place, so keep it generic. Preserve the central middleware chain in `main.py` (peer-derived client addresses, cookie authentication, CSRF, audit).
+- `app/api/routes/` owns HTTP adapters: route declarations, permission dependencies, request parsing, status codes, cookies, headers and redirects. `app/security/` owns authentication, sessions, client addresses, rate limits, URL safety and redaction. `app/db/` owns models and session setup, `app/depscan/` and `app/tasks/` own scanning and background work, `app/realtime/` owns the notification hub.
+- Scans and feeds stay honest about cost: lockfile parsing, feed fetches, clones and grype/syft runs each carry their configured budgets, and the maintenance sweeper reclaims expired rows on a beat schedule.
+- Database migrations follow `alembic/versions/00NN_name.py`; write the model change, the migration, and a test touching both together.
+
+## Frontend source and domain boundaries
+
+- The build vendors the pinned design system into `public/vendor/` (`npm run build` in `services/ui`), and nginx serves `dist/` with the cache policy map in `services/ui/nginx/default.conf`. Pages load `theme-boot.js` in `<head>` after `mosp-ui-config.js` so the saved palette applies before first paint; the account page selects palettes through `applyTheme` and stores the choice as the server-side `theme` preference.
+- Keep first-party pages token-driven: reference `--mosp-accent*`/`--keen-accent*` variables and Bootstrap theme variables; palette-specific hex values live in the design system palettes.
+- Pages opt out of features with `gateFeature('manifests')`-style checks at init; nav visibility follows `applyFeatureVisibility`. Keep the same guard on every page a feature owns.

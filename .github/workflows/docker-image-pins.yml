@@ -1,0 +1,30 @@
+name: Docker image pins
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-pins
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check pinned digests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify every tracked tag still resolves to its pinned digest
+        run: |
+          set -euo pipefail
+          python3 -I tools/docker_image_pins.py check --report-dir "$RUNNER_TEMP/image-pins"
+          cat "$RUNNER_TEMP/image-pins/outputs.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true

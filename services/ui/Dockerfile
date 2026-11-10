@@ -1,39 +1,42 @@
-# UI build stage
-#
-# IMPORTANT: This Dockerfile expects the *build context* to be a directory that
-# contains BOTH:
-#   - ospmae/
-#   - mosp-design-system/
-# (i.e. siblings).
-#
-# Example:
-#   /workspace/
-#     ospmae/
-#     mosp-design-system/
-#
-# Build with:
-#   docker build -f ospmae/services/ui/Dockerfile -t ospmae-ui /workspace
+# Build from the OSPMAE repository root:
+# docker build -f services/ui/Dockerfile -t ospmae-ui .
+# MOSP is a public Git-backed npm dependency pinned by commit in package.json/lock.
+# Base images are pinned by digest; tools/docker_image_pins.py keeps them current.
 
-FROM node:20-alpine AS ui-assets
-WORKDIR /ui
+FROM node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 AS vendor
+ENV NODE_OPTIONS="--no-network-family-autoselection --dns-result-order=ipv4first"
 
-COPY ospmae/services/ui/package.json ospmae/services/ui/package-lock.json* ./
-COPY ospmae/services/ui/scripts ./scripts
-RUN npm install
+WORKDIR /build
 
-# Inject MOSP design system (local codebase, no npm registry)
-COPY mosp-design-system/ /tmp/mosp-design-system/
-RUN (cd /tmp/mosp-design-system && node scripts/build.mjs) \
- && mkdir -p /ui/node_modules/@FERCBusters \
- && rm -rf /ui/node_modules/@FERCBusters/mosp-design-system \
- && cp -a /tmp/mosp-design-system /ui/node_modules/@FERCBusters/mosp-design-system \
- && rm -rf /ui/node_modules/@FERCBusters/mosp-design-system/node_modules
 
-COPY ospmae/services/ui/public ./public
-RUN npm run vendor-assets
+# npm needs git when installing GitHub dependencies such as the design system.
+# This is only installed in the build/vendor stage, not the runtime nginx image.
+RUN apk add --no-cache git ca-certificates \
+ && git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" \
+ && git config --global --add url."https://github.com/".insteadOf "git@github.com:"
 
-FROM nginx:1.30.4-alpine
+# Lockfile includes the full public Git commit for the design system.
+COPY services/ui/package.json services/ui/package-lock.json ./
+RUN npm ci \
+ && node --input-type=module -e "import { transformSync } from 'esbuild'; transformSync('let x = 1');"
 
-COPY ospmae/services/ui/nginx/default.conf /etc/nginx/conf.d/default.conf
-COPY ospmae/services/ui/public /usr/share/nginx/html
-COPY --from=ui-assets /ui/public/vendor /usr/share/nginx/html/vendor
+# Build the pinned npm package's assets (uses only its included source/scripts).
+RUN npm --prefix node_modules/@fercbusters/mosp-design-system run build
+
+# Copy source and build vendored static assets into public/vendor
+COPY services/ui/scripts ./scripts
+COPY services/ui/public ./public
+RUN npm run build
+
+FROM nginx:1.30-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
+
+COPY services/ui/nginx/default.conf /etc/nginx/conf.d/default.conf
+COPY --from=vendor /build/dist/ /usr/share/nginx/html/
+
+# Make the npm manifests available in the runtime image so you can copy them
+# out after a build (e.g. docker cp) without needing to run npm on the host.
+RUN mkdir -p /opt/ui-build
+COPY --from=vendor /build/package.json /opt/ui-build/package.json
+COPY --from=vendor /build/package-lock.json /opt/ui-build/package-lock.json
+
+EXPOSE 80

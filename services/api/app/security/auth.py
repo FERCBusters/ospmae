@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 import secrets
-from datetime import datetime
 from collections.abc import Mapping
+from datetime import datetime
 
 from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
@@ -16,8 +17,8 @@ from app.security.roles import (
     ROLE_ARCHITECT,
     ROLE_CONTRIBUTOR,
     ROLE_ENGINEER,
-    ROLE_INHERIT,
     ROLE_FRAMEWORK_ADMIN,
+    ROLE_INHERIT,
     ROLE_MAINTAINER,
     ROLE_PENDING,
     ROLE_PRODUCT_OWNER,
@@ -39,6 +40,11 @@ ALLOWED_USER_ROLES = {
     ROLE_PENDING,
     ROLE_INHERIT,
 }
+
+# Every rejected sign-in pays one full password verification against this
+# hash, whether or not the username names an account, so response timing
+# cannot tell an attacker whether a username exists (or is active).
+_DUMMY_PASSWORD_HASH = hash_password("ospmae-timing-equaliser-0" * 4)
 
 
 def get_password_hash(password: str) -> str:
@@ -63,10 +69,15 @@ def get_user_by_email(db: Session, email: str) -> User | None:
 
 
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
+    """Verify local credentials.
+
+    Unknown and inactive accounts verify against the dummy hash, so every
+    rejection costs the same work whether or not the username names an
+    account: response timing carries no account-existence signal.
+    """
     user = get_user_by_username(db, username)
-    if not user:
-        return None
-    if not user.is_active:
+    if user is None or not user.is_active:
+        verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
     if not verify_password(password, user.password_hash):
         return None
@@ -77,81 +88,39 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     return user
 
 
-def _remote_user_from_headers(headers: Mapping[str, str]) -> str | None:
+def _remote_user_from_headers(
+    headers: Mapping[str, str], socket_peer: str | None = None
+) -> str | None:
+    """Read the trusted identity header.
+
+    Only the single configured header is honoured, and only when the socket
+    peer sits inside the trusted proxy networks: clients can send any header,
+    so the value counts as authentication only when a trusted proxy delivered
+    it. Deployees must also guarantee the API is reachable through that proxy
+    alone, and that the proxy sets (or clears) the header on every route.
+    """
+
     if not bool(settings.trust_remote_user):
         return None
 
-    candidates: list[str] = []
+    from app.security.client_addr import socket_peer_trusted
 
-    configured = (settings.remote_user_header_name or "").strip()
-    if configured:
-        candidates.append(configured)
+    if not socket_peer_trusted(socket_peer):
+        return None
 
-    candidates.extend(
-        [
-            "REMOTE_USER",
-            "X-Remote-User",
-            "X-Vouch-User",
-            "X-Forwarded-User",
-        ]
-    )
-
-    seen = set()
-    ordered: list[str] = []
-    for h in candidates:
-        k = h.lower()
-        if k in seen:
-            continue
-        seen.add(k)
-        ordered.append(h)
-
-    for header_name in ordered:
-        raw = headers.get(header_name)
-        if raw is None:
-            continue
-        value = str(raw).strip()
-        if value:
-            return value
-
-    return None
+    configured = (settings.remote_user_header_name or "").strip() or "REMOTE_USER"
+    raw = headers.get(configured)
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    return value
 
 
 def _extract_remote_user(request: Request) -> str | None:
-    return _remote_user_from_headers(request.headers)
-
-    candidates: list[str] = []
-
-    configured = (settings.remote_user_header_name or "").strip()
-    if configured:
-        candidates.append(configured)
-
-    candidates.extend(
-        [
-            "REMOTE_USER",
-            "X-Remote-User",
-            "X-Vouch-User",
-            "X-Forwarded-User",
-        ]
-    )
-
-    seen = set()
-    ordered = []
-    for h in candidates:
-        k = h.lower()
-        if k in seen:
-            continue
-        seen.add(k)
-        ordered.append(h)
-
-    for header_name in ordered:
-        raw = request.headers.get(header_name)
-        if raw is None:
-            continue
-        value = raw.strip()
-        if value:
-            return value
-
-    return None
+    peer = getattr(getattr(request, "client", None), "host", None)
+    return _remote_user_from_headers(request.headers, peer)
 
 
 def _normalize_role(raw: str | None) -> str:
@@ -206,12 +175,14 @@ def get_current_user_from_headers_cookies(
     headers: Mapping[str, str],
     cookies: Mapping[str, str],
     db: Session,
+    socket_peer: str | None = None,
 ) -> User | None:
     """Return the current user, or None if not authenticated.
 
-    Used by both HTTP requests and WebSocket handshakes.
+    Used by both HTTP requests and WebSocket handshakes; the socket peer gates
+    trusted remote-user authentication.
     """
-    remote_user = _remote_user_from_headers(headers)
+    remote_user = _remote_user_from_headers(headers, socket_peer)
     if remote_user:
         user = get_user_by_username(db, remote_user)
         if not user:
@@ -234,7 +205,7 @@ def get_current_user_from_headers_cookies(
 
     user = (
         db.query(User)
-        .filter(User.id == session_row.user_id, User.is_active == True)
+        .filter(User.id == session_row.user_id, User.is_active == True)  # noqa: E712 - SQLAlchemy boolean column predicate
         .one_or_none()
     )  # noqa: E712
     if not user:
@@ -245,7 +216,10 @@ def get_current_user_from_headers_cookies(
 
 
 def get_current_user_from_request(request: Request, db: Session) -> User | None:
-    return get_current_user_from_headers_cookies(request.headers, request.cookies, db)
+    peer = getattr(getattr(request, "client", None), "host", None)
+    return get_current_user_from_headers_cookies(
+        request.headers, request.cookies, db, peer
+    )
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -279,7 +253,7 @@ def set_session_cookie(response: Response, session_id: str) -> None:
         value=session_id,
         httponly=True,
         secure=bool(settings.cookie_secure),
-        samesite=samesite,
+        samesite=samesite,  # type: ignore[arg-type]
         domain=(settings.cookie_domain or "").strip() or None,
         path="/",
         max_age=int(settings.session_ttl_seconds),
@@ -310,6 +284,13 @@ def create_user(
     uname = (username or "").strip()
     if not uname:
         raise ValueError("username is required")
+    # The username is reflected into response headers (X-Project-User) and is
+    # compared case-insensitively during SSO linking, so it is restricted to a
+    # conservative charset and length.
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", uname):
+        raise ValueError(
+            "username must be 1-64 characters of letters, digits, '_', '-' or '.'"
+        )
     if get_user_by_username(db, uname):
         raise ValueError("username already exists")
 

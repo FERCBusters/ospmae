@@ -150,8 +150,35 @@ def contains_xml_dtd_or_entity(xml_bytes: bytes) -> bool:
 
     Python's stdlib ElementTree is not an XXE external-entity loader, but it can
     still be forced into expensive work on pathological inputs. We block DTD/
-    ENTITY declarations before parsing.
+    ENTITY declarations before parsing. The payload is already bounded by the
+    caller (a few MiB), so the whole body is scanned: a declaration hidden
+    behind the first chunk must not evade the guard.
     """
 
-    head = xml_bytes[:200_000].lower()  # scan only the first chunk
-    return (b"<!doctype" in head) or (b"<!entity" in head)
+    body = xml_bytes.lower()
+    return (b"<!doctype" in body) or (b"<!entity" in body)
+
+
+# Characters that browsers resolve before a path reaches the server, plus all
+# ASCII control characters; a same-origin route must never contain them.
+_BAD_ROUTE_CHARS = {ord("\\")} | set(range(0x00, 0x20)) | {0x7F}
+
+
+def safe_relative_route_path(value: str | None) -> str | None:
+    """Return a safe same-origin relative path for redirects and stored links.
+
+    Rejects protocol-relative URLs (``//evil``), absolute URLs, backslashes
+    and control characters, any of which browsers treat as a different
+    authority. ``None`` means the caller must fall back to a fixed route.
+    """
+
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if not raw.startswith("/") or raw.startswith("//"):
+        return None
+    if "://" in raw:
+        return None
+    if any(ord(ch) in _BAD_ROUTE_CHARS for ch in raw):
+        return None
+    return raw

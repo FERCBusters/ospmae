@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any
-import uuid
 
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
@@ -231,7 +231,9 @@ def project_changelog_state(
     project = project_or_id if isinstance(project_or_id, Project) else None
     if project is None:
         project = (
-            db.query(Project).filter(Project.id == int(project_or_id)).one_or_none()
+            db.query(Project)
+            .filter(Project.id == int(project_or_id))  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
+            .one_or_none()
         )
     if project is None:
         return None
@@ -304,7 +306,7 @@ def project_version_changelog_state(
     if version is None:
         version = (
             db.query(ProjectVersion)
-            .filter(ProjectVersion.id == int(version_or_id))
+            .filter(ProjectVersion.id == int(version_or_id))  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
             .one_or_none()
         )
     if version is None:
@@ -386,7 +388,7 @@ def list_entity_changelogs(
 
     total = qry.order_by(None).count()
     rows = (
-        qry.order_by(desc(EntityChangelog.changed_at)).limit(limit).offset(offset).all()
+        qry.order_by(desc(EntityChangelog.changed_at)).limit(limit).offset(offset).all()  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
     )
     return {
         "total": total,

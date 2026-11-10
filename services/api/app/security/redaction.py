@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode
-import os
 
 REDACTED = "REDACTED"
 
@@ -19,6 +19,11 @@ DEFAULT_SENSITIVE_KEYS: set[str] = {
     "authorization",
     "password",
     "cookie",
+    "csrf",
+    "csrf_token",
+    "nonce",
+    "state",
+    "id_token",
 }
 
 

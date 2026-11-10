@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
 import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.security.url_safety import validate_public_http_url, validate_safe_href
 from app.depscan.scan import validate_repo_url
+from app.security.url_safety import validate_public_http_url, validate_safe_href
 
 
 def _clean_tag_list(values: list[str]) -> list[str]:
@@ -216,13 +216,13 @@ class ProjectCreatePayload(BaseModel):
     machine_name: str = Field(min_length=1, max_length=160)
     display_name: str = Field(min_length=1, max_length=200)
 
-    organisation: str | None = None
-    project_type: str | None = None
-    license: str | None = None
+    organisation: str | None = Field(default=None, max_length=200)
+    project_type: str | None = Field(default=None, max_length=120)
+    license: str | None = Field(default=None, max_length=120)
 
     programming_languages: list[str] | None = None
 
-    capability: str | None = None
+    capability: str | None = Field(default=None, max_length=200)
     link_to_app: str | None = None
 
     # Optional RSS/Atom feed for releases (e.g. GitHub releases feed).
@@ -297,8 +297,12 @@ class ProjectCreatePayload(BaseModel):
 
 
 class ProjectUpdatePayload(ProjectCreatePayload):
-    machine_name: str | None = Field(default=None, min_length=1, max_length=160)
-    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    machine_name: str | None = Field(  # type: ignore[assignment]
+        default=None, min_length=1, max_length=160
+    )
+    display_name: str | None = Field(  # type: ignore[assignment]
+        default=None, min_length=1, max_length=200
+    )
 
 
 class ProjectSubscriptionUpdatePayload(BaseModel):
@@ -310,9 +314,9 @@ class ProjectSubscriptionUpdatePayload(BaseModel):
 class ProjectVersionCreatePayload(BaseModel):
     version: str = Field(min_length=1, max_length=64)
     release_date: datetime | None = None
-    status: str | None = None
+    status: str | None = Field(default=None, max_length=120)
     link_to_source_code: str | None = None
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=20000)
     is_latest: bool | None = None
     is_draft: bool | None = None
 
@@ -332,9 +336,9 @@ class ProjectVersionCreatePayload(BaseModel):
 class ProjectVersionUpdatePayload(BaseModel):
     version: str | None = Field(default=None, min_length=1, max_length=64)
     release_date: datetime | None = None
-    status: str | None = None
+    status: str | None = Field(default=None, max_length=120)
     link_to_source_code: str | None = None
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=20000)
     is_latest: bool | None = None
     is_draft: bool | None = None
 
@@ -397,6 +401,7 @@ class UserPreferencesUpdatePayload(BaseModel):
     default_start_page: str | None = None
     sticky_enabled: bool | None = None
     auto_apply_enabled: bool | None = None
+    theme: str | None = Field(default=None, max_length=16)
 
 
 class UserShortcutCreatePayload(BaseModel):
@@ -419,6 +424,10 @@ class MeProfileUpdatePayload(BaseModel):
 class UserEmailCreatePayload(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     is_primary: bool = False
+
+
+class EmailVerifyPayload(BaseModel):
+    token: str = Field(default="", max_length=200)
 
 
 # -----------------------------------------------------------------------------

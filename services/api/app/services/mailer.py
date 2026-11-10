@@ -136,7 +136,9 @@ def _send_email(*, to_email: str, subject: str, body: str) -> None:
         return
 
     msg = EmailMessage()
-    msg["Subject"] = subject
+    # Subject text often carries user-controlled names; strip CR/LF so the
+    # header line stays one line whatever a display name contains.
+    msg["Subject"] = str(subject or "").replace("\r", " ").replace("\n", " ")
     msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
     msg["To"] = to_addr
     msg.set_content(body)
@@ -200,8 +202,7 @@ def send_project_version_published_email(
     subject = f"{from_name}: New release for {project_name} ({version})"
 
     body = (
-        f"Hello,\n\n"
-        f"A new version of '{project_name}' has been published: {version}\n\n"
+        f"Hello,\n\nA new version of '{project_name}' has been published: {version}\n\n"
     )
     if project_url:
         body += f"View project: {project_url}\n\n"
@@ -286,7 +287,7 @@ def send_project_question_created_email(
     subject = f"{from_name}: New question on {project_name}"
 
     preview = _preview_text(question_body)
-    body = "Hello,\n\n" f"A new question was posted on '{project_name}'.\n\n"
+    body = f"Hello,\n\nA new question was posted on '{project_name}'.\n\n"
     if preview:
         body += f"Question: {preview}\n\n"
     if project_url:
@@ -309,11 +310,34 @@ def send_project_question_replied_email(
     subject = f"{from_name}: New reply on {project_name}"
 
     preview = _preview_text(reply_body)
-    body = "Hello,\n\n" f"A reply was posted to a question on '{project_name}'.\n\n"
+    body = f"Hello,\n\nA reply was posted to a question on '{project_name}'.\n\n"
     if preview:
         body += f"Reply: {preview}\n\n"
     if project_url:
         body += f"View project (Questions tab): {project_url}\n\n"
     body += "You are receiving this email because you subscribed to questions/replies for this project.\n"
+
+    _send_email(to_email=to_email, subject=subject, body=body)
+
+
+def send_email_verification_email(
+    *,
+    to_email: str,
+    username: str | None,
+    verification_link: str,
+) -> None:
+    """Send the one-time mailbox verification link for a self-asserted address."""
+
+    from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
+    subject = f"{from_name}: Verify your email address"
+
+    safe_user = (username or "").strip() or "your account"
+    body = (
+        f"Hello {safe_user},\n\n"
+        "A verification was requested for this email address on OSPMAE.\n\n"
+        "Confirm this mailbox with the one-time link below (valid for 24 hours):\n\n"
+        f"{verification_link}\n\n"
+        "If you did not request this, you can ignore this email.\n"
+    )
 
     _send_email(to_email=to_email, subject=subject, body=body)

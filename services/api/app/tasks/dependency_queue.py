@@ -15,6 +15,11 @@ log = get_task_logger(__name__)
 def dispatch_queued_dependency_discoveries(limit: int = 10) -> dict:
     """Kick off discovery tasks for any ProjectVersions marked as queued."""
 
+    from app.core.features import is_enabled
+
+    if not is_enabled("dependency_scans"):
+        return {"ok": False, "reason": "dependency_scans feature disabled"}
+
     db = SessionLocal()
     try:
         queued = (

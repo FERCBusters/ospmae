@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.capability_taxonomy import ensure_capability_taxonomy
-from app.db.models import CapabilityNode, User
+from app.db.models import FrameworkNode as CapabilityNode
+from app.db.models import User
 from app.db.session import get_db
 from app.security.auth import get_current_user
 

@@ -9,3 +9,10 @@ __pycache__/
 *.bak
 services/ui/public/vendor
 node_modules
+services/ui/node_modules/
+services/ui/dist/
+test-results/
+.coverage
+coverage/
+*.pytest_cache
+.ruff_cache/

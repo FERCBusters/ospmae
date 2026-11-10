@@ -10,6 +10,7 @@ from app.api.payloads import (
     AdminUserCreatePayload,
     AdminUserUpdatePayload,
 )
+from app.core.config import settings
 from app.db.models import (
     AuditLog,
     Group,
@@ -23,17 +24,16 @@ from app.db.models import (
     UserPermission,
 )
 from app.db.session import get_db
-from app.core.config import settings
 from app.security.auth import create_user
 from app.security.permissions import PERM_AUDITTRAIL_READ, has_permission
 from app.security.roles import ROLE_PENDING, attach_effective_role, normalize_role
-from app.services.mailer import send_account_approved_email
-from app.services.notification_recipients import notification_email_for_user
 from app.services.entity_changelog import (
     list_entity_changelogs,
     project_changelog_state,
     record_entity_changelog,
 )
+from app.services.mailer import send_account_approved_email
+from app.services.notification_recipients import notification_email_for_user
 
 router = APIRouter()
 
@@ -163,14 +163,39 @@ def update_user_route(
 
     previous_effective_role = attach_effective_role(db, u)
 
+    new_role = u.role
     if payload.role is not None:
         nr = normalize_role(payload.role)
         if nr is None:
             raise HTTPException(status_code=400, detail="Invalid role")
-        u.role = nr
+        new_role = nr
 
+    new_is_active = (
+        u.is_active if payload.is_active is None else bool(payload.is_active)
+    )
+
+    # Safety: don't allow demoting or deactivating the last active admin, the
+    # same guard the delete path applies.
+    if (
+        (u.role or "").lower() == "admin"
+        and bool(u.is_active)
+        and (new_role != "admin" or not new_is_active)
+    ):
+        active_admins = (
+            db.query(User.id)
+            .filter(User.role == "admin", User.is_active.is_(True))
+            .count()
+        )
+        if active_admins <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot demote or deactivate the last active admin user",
+            )
+
+    if payload.role is not None:
+        u.role = new_role
     if payload.is_active is not None:
-        u.is_active = bool(payload.is_active)
+        u.is_active = new_is_active
 
     if payload.email is not None:
         e = (payload.email or "").strip().lower() or None
@@ -314,12 +339,31 @@ def set_user_access(
     raw_permission_ids = body.get("permission_ids") or []
 
     try:
-        group_ids = sorted({int(x) for x in raw_group_ids})
-        permission_ids = sorted({int(x) for x in raw_permission_ids})
+        group_ids = sorted({int(x) for x in raw_group_ids})[:500]
+        permission_ids = sorted({int(x) for x in raw_permission_ids})[:500]
     except Exception as e:
         raise HTTPException(
             status_code=400, detail="group_ids and permission_ids must be integer lists"
         ) from e
+
+    # Safety: stripping the last active admin's own access would lock the
+    # installation out; refuse the change and ask for another admin.
+    if (
+        (u.role or "").lower() == "admin"
+        and bool(u.is_active)
+        and not permission_ids
+        and not group_ids
+    ):
+        active_admins = (
+            db.query(User.id)
+            .filter(User.role == "admin", User.is_active.is_(True))
+            .count()
+        )
+        if active_admins <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot strip access from the last active admin user",
+            )
 
     if group_ids:
         existing_groups = db.query(Group.id).filter(Group.id.in_(group_ids)).count()
@@ -693,7 +737,7 @@ def admin_audit_trail(
             pass
 
     total = qry.order_by(None).count()
-    rows = qry.order_by(desc(AuditLog.ts)).limit(limit).offset(offset).all()
+    rows = qry.order_by(desc(AuditLog.ts)).limit(limit).offset(offset).all()  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
     items = [
         {
             "id": str(row.id),

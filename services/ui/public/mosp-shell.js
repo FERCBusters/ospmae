@@ -2,7 +2,9 @@ import {
   initNavbar,
   renderTaxonomyPillsBrowser,
   safeExternalHref,
-} from '/vendor/mosp-design-system/app.js';
+  applyTheme,
+  THEMES,
+} from "/vendor/mosp-design-system/app.js";
 
 // Mount the unified navbar for legacy (non-module) pages.
 // Pages should include:
@@ -15,7 +17,9 @@ import {
 window.mospUi = window.mospUi || {};
 window.mospUi.renderTaxonomyPillsBrowser = renderTaxonomyPillsBrowser;
 window.mospUi.safeExternalHref = safeExternalHref;
+window.mospUi.applyTheme = applyTheme;
+window.mospUi.THEMES = THEMES;
 
 initNavbar().catch((err) => {
-  console.error('MOSP navbar init failed', err);
+  console.error("MOSP navbar init failed", err);
 });

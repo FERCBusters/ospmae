@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any
-import uuid
 
 from sqlalchemy import (
     Boolean,
@@ -30,6 +30,10 @@ class UserPreference(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
     )
+
+    # Theme palette id from the shared design system; empty means the
+    # application default until the account sets one.
+    theme: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Generic framework palette overrides.
     # Keys are formatted as '<framework_machine_name>:<node_key>', for example:
@@ -103,6 +107,9 @@ class Session(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     # How the session was created. Used to decide whether logout should trigger
@@ -128,6 +135,32 @@ class PasswordResetToken(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+
+    # SHA256 hex digest of the token sent to the user (store hash only).
+    token_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# -----------------------------------------------------------------------------
+# Mailbox verification (self-asserted account emails)
+# -----------------------------------------------------------------------------
+
+
+class EmailVerificationToken(Base):
+    __tablename__ = "email_verification_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    email_lower: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # SHA256 hex digest of the token sent to the user (store hash only).
     token_hash: Mapped[str] = mapped_column(

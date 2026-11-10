@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-
 from datetime import datetime
 from typing import Any
 
@@ -20,14 +19,6 @@ from app.db.models import (
     UserGroup,
 )
 from app.db.session import get_db
-from app.services.notification_recipients import (
-    notification_email_for_user,
-    notification_emails_for_users,
-)
-from app.services.mailer import (
-    send_project_question_created_email,
-    send_project_question_replied_email,
-)
 from app.realtime.notifications import hub
 from app.security.auth import get_current_user
 from app.security.permissions import (
@@ -40,6 +31,14 @@ from app.security.roles import (
     ROLE_CONTRIBUTOR,
     ROLE_MAINTAINER,
     attach_effective_role,
+)
+from app.services.mailer import (
+    send_project_question_created_email,
+    send_project_question_replied_email,
+)
+from app.services.notification_recipients import (
+    notification_email_for_user,
+    notification_emails_for_users,
 )
 
 router = APIRouter(tags=["project-questions"])
@@ -227,7 +226,8 @@ def _serialize_thread(thread: ProjectQuestionThread) -> dict[str, Any]:
 def _serialize_unanswered_thread(thread: ProjectQuestionThread) -> dict[str, Any]:
     first_post = None
     try:
-        first_post = (thread.posts or [None])[0]
+        posts = list(thread.posts or [])
+        first_post = posts[0] if posts else None
     except Exception:
         first_post = None
 

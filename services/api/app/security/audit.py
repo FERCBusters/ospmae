@@ -83,7 +83,7 @@ def log_login_failure(
 
 def log_logout(
     db: Session,
-    user_id: int,
+    user_id: int | None,
     ip_address: str | None = None,
     user_agent: str | None = None,
 ) -> None:

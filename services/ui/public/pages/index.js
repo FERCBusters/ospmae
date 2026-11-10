@@ -32,53 +32,55 @@ const state = {
 };
 
 const el = {
-  q: document.getElementById('q'),
-  autoApplyFilters: document.getElementById('autoApplyFilters'),
-  capabilitySearch: document.getElementById('capabilitySearch'),
-  languageFilter: document.getElementById('languageFilter'),
-  statusFilter: document.getElementById('statusFilter'),
-  activeFiltersSummary: document.getElementById('activeFiltersSummary'),
-  capabilityTreemap: document.getElementById('capabilityTreemap'),
-  capabilityTreemapMeta: document.getElementById('capabilityTreemapMeta'),
-  capabilityTreemapDetails: document.getElementById('capabilityTreemapDetails'),
-  projects: document.getElementById('projects'),
-  projectsCount: document.getElementById('projectsCount'),
-  applyFiltersBtn: document.getElementById('applyFiltersBtn'),
-  resetFiltersBtn: document.getElementById('resetFiltersBtn'),
-  manifestBuilderCard: document.getElementById('manifestBuilderCard'),
-  manifestControls: document.getElementById('manifestControls'),
-  manifestSelectionInfo: document.getElementById('manifestSelectionInfo'),
-  manifestName: document.getElementById('manifestName'),
-  manifestDescription: document.getElementById('manifestDescription'),
-  selectVisibleBtn: document.getElementById('selectVisibleBtn'),
-  clearSelectionBtn: document.getElementById('clearSelectionBtn'),
-  exportJsonBtn: document.getElementById('exportJsonBtn'),
-  exportXlsxBtn: document.getElementById('exportXlsxBtn'),
-  exportMdBtn: document.getElementById('exportMdBtn'),
-  saveManifestBtn: document.getElementById('saveManifestBtn'),
-  btnNewProject: document.getElementById('btnNewProject'),
+  q: document.getElementById("q"),
+  autoApplyFilters: document.getElementById("autoApplyFilters"),
+  capabilitySearch: document.getElementById("capabilitySearch"),
+  languageFilter: document.getElementById("languageFilter"),
+  statusFilter: document.getElementById("statusFilter"),
+  activeFiltersSummary: document.getElementById("activeFiltersSummary"),
+  capabilityTreemap: document.getElementById("capabilityTreemap"),
+  capabilityTreemapMeta: document.getElementById("capabilityTreemapMeta"),
+  capabilityTreemapDetails: document.getElementById("capabilityTreemapDetails"),
+  projects: document.getElementById("projects"),
+  projectsCount: document.getElementById("projectsCount"),
+  applyFiltersBtn: document.getElementById("applyFiltersBtn"),
+  resetFiltersBtn: document.getElementById("resetFiltersBtn"),
+  manifestBuilderCard: document.getElementById("manifestBuilderCard"),
+  manifestControls: document.getElementById("manifestControls"),
+  manifestSelectionInfo: document.getElementById("manifestSelectionInfo"),
+  manifestName: document.getElementById("manifestName"),
+  manifestDescription: document.getElementById("manifestDescription"),
+  selectVisibleBtn: document.getElementById("selectVisibleBtn"),
+  clearSelectionBtn: document.getElementById("clearSelectionBtn"),
+  exportJsonBtn: document.getElementById("exportJsonBtn"),
+  exportXlsxBtn: document.getElementById("exportXlsxBtn"),
+  exportMdBtn: document.getElementById("exportMdBtn"),
+  saveManifestBtn: document.getElementById("saveManifestBtn"),
+  btnNewProject: document.getElementById("btnNewProject"),
 };
 
 function roleOf(me) {
-  return me?.effective_role || me?.role || 'viewer';
+  return me?.effective_role || me?.role || "viewer";
 }
 
 function canUseManifests(me) {
   const role = roleOf(me);
-  return role === 'admin' || role === 'architect' || role === 'product_owner';
+  return role === "admin" || role === "architect" || role === "product_owner";
 }
 
 function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function getSelectedLanguages() {
-  const opts = el.languageFilter?.selectedOptions ? Array.from(el.languageFilter.selectedOptions) : [];
+  const opts = el.languageFilter?.selectedOptions
+    ? Array.from(el.languageFilter.selectedOptions)
+    : [];
   const vals = opts.map((o) => String(o.value || "").trim()).filter(Boolean);
   const seen = new Set();
   const out = [];
@@ -96,9 +98,10 @@ function selectedLanguagesCsv() {
   return langs.length ? langs.join(",") : "";
 }
 
-
 function getSelectedStatuses() {
-  const opts = el.statusFilter?.selectedOptions ? Array.from(el.statusFilter.selectedOptions) : [];
+  const opts = el.statusFilter?.selectedOptions
+    ? Array.from(el.statusFilter.selectedOptions)
+    : [];
   const vals = opts.map((o) => String(o.value || "").trim()).filter(Boolean);
   const seen = new Set();
   const out = [];
@@ -113,15 +116,15 @@ function getSelectedStatuses() {
 
 function selectedStatusesCsv() {
   const sts = getSelectedStatuses();
-  return sts.length ? sts.join(',') : '';
+  return sts.length ? sts.join(",") : "";
 }
 
 function formatStatusSummary(sts, max = 4) {
   const arr = Array.isArray(sts) ? sts : [];
-  if (!arr.length) return '';
+  if (!arr.length) return "";
   const shown = arr.slice(0, max);
-  const extra = arr.length > max ? ' +' : '';
-  return shown.join(', ') + extra;
+  const extra = arr.length > max ? " +" : "";
+  return shown.join(", ") + extra;
 }
 
 function formatLanguageSummary(langs, max = 4) {
@@ -134,69 +137,83 @@ function formatLanguageSummary(langs, max = 4) {
 
 function formatProjectNames(projects, maxNames = 8) {
   const arr = Array.isArray(projects) ? projects : [];
-  if (!arr.length) return '';
+  if (!arr.length) return "";
   const names = [];
   for (const p of arr) {
     if (!p) continue;
     if (Number(p.id) === -1) {
-      names.push(String(p.name || '').trim());
+      names.push(String(p.name || "").trim());
       continue;
     }
-    const name = String(p.name || '').trim();
+    const name = String(p.name || "").trim();
     if (name) names.push(name);
     if (names.length >= Number(maxNames || 8)) break;
   }
   const more = arr.find((p) => Number(p?.id) === -1);
-  const suffix = more && String(more.name || '').trim() ? ` ${String(more.name).trim()}` : '';
-  return names.join(', ') + suffix;
+  const suffix =
+    more && String(more.name || "").trim()
+      ? ` ${String(more.name).trim()}`
+      : "";
+  return names.join(", ") + suffix;
 }
 
 function renderProjectBadges(projects, maxBadges = 12) {
   const arr = Array.isArray(projects) ? projects : [];
-  if (!arr.length) return '';
+  if (!arr.length) return "";
   const out = [];
   let shown = 0;
   for (const p of arr) {
     if (!p) continue;
     if (Number(p.id) === -1) {
-      out.push(`<span class="badge text-bg-light border">${escapeHtml(p.name)}</span>`);
+      out.push(
+        `<span class="badge text-bg-light border">${escapeHtml(p.name)}</span>`,
+      );
       continue;
     }
     if (shown >= Number(maxBadges || 12)) break;
-    const name = String(p.name || '').trim();
+    const name = String(p.name || "").trim();
     if (!name) continue;
-    out.push(`<a class="badge text-bg-light border text-decoration-none" href="/project.html?id=${Number(p.id)}">${escapeHtml(name)}</a>`);
+    out.push(
+      `<a class="badge text-bg-light border text-decoration-none" href="/project.html?id=${Number(p.id)}">${escapeHtml(name)}</a>`,
+    );
     shown += 1;
   }
   const more = arr.find((p) => Number(p?.id) === -1);
-  if (shown >= Number(maxBadges || 12) && more && String(more.name || '').trim()) {
-    out.push(`<span class="badge text-bg-light border">${escapeHtml(more.name)}</span>`);
+  if (
+    shown >= Number(maxBadges || 12) &&
+    more &&
+    String(more.name || "").trim()
+  ) {
+    out.push(
+      `<span class="badge text-bg-light border">${escapeHtml(more.name)}</span>`,
+    );
   }
-  return out.join(' ');
+  return out.join(" ");
 }
-
 
 function toQueryString(query) {
   const params = new URLSearchParams();
   Object.entries(query || {}).forEach(([k, v]) => {
-    if (v === undefined || v === null || v === '') return;
+    if (v === undefined || v === null || v === "") return;
     params.set(k, String(v));
   });
   const s = params.toString();
-  return s ? `?${s}` : '';
+  return s ? `?${s}` : "";
 }
 
 function currentNodeIdsCsv() {
-  return state.selectedNodeId ? String(state.selectedNodeId) : '';
+  return state.selectedNodeId ? String(state.selectedNodeId) : "";
 }
 
 function currentSelectedProjectIdsCsv() {
-  return Array.from(state.selectedProjectIds).sort((a, b) => a - b).join(',');
+  return Array.from(state.selectedProjectIds)
+    .sort((a, b) => a - b)
+    .join(",");
 }
 
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const a = document.createElement("a");
   a.href = url;
   a.download = filename;
   document.body.appendChild(a);
@@ -221,9 +238,8 @@ function clampNum(value, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
-
 function hexToRgb(hex) {
-  const raw = String(hex || '').trim();
+  const raw = String(hex || "").trim();
   if (!raw) return null;
   const m = raw.match(/^#?([0-9a-f]{6})$/i);
   if (!m) return null;
@@ -231,7 +247,8 @@ function hexToRgb(hex) {
   const r = parseInt(v.slice(0, 2), 16);
   const g = parseInt(v.slice(2, 4), 16);
   const b = parseInt(v.slice(4, 6), 16);
-  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b))
+    return null;
   return { r, g, b };
 }
 
@@ -243,16 +260,16 @@ function rgbaFromHex(hex, alpha) {
 }
 
 function splitPathParts(rawPath) {
-  return String(rawPath || '')
+  return String(rawPath || "")
     .split(/\/|>/g)
-    .map((p) => String(p || '').trim())
+    .map((p) => String(p || "").trim())
     .filter(Boolean);
 }
 
 function normalizePathKey(rawPath) {
   const parts = splitPathParts(rawPath);
-  if (!parts.length) return '';
-  return parts.join(' > ').toLowerCase();
+  if (!parts.length) return "";
+  return parts.join(" > ").toLowerCase();
 }
 
 function nodeIdForCapabilityPath(capabilityPath) {
@@ -262,44 +279,43 @@ function nodeIdForCapabilityPath(capabilityPath) {
 }
 
 function renderCapabilityTag(capabilityId, capabilityPath) {
-  const path = String(capabilityPath || '').trim();
-  if (!path) return '';
+  const path = String(capabilityPath || "").trim();
+  if (!path) return "";
   const resolvedId = capabilityId || nodeIdForCapabilityPath(path);
   const color = resolvedId ? colorForNodeId(resolvedId) : null;
   if (!color) {
     return `<span class="tag">${escapeHtml(path)}</span>`;
   }
-  const bg = rgbaFromHex(color, 0.14) || '';
-  const border = rgbaFromHex(color, 0.22) || '';
+  const bg = rgbaFromHex(color, 0.14) || "";
+  const border = rgbaFromHex(color, 0.22) || "";
   const style = bg
     ? ` style="background:${bg}; color:${color}; border:1px solid ${border};"`
     : ` style="color:${color};"`;
   return `<span class="tag"${style}>${escapeHtml(path)}</span>`;
 }
 
-
 function trimLabel(value, maxChars) {
-  const s = String(value || '');
+  const s = String(value || "");
   const m = Math.max(4, Number(maxChars) || 24);
   if (s.length <= m) return s;
   return `${s.slice(0, Math.max(0, m - 1))}…`;
 }
 
 function _ellipsize(s, maxChars) {
-  const str = String(s || '');
-  if (maxChars <= 1) return '…';
+  const str = String(s || "");
+  if (maxChars <= 1) return "…";
   if (str.length <= maxChars) return str;
   return `${str.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
 function wrapLabelWords(name, maxCharsPerLine, maxLines) {
-  const raw = String(name || '').trim();
-  if (!raw) return [''];
+  const raw = String(name || "").trim();
+  if (!raw) return [""];
   const words = raw.split(/\s+/).filter(Boolean);
-  if (!words.length) return [''];
+  if (!words.length) return [""];
 
   const lines = [];
-  let line = '';
+  let line = "";
   let usedAllWords = true;
 
   for (let i = 0; i < words.length; i += 1) {
@@ -308,7 +324,7 @@ function wrapLabelWords(name, maxCharsPerLine, maxLines) {
 
     if (!line && candidate.length > maxCharsPerLine) {
       lines.push(_ellipsize(candidate, maxCharsPerLine));
-      line = '';
+      line = "";
       if (lines.length >= maxLines) {
         usedAllWords = false;
         break;
@@ -331,7 +347,10 @@ function wrapLabelWords(name, maxCharsPerLine, maxLines) {
   if (line && lines.length < maxLines) lines.push(line);
 
   if (!usedAllWords && lines.length) {
-    lines[lines.length - 1] = _ellipsize(lines[lines.length - 1], Math.max(4, maxCharsPerLine));
+    lines[lines.length - 1] = _ellipsize(
+      lines[lines.length - 1],
+      Math.max(4, maxCharsPerLine),
+    );
   }
 
   return lines.slice(0, Math.max(1, maxLines));
@@ -352,21 +371,21 @@ function ancestryFor(nodeId) {
 
 function groupKeyForNodeId(nodeId) {
   const chain = ancestryFor(nodeId);
-  if (!chain.length) return 'technology_capabilities';
-  return chain[1]?.key || chain[0]?.key || 'technology_capabilities';
+  if (!chain.length) return "technology_capabilities";
+  return chain[1]?.key || chain[0]?.key || "technology_capabilities";
 }
 
 function colorForNodeId(nodeId) {
   const fw = state.activeFramework;
   const groupKey = groupKeyForNodeId(nodeId);
-  const prefix = fw?.machine_name ? `${fw.machine_name}:` : '';
+  const prefix = fw?.machine_name ? `${fw.machine_name}:` : "";
   return nodeColorForKey(`${prefix}${groupKey}`);
 }
 
 function treemapNodeColor(d, maxDepth) {
   const base = colorForNodeId(d?.data?.id);
   const d3 = window.d3;
-  if (!d3 || typeof d3.hsl !== 'function') return base;
+  if (!d3 || typeof d3.hsl !== "function") return base;
 
   const depth = Number(d?.depth || 0);
   const depthNorm = maxDepth > 0 ? clamp01(depth / maxDepth) : 0;
@@ -381,18 +400,18 @@ function treemapNodeColor(d, maxDepth) {
 
   // Similar to project treemap: more saturated + darker to avoid washed-out pastels.
   c.s = clampNum((c.s || 0) * 1.28 + 0.14, 0.26, 1.0);
-  const lMul = 0.90 - (depthNorm * 0.20) - (isLeaf ? 0.14 : 0.06);
+  const lMul = 0.9 - depthNorm * 0.2 - (isLeaf ? 0.14 : 0.06);
   c.l = clampNum((c.l || 0.5) * lMul, 0.12, isLeaf ? 0.62 : 0.74);
-  return (typeof c.formatHex === 'function') ? c.formatHex() : String(c);
+  return typeof c.formatHex === "function" ? c.formatHex() : String(c);
 }
 
 function updateSelectionInfo() {
   if (!state.canBuildManifests) {
-    if (el.manifestControls) el.manifestControls.style.display = 'none';
+    if (el.manifestControls) el.manifestControls.style.display = "none";
     return;
   }
 
-  if (el.manifestControls) el.manifestControls.style.display = '';
+  if (el.manifestControls) el.manifestControls.style.display = "";
 
   const selectedCount = state.selectedProjectIds.size;
   const totalCount = state.projects.length;
@@ -404,10 +423,11 @@ function updateSelectionInfo() {
 
 function renderProjects() {
   const list = state.projects || [];
-  el.projectsCount.textContent = `${list.length} project${list.length === 1 ? '' : 's'}`;
+  el.projectsCount.textContent = `${list.length} project${list.length === 1 ? "" : "s"}`;
 
   if (!list.length) {
-    el.projects.innerHTML = '<p class="muted">No projects found for the current filters.</p>';
+    el.projects.innerHTML =
+      '<p class="muted">No projects found for the current filters.</p>';
     updateSelectionInfo();
     return;
   }
@@ -415,33 +435,41 @@ function renderProjects() {
   el.projects.innerHTML = list
     .map((c) => {
       const selected = state.selectedProjectIds.has(c.id);
-      const capPairs = Array.isArray(c.capability_pairs) ? c.capability_pairs : [];
-      const capPaths = Array.isArray(c.capability_paths) ? c.capability_paths : [];
+      const capPairs = Array.isArray(c.capability_pairs)
+        ? c.capability_pairs
+        : [];
+      const capPaths = Array.isArray(c.capability_paths)
+        ? c.capability_paths
+        : [];
       const capCount = capPairs.length ? capPairs.length : capPaths.length;
 
-      const preview = (capPairs.length ? capPairs : capPaths.map((p) => ({ capability_path: p })))
+      const preview = (
+        capPairs.length
+          ? capPairs
+          : capPaths.map((p) => ({ capability_path: p }))
+      )
         .slice(0, 6)
         .map((cp) => renderCapabilityTag(cp.capability_id, cp.capability_path))
-        .join('');
+        .join("");
 
       const selectBox = state.canBuildManifests
-        ? `<input class="form-check-input project-select" type="checkbox" ${selected ? 'checked' : ''} data-project-id="${c.id}" title="Select for manifest" />`
-        : '';
+        ? `<input class="form-check-input project-select" type="checkbox" ${selected ? "checked" : ""} data-project-id="${c.id}" title="Select for manifest" />`
+        : "";
 
       return `
-        <article class="project-card ${state.canBuildManifests ? 'selectable' : ''} ${selected ? 'selected' : ''}" data-project-id="${c.id}">
+        <article class="project-card ${state.canBuildManifests ? "selectable" : ""} ${selected ? "selected" : ""}" data-project-id="${c.id}">
           <header>
             <div class="d-flex align-items-start justify-content-between gap-2">
               <div>
                 <h3 class="mb-1"><a href="/project.html?id=${c.id}">${escapeHtml(c.display_name || c.machine_name)}</a></h3>
-                <div class="muted small">${escapeHtml(c.organisation || '—')}</div>
+                <div class="muted small">${escapeHtml(c.organisation || "—")}</div>
               </div>
               ${selectBox}
             </div>
           </header>
           <div class="row" style="gap:12px; justify-content:space-between;">
-            <div class="small"><strong>Type:</strong> ${escapeHtml(c.project_type || 'n/a')}</div>
-            <div class="small"><strong>Latest:</strong> ${escapeHtml(c.latest_version?.version || 'n/a')}</div>
+            <div class="small"><strong>Type:</strong> ${escapeHtml(c.project_type || "n/a")}</div>
+            <div class="small"><strong>Latest:</strong> ${escapeHtml(c.latest_version?.version || "n/a")}</div>
           </div>
           <div class="small" style="margin-top:6px;">Categories: ${capCount}</div>
           <div class="tags-row" style="margin-top:6px;">
@@ -450,11 +478,11 @@ function renderProjects() {
         </article>
       `;
     })
-    .join('');
+    .join("");
 
   // Checkbox toggles (manifest selection)
-  el.projects.querySelectorAll('input.project-select').forEach((box) => {
-    box.addEventListener('click', (e) => {
+  el.projects.querySelectorAll("input.project-select").forEach((box) => {
+    box.addEventListener("click", (e) => {
       e.stopPropagation();
       const id = Number(box.dataset.projectId);
       if (Number.isNaN(id)) return;
@@ -467,14 +495,15 @@ function renderProjects() {
 
   // Card click toggles selection for manifest-capable roles.
   if (state.canBuildManifests) {
-    el.projects.querySelectorAll('.project-card.selectable').forEach((card) => {
-      card.addEventListener('click', (e) => {
-        const link = e.target?.closest?.('a');
-        const checkbox = e.target?.closest?.('input.project-select');
+    el.projects.querySelectorAll(".project-card.selectable").forEach((card) => {
+      card.addEventListener("click", (e) => {
+        const link = e.target?.closest?.("a");
+        const checkbox = e.target?.closest?.("input.project-select");
         if (link || checkbox) return;
         const id = Number(card.dataset.projectId);
         if (Number.isNaN(id)) return;
-        if (state.selectedProjectIds.has(id)) state.selectedProjectIds.delete(id);
+        if (state.selectedProjectIds.has(id))
+          state.selectedProjectIds.delete(id);
         else state.selectedProjectIds.add(id);
         renderProjects();
         updateSelectionInfo();
@@ -486,9 +515,10 @@ function renderProjects() {
 }
 
 function updateActiveFilterSummary() {
-  const q = (el.q.value || '').trim();
+  const q = (el.q.value || "").trim();
   const selectedPath = state.selectedNodeId
-    ? (state.nodePathById.get(Number(state.selectedNodeId)) || state.nodeById.get(Number(state.selectedNodeId))?.display_name)
+    ? state.nodePathById.get(Number(state.selectedNodeId)) ||
+      state.nodeById.get(Number(state.selectedNodeId))?.display_name
     : null;
 
   const bits = [];
@@ -501,11 +531,16 @@ function updateActiveFilterSummary() {
   const sts = getSelectedStatuses();
   if (sts.length) bits.push(`Status: ${formatStatusSummary(sts)}`);
 
-  el.activeFiltersSummary.textContent = bits.length ? bits.join(' · ') : 'No filters active.';
+  el.activeFiltersSummary.textContent = bits.length
+    ? bits.join(" · ")
+    : "No filters active.";
 
   if (el.capabilityTreemapMeta) {
-    const hint = 'Click a tile to filter projects • Click a tile with children to zoom • Click background to reset';
-    const sel = selectedPath ? `Showing projects for: ${selectedPath}` : 'Showing all projects';
+    const hint =
+      "Click a tile to filter projects • Click a tile with children to zoom • Click background to reset";
+    const sel = selectedPath
+      ? `Showing projects for: ${selectedPath}`
+      : "Showing all projects";
     el.capabilityTreemapMeta.textContent = `${sel} · ${hint}`;
   }
 }
@@ -513,7 +548,7 @@ function updateActiveFilterSummary() {
 async function loadProjects() {
   const fwId = state.activeFramework?.id;
   const query = {
-    q: (el.q.value || '').trim() || undefined,
+    q: (el.q.value || "").trim() || undefined,
     framework_id: fwId || undefined,
     node_ids: currentNodeIdsCsv() || undefined,
     languages: selectedLanguagesCsv() || undefined,
@@ -526,13 +561,14 @@ async function loadProjects() {
 }
 
 async function exportManifest(format) {
-  const name = (el.manifestName.value || 'project-manifest').trim() || 'project-manifest';
+  const name =
+    (el.manifestName.value || "project-manifest").trim() || "project-manifest";
   const fwId = state.activeFramework?.id;
 
   const query = {
     format,
     name,
-    q: (el.q.value || '').trim() || undefined,
+    q: (el.q.value || "").trim() || undefined,
     framework_id: fwId || undefined,
     node_ids: currentNodeIdsCsv() || undefined,
     languages: selectedLanguagesCsv() || undefined,
@@ -541,43 +577,48 @@ async function exportManifest(format) {
   };
 
   const path = `/v1/manifests/export${toQueryString(query)}`;
-  const blob = await apiFetch(path, { responseType: 'blob' });
-  const ext = format === 'xlsx' ? 'xlsx' : (format === 'markdown' ? 'md' : 'json');
+  const blob = await apiFetch(path, { responseType: "blob" });
+  const ext =
+    format === "xlsx" ? "xlsx" : format === "markdown" ? "md" : "json";
   downloadBlob(blob, `${name}.${ext}`);
 }
 
 async function saveManifest() {
-  const name = (el.manifestName.value || '').trim();
+  const name = (el.manifestName.value || "").trim();
   if (!name) {
-    toast('Please enter a manifest name.', 'warn');
+    toast("Please enter a manifest name.", "warn");
     return;
   }
   if (!state.activeFramework?.id) {
-    toast('Please pick a framework first.', 'warn');
+    toast("Please pick a framework first.", "warn");
     return;
   }
 
   const payload = {
     name,
-    description: (el.manifestDescription.value || '').trim() || null,
-    q: (el.q.value || '').trim() || null,
+    description: (el.manifestDescription.value || "").trim() || null,
+    q: (el.q.value || "").trim() || null,
     framework_id: state.activeFramework.id,
     node_ids: state.selectedNodeId ? [Number(state.selectedNodeId)] : [],
     project_ids: Array.from(state.selectedProjectIds).sort((a, b) => a - b),
   };
 
-  await apiFetch('/v1/manifests', { method: 'POST', body: payload });
-  toast('Manifest saved.');
+  await apiFetch("/v1/manifests", { method: "POST", body: payload });
+  toast("Manifest saved.");
 }
 
 function resetFilters() {
-  el.q.value = '';
-  el.capabilitySearch.value = '';
+  el.q.value = "";
+  el.capabilitySearch.value = "";
   if (el.languageFilter) {
-    Array.from(el.languageFilter.options || []).forEach((opt) => { opt.selected = false; });
+    Array.from(el.languageFilter.options || []).forEach((opt) => {
+      opt.selected = false;
+    });
   }
   if (el.statusFilter) {
-    Array.from(el.statusFilter.options || []).forEach((opt) => { opt.selected = false; });
+    Array.from(el.statusFilter.options || []).forEach((opt) => {
+      opt.selected = false;
+    });
   }
   state.selectedNodeId = null;
   state.selectedProjectIds.clear();
@@ -585,7 +626,6 @@ function resetFilters() {
   state.treemapApi?.reset?.();
   loadProjects();
 }
-
 
 function treemapDimensions() {
   const rect = el.capabilityTreemap.getBoundingClientRect();
@@ -597,13 +637,15 @@ function treemapDimensions() {
 function renderCatalogueTreemap() {
   const d3 = window.d3;
   if (!d3) {
-    el.capabilityTreemap.innerHTML = '<div class="small">D3 library is unavailable.</div>';
+    el.capabilityTreemap.innerHTML =
+      '<div class="small">D3 library is unavailable.</div>';
     return;
   }
 
   const roots = Array.isArray(state.catalogueTree) ? state.catalogueTree : [];
   if (!roots.length) {
-    el.capabilityTreemap.innerHTML = '<div class="small">No framework taxonomy loaded.</div>';
+    el.capabilityTreemap.innerHTML =
+      '<div class="small">No framework taxonomy loaded.</div>';
     return;
   }
 
@@ -611,9 +653,15 @@ function renderCatalogueTreemap() {
   const topPad = 28;
   const innerHeight = Math.max(260, height - topPad - 6);
 
-  const capRoot = roots.length === 1
-    ? roots[0]
-    : { id: 'cap-root', key: 'cap-root', display_name: 'Capabilities', children: roots };
+  const capRoot =
+    roots.length === 1
+      ? roots[0]
+      : {
+          id: "cap-root",
+          key: "cap-root",
+          display_name: "Capabilities",
+          children: roots,
+        };
 
   const root = d3
     .hierarchy(capRoot, (d) => d.children)
@@ -624,7 +672,9 @@ function renderCatalogueTreemap() {
   root.eachAfter((d) => {
     const direct = Number(d.data?.project_count_direct || 0);
     const descendants = Number(d.data?.project_count_descendants || 0);
-    const total = Number(d.data?.project_count_total || (direct + descendants) || 0);
+    const total = Number(
+      d.data?.project_count_total || direct + descendants || 0,
+    );
     d.projectCount = Number.isFinite(total) ? total : 0;
     d.projectCountDirect = Number.isFinite(direct) ? direct : 0;
     d.projectCountDescendants = Number.isFinite(descendants) ? descendants : 0;
@@ -665,69 +715,82 @@ function renderCatalogueTreemap() {
 
   const svg = d3
     .select(el.capabilityTreemap)
-    .html('')
-    .append('svg')
-    .attr('viewBox', [0, 0, width, height])
-    .attr('width', '100%')
-    .attr('height', height);
+    .html("")
+    .append("svg")
+    .attr("viewBox", [0, 0, width, height])
+    .attr("width", "100%")
+    .attr("height", height);
 
-  const viewport = svg.append('g');
+  const viewport = svg.append("g");
 
-  const header = viewport.append('g');
+  const header = viewport.append("g");
   const breadcrumb = header
-    .append('text')
-    .attr('x', 10)
-    .attr('y', 18)
-    .style('font-size', '12px')
-    .style('font-weight', 650)
-    .text('Capabilities');
+    .append("text")
+    .attr("x", 10)
+    .attr("y", 18)
+    .style("font-size", "12px")
+    .style("font-weight", 650)
+    .text("Capabilities");
 
   header
-    .append('text')
-    .attr('x', width - 10)
-    .attr('y', 18)
-    .attr('text-anchor', 'end')
-    .style('font-size', '11px')
-    .attr('opacity', 0.7)
-    .text('Click to zoom/filter • Background resets');
+    .append("text")
+    .attr("x", width - 10)
+    .attr("y", 18)
+    .attr("text-anchor", "end")
+    .style("font-size", "11px")
+    .attr("opacity", 0.7)
+    .text("Click to zoom/filter • Background resets");
 
-  const cellsLayer = viewport.append('g').attr('transform', `translate(0,${topPad})`);
-  const labelsLayer = viewport.append('g').attr('transform', `translate(0,${topPad})`);
+  const cellsLayer = viewport
+    .append("g")
+    .attr("transform", `translate(0,${topPad})`);
+  const labelsLayer = viewport
+    .append("g")
+    .attr("transform", `translate(0,${topPad})`);
 
   const keyFor = (d) =>
     d
       .ancestors()
-      .map((a) => String(a.data?.id ?? a.data?.key ?? ''))
+      .map((a) => String(a.data?.id ?? a.data?.key ?? ""))
       .reverse()
-      .join('/');
+      .join("/");
 
-  const safeIdFor = (d) => ('clip_' + keyFor(d)).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 220);
+  const safeIdFor = (d) =>
+    ("clip_" + keyFor(d)).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 220);
 
   const pathLabelFor = (d) =>
     d
       .ancestors()
-      .map((a) => String(a.data?.display_name || a.data?.key || ''))
+      .map((a) => String(a.data?.display_name || a.data?.key || ""))
       .reverse()
-      .join(' > ');
+      .join(" > ");
 
   function updateTreemapDetailsFor(node) {
     if (!el.capabilityTreemapDetails) return;
     if (!node || !node.data || node.depth === 0) {
-      el.capabilityTreemapDetails.style.display = 'none';
-      el.capabilityTreemapDetails.innerHTML = '';
+      el.capabilityTreemapDetails.style.display = "none";
+      el.capabilityTreemapDetails.innerHTML = "";
       return;
     }
 
     const total = Number(node.data.project_count_total || 0);
     const direct = Number(node.data.project_count_direct || 0);
     const desc = Number(node.data.project_count_descendants || 0);
-    const totalProjects = Array.isArray(node.data.projects_total) ? node.data.projects_total : [];
-    const directProjects = Array.isArray(node.data.projects_direct) ? node.data.projects_direct : [];
+    const totalProjects = Array.isArray(node.data.projects_total)
+      ? node.data.projects_total
+      : [];
+    const directProjects = Array.isArray(node.data.projects_direct)
+      ? node.data.projects_direct
+      : [];
 
-    const title = escapeHtml(String(node.data.display_name || node.data.key || 'Capability'));
+    const title = escapeHtml(
+      String(node.data.display_name || node.data.key || "Capability"),
+    );
     const parts = [];
 
-    parts.push(`<div class="fw-semibold">${title}: ${total} ${total === 1 ? 'project' : 'projects'}</div>`);
+    parts.push(
+      `<div class="fw-semibold">${title}: ${total} ${total === 1 ? "project" : "projects"}</div>`,
+    );
 
     const names = renderProjectBadges(totalProjects, 14);
     if (names) {
@@ -737,18 +800,23 @@ function renderCatalogueTreemap() {
     if (node.children && node.children.length && direct > 0) {
       const directNames = renderProjectBadges(directProjects, 14);
       const box = [];
-      box.push(`<div class="fw-semibold mb-1">Directly mapped to this capability (${direct}):</div>`);
-      if (directNames) box.push(`<div class="d-flex flex-wrap gap-1">${directNames}</div>`);
+      box.push(
+        `<div class="fw-semibold mb-1">Directly mapped to this capability (${direct}):</div>`,
+      );
+      if (directNames)
+        box.push(`<div class="d-flex flex-wrap gap-1">${directNames}</div>`);
       if (desc === 0) {
         box.push(
-          `<div class="mt-2 text-success-emphasis">These projects selected the parent capability but not any sub-capabilities. <strong>Sub-capabilities will show 0 unless projects map them explicitly.</strong></div>`
+          `<div class="mt-2 text-success-emphasis">These projects selected the parent capability but not any sub-capabilities. <strong>Sub-capabilities will show 0 unless projects map them explicitly.</strong></div>`,
         );
       }
-      parts.push(`<div class="mt-2 bg-success-subtle border border-success-subtle rounded-3 p-3 shadow-sm">${box.join('')}</div>`);
+      parts.push(
+        `<div class="mt-2 bg-success-subtle border border-success-subtle rounded-3 p-3 shadow-sm">${box.join("")}</div>`,
+      );
     }
 
-    el.capabilityTreemapDetails.innerHTML = parts.join('');
-    el.capabilityTreemapDetails.style.display = '';
+    el.capabilityTreemapDetails.innerHTML = parts.join("");
+    el.capabilityTreemapDetails.style.display = "";
   }
 
   let focus = root;
@@ -764,24 +832,22 @@ function renderCatalogueTreemap() {
     if (w < 70) return directOnly ? `${total} direct` : String(total);
     if (w < 110) return directOnly ? `${total} direct` : `${total} proj.`;
 
-    let base = `${total} ${total === 1 ? 'project' : 'projects'}`;
-    if (directOnly) base += ' (direct)';
+    let base = `${total} ${total === 1 ? "project" : "projects"}`;
+    if (directOnly) base += " (direct)";
     return base;
   }
-
 
   function isVerticalOverlayLabel(d, w, h) {
     if (!isNarrowTall(w, h)) return false;
     if (d.children && d.children.length) return true;
-    return (focus && focus.depth === 0 && d.depth === 1);
+    return focus && focus.depth === 0 && d.depth === 1;
   }
 
   function tileOpacity(d) {
     if (d.depth === 0) return 0;
     const rel = Math.max(1, d.depth - focus.depth);
-    const base = rel === 1
-      ? (d.children ? 0.36 : 0.92)
-      : (d.children ? 0.56 : 0.95);
+    const base =
+      rel === 1 ? (d.children ? 0.36 : 0.92) : d.children ? 0.56 : 0.95;
     return clamp01(base);
   }
 
@@ -801,50 +867,58 @@ function renderCatalogueTreemap() {
   function zoomTo(newFocus) {
     focus = newFocus || root;
     const x = d3.scaleLinear().domain([focus.x0, focus.x1]).range([0, width]);
-    const y = d3.scaleLinear().domain([focus.y0, focus.y1]).range([0, innerHeight]);
+    const y = d3
+      .scaleLinear()
+      .domain([focus.y0, focus.y1])
+      .range([0, innerHeight]);
 
     const maxDepth = focus.depth + depthSpan;
     const visible = root
       .descendants()
-      .filter((d) => d.depth > focus.depth && d.depth <= maxDepth && d.ancestors().includes(focus))
-      .sort((a, b) => (a.depth - b.depth) || ((a.value || 0) - (b.value || 0)));
+      .filter(
+        (d) =>
+          d.depth > focus.depth &&
+          d.depth <= maxDepth &&
+          d.ancestors().includes(focus),
+      )
+      .sort((a, b) => a.depth - b.depth || (a.value || 0) - (b.value || 0));
 
     const t = d3.transition().duration(520);
     breadcrumb.text(pathLabelFor(focus));
     updateTreemapDetailsFor(focus);
 
-    const cell = cellsLayer.selectAll('g.cell').data(visible, keyFor);
-    const cellEnter = cell.enter().append('g').attr('class', 'cell');
+    const cell = cellsLayer.selectAll("g.cell").data(visible, keyFor);
+    const cellEnter = cell.enter().append("g").attr("class", "cell");
 
     cellEnter
-      .append('rect')
-      .attr('rx', 10)
-      .attr('ry', 10)
-      .attr('stroke', 'rgba(0,0,0,0.22)')
-      .attr('stroke-width', 1.2);
+      .append("rect")
+      .attr("rx", 10)
+      .attr("ry", 10)
+      .attr("stroke", "rgba(0,0,0,0.22)")
+      .attr("stroke-width", 1.2);
 
-    const cp = cellEnter.append('clipPath').attr('id', (d) => safeIdFor(d));
-    cp.append('rect');
+    const cp = cellEnter.append("clipPath").attr("id", (d) => safeIdFor(d));
+    cp.append("rect");
 
     const text = cellEnter
-      .append('text')
-      .attr('class', 'cell-label')
-      .attr('text-anchor', 'middle')
-      .attr('dominant-baseline', 'central')
-      .style('font-size', '14px')
-      .style('font-weight', 750)
-      .style('fill', '#ffffff')
-      .style('pointer-events', 'none');
+      .append("text")
+      .attr("class", "cell-label")
+      .attr("text-anchor", "middle")
+      .attr("dominant-baseline", "central")
+      .style("font-size", "14px")
+      .style("font-weight", 750)
+      .style("fill", "#ffffff")
+      .style("pointer-events", "none");
 
-    text.append('tspan').attr('class', 't1');
+    text.append("tspan").attr("class", "t1");
     text
-      .append('tspan')
-      .attr('class', 't2')
-      .attr('dy', 14)
-      .style('font-weight', 520)
-      .attr('opacity', 0.78);
+      .append("tspan")
+      .attr("class", "t2")
+      .attr("dy", 14)
+      .style("font-weight", 520)
+      .attr("opacity", 0.78);
 
-    cellEnter.append('title');
+    cellEnter.append("title");
 
     const merged = cellEnter.merge(cell);
 
@@ -856,15 +930,17 @@ function renderCatalogueTreemap() {
     }
 
     merged
-      .style('cursor', (d) => (zoomTargetFor(d) || d?.data?.id ? 'pointer' : 'default'))
-      .on('click', (event, d) => {
+      .style("cursor", (d) =>
+        zoomTargetFor(d) || d?.data?.id ? "pointer" : "default",
+      )
+      .on("click", (event, d) => {
         event.stopPropagation();
         setSelectedFromNode(d);
         const target = zoomTargetFor(d);
         if (target) zoomTo(target);
       });
 
-    merged.select('title').text((d) => {
+    merged.select("title").text((d) => {
       const label = pathLabelFor(d);
       const total = Number(d.projectCount || 0);
       const direct = Number(d.projectCountDirect || 0);
@@ -874,229 +950,240 @@ function renderCatalogueTreemap() {
 
       const lines = [];
       lines.push(label);
-      lines.push(`Total: ${total} ${total === 1 ? 'project' : 'projects'}`);
+      lines.push(`Total: ${total} ${total === 1 ? "project" : "projects"}`);
       if (totalNames) lines.push(`Projects: ${totalNames}`);
 
       if (d.children && d.children.length && direct > 0) {
         lines.push(`Direct on this capability: ${direct}`);
         if (directNames) lines.push(`Direct projects: ${directNames}`);
-        if (desc === 0) lines.push('Note: sub-capabilities may show 0 unless mapped explicitly.');
+        if (desc === 0)
+          lines.push(
+            "Note: sub-capabilities may show 0 unless mapped explicitly.",
+          );
       }
-      return lines.join('\n');
+      return lines.join("\n");
     });
 
     merged
-      .select('rect')
+      .select("rect")
       .transition(t)
-      .attr('x', (d) => x(d.x0))
-      .attr('y', (d) => y(d.y0))
-      .attr('width', (d) => Math.max(0, x(d.x1) - x(d.x0)))
-      .attr('height', (d) => Math.max(0, y(d.y1) - y(d.y0)))
-      .attr('fill', (d) => treemapNodeColor(d, root.height))
-      .attr('fill-opacity', (d) => tileOpacity(d))
-      .attr('stroke-width', (d) => {
+      .attr("x", (d) => x(d.x0))
+      .attr("y", (d) => y(d.y0))
+      .attr("width", (d) => Math.max(0, x(d.x1) - x(d.x0)))
+      .attr("height", (d) => Math.max(0, y(d.y1) - y(d.y0)))
+      .attr("fill", (d) => treemapNodeColor(d, root.height))
+      .attr("fill-opacity", (d) => tileOpacity(d))
+      .attr("stroke-width", (d) => {
         const sel = Number(d?.data?.id) === Number(state.selectedNodeId);
         return sel ? 2.6 : 1.2;
       })
-      .attr('stroke', (d) => {
+      .attr("stroke", (d) => {
         const sel = Number(d?.data?.id) === Number(state.selectedNodeId);
-        return sel ? 'rgba(255,255,255,0.92)' : 'rgba(0,0,0,0.22)';
+        return sel ? "rgba(255,255,255,0.92)" : "rgba(0,0,0,0.22)";
       });
 
     merged
-      .select('clipPath rect')
+      .select("clipPath rect")
       .transition(t)
-      .attr('x', (d) => x(d.x0))
-      .attr('y', (d) => y(d.y0))
-      .attr('width', (d) => Math.max(0, x(d.x1) - x(d.x0)))
-      .attr('height', (d) => Math.max(0, y(d.y1) - y(d.y0)));
+      .attr("x", (d) => x(d.x0))
+      .attr("y", (d) => y(d.y0))
+      .attr("width", (d) => Math.max(0, x(d.x1) - x(d.x0)))
+      .attr("height", (d) => Math.max(0, y(d.y1) - y(d.y0)));
 
-    const containers = root
-      .descendants()
-      .filter((d) => {
-        if (!(d.depth > focus.depth && d.depth <= focus.depth + 2)) return false;
-        if (!d.ancestors().includes(focus)) return false;
-        if (d.children && d.children.length) return true;
-        if (focus.depth === 0 && d.depth === 1) return true;
-        return false;
-      });
+    const containers = root.descendants().filter((d) => {
+      if (!(d.depth > focus.depth && d.depth <= focus.depth + 2)) return false;
+      if (!d.ancestors().includes(focus)) return false;
+      if (d.children && d.children.length) return true;
+      if (focus.depth === 0 && d.depth === 1) return true;
+      return false;
+    });
 
     const labelKey = (d) => `label:${keyFor(d)}`;
-    const labels = labelsLayer.selectAll('g.container-label').data(containers, labelKey);
+    const labels = labelsLayer
+      .selectAll("g.container-label")
+      .data(containers, labelKey);
 
     const labelsEnter = labels
       .enter()
-      .append('g')
-      .attr('class', 'container-label')
-      .style('pointer-events', 'all');
+      .append("g")
+      .attr("class", "container-label")
+      .style("pointer-events", "all");
 
     labelsEnter
-      .append('rect')
-      .attr('rx', 8)
-      .attr('ry', 8)
-      .attr('fill', 'rgba(255,255,255,0.62)')
-      .attr('stroke', 'rgba(0,0,0,0.14)')
-      .attr('stroke-width', 1);
+      .append("rect")
+      .attr("rx", 8)
+      .attr("ry", 8)
+      .attr("fill", "rgba(255,255,255,0.62)")
+      .attr("stroke", "rgba(0,0,0,0.14)")
+      .attr("stroke-width", 1);
 
-    const lcp = labelsEnter.append('clipPath').attr('id', (d) => `${safeIdFor(d)}_olab`);
-    lcp.append('rect');
+    const lcp = labelsEnter
+      .append("clipPath")
+      .attr("id", (d) => `${safeIdFor(d)}_olab`);
+    lcp.append("rect");
 
     const ltext = labelsEnter
-      .append('text')
-      .attr('class', 'container-label-text')
-      .style('font-size', '12px')
-      .style('font-weight', 650)
-      .attr('dominant-baseline', 'hanging')
-      .style('pointer-events', 'none');
+      .append("text")
+      .attr("class", "container-label-text")
+      .style("font-size", "12px")
+      .style("font-weight", 650)
+      .attr("dominant-baseline", "hanging")
+      .style("pointer-events", "none");
 
-    ltext.append('tspan').attr('class', 't1');
+    ltext.append("tspan").attr("class", "t1");
     ltext
-      .append('tspan')
-      .attr('class', 't2')
-      .attr('dy', 14)
-      .style('font-weight', 520)
-      .attr('opacity', 0.75);
+      .append("tspan")
+      .attr("class", "t2")
+      .attr("dy", 14)
+      .style("font-weight", 520)
+      .attr("opacity", 0.75);
 
     const labelsMerged = labelsEnter.merge(labels);
 
     labelsMerged
-      .style('cursor', (d) => (d.children && d.children.length ? 'pointer' : 'default'))
-      .on('click', (event, d) => {
+      .style("cursor", (d) =>
+        d.children && d.children.length ? "pointer" : "default",
+      )
+      .on("click", (event, d) => {
         event.stopPropagation();
         setSelectedFromNode(d);
         if (d.children && d.children.length) zoomTo(d);
       });
 
-    labelsMerged
-      .transition(t)
-      .attr('opacity', (d) => {
-        const w = x(d.x1) - x(d.x0);
-        const h = y(d.y1) - y(d.y0);
-        const vertical = isVerticalOverlayLabel(d, w, h);
-        if (vertical) {
-          if (w < 16 || h < 80) return 0;
-          return 1;
-        }
-        if (w < 34 || h < 24) return 0;
+    labelsMerged.transition(t).attr("opacity", (d) => {
+      const w = x(d.x1) - x(d.x0);
+      const h = y(d.y1) - y(d.y0);
+      const vertical = isVerticalOverlayLabel(d, w, h);
+      if (vertical) {
+        if (w < 16 || h < 80) return 0;
         return 1;
-      });
+      }
+      if (w < 34 || h < 24) return 0;
+      return 1;
+    });
 
     labelsMerged
-      .select('rect')
+      .select("rect")
       .transition(t)
-      .attr('x', (d) => x(d.x0) + 6)
-      .attr('y', (d) => y(d.y0) + 6)
-      .attr('width', (d) => {
+      .attr("x", (d) => x(d.x0) + 6)
+      .attr("y", (d) => y(d.y0) + 6)
+      .attr("width", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
-        if (isVerticalOverlayLabel(d, w, h)) return Math.max(0, Math.min(verticalStripWidth - 4, w - 12));
+        if (isVerticalOverlayLabel(d, w, h))
+          return Math.max(0, Math.min(verticalStripWidth - 4, w - 12));
         return Math.max(0, w - 12);
       })
-      .attr('height', (d) => {
+      .attr("height", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
         if (isVerticalOverlayLabel(d, w, h)) return Math.max(0, h - 12);
-        const showCount = (w >= 96) && (h >= 58);
+        const showCount = w >= 96 && h >= 58;
         return showCount ? 34 : 22;
       });
 
     labelsMerged
-      .select('clipPath rect')
+      .select("clipPath rect")
       .transition(t)
-      .attr('x', (d) => x(d.x0) + 6)
-      .attr('y', (d) => y(d.y0) + 6)
-      .attr('width', (d) => {
+      .attr("x", (d) => x(d.x0) + 6)
+      .attr("y", (d) => y(d.y0) + 6)
+      .attr("width", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
-        if (isVerticalOverlayLabel(d, w, h)) return Math.max(0, Math.min(verticalStripWidth - 4, w - 12));
+        if (isVerticalOverlayLabel(d, w, h))
+          return Math.max(0, Math.min(verticalStripWidth - 4, w - 12));
         return Math.max(0, w - 12);
       })
-      .attr('height', (d) => {
+      .attr("height", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
         if (isVerticalOverlayLabel(d, w, h)) return Math.max(0, h - 12);
-        const showCount = (w >= 96) && (h >= 58);
+        const showCount = w >= 96 && h >= 58;
         return showCount ? 34 : 22;
       });
 
     labelsMerged
-      .select('text')
+      .select("text")
       .transition(t)
-      .attr('x', (d) => {
+      .attr("x", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
-        return isVerticalOverlayLabel(d, w, h) ? 0 : x(d.x0) + (w / 2);
+        return isVerticalOverlayLabel(d, w, h) ? 0 : x(d.x0) + w / 2;
       })
-      .attr('y', (d) => {
+      .attr("y", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
         return isVerticalOverlayLabel(d, w, h) ? 0 : y(d.y0) + 10;
       })
-      .attr('transform', (d) => {
+      .attr("transform", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
         if (!isVerticalOverlayLabel(d, w, h)) return null;
         const stripW = Math.max(0, Math.min(verticalStripWidth - 4, w - 12));
-        const tx = x(d.x0) + 6 + (stripW / 2);
-        const ty = y(d.y0) + 6 + ((h - 12) / 2);
+        const tx = x(d.x0) + 6 + stripW / 2;
+        const ty = y(d.y0) + 6 + (h - 12) / 2;
         return `translate(${tx},${ty}) rotate(-90)`;
       })
-      .attr('dominant-baseline', (d) => {
+      .attr("dominant-baseline", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
-        return isVerticalOverlayLabel(d, w, h) ? 'central' : 'hanging';
+        return isVerticalOverlayLabel(d, w, h) ? "central" : "hanging";
       })
-      .attr('text-anchor', (d) => {
+      .attr("text-anchor", (d) => {
         const w = x(d.x1) - x(d.x0);
         const h = y(d.y1) - y(d.y0);
-        return isVerticalOverlayLabel(d, w, h) ? 'middle' : 'middle';
+        return isVerticalOverlayLabel(d, w, h) ? "middle" : "middle";
       });
 
-    labelsMerged
-      .select('text')
-      .attr('clip-path', (d) => {
-        const w = x(d.x1) - x(d.x0);
-        const h = y(d.y1) - y(d.y0);
-        if (isVerticalOverlayLabel(d, w, h)) return null;
-        return `url(#${safeIdFor(d)}_olab)`;
-      });
+    labelsMerged.select("text").attr("clip-path", (d) => {
+      const w = x(d.x1) - x(d.x0);
+      const h = y(d.y1) - y(d.y0);
+      if (isVerticalOverlayLabel(d, w, h)) return null;
+      return `url(#${safeIdFor(d)}_olab)`;
+    });
 
-    labelsMerged.select('text.container-label-text').each(function (d) {
+    labelsMerged.select("text.container-label-text").each(function (d) {
       const node = d3.select(this);
       const tileW = Math.max(0, x(d.x1) - x(d.x0));
       const tileH = Math.max(0, y(d.y1) - y(d.y0));
       const vertical = isVerticalOverlayLabel(d, tileW, tileH);
 
-      const avail = vertical ? (tileH - 24) : (tileW - 22);
-      const maxChars = Math.max(4, Math.min(vertical ? 48 : 32, Math.floor(avail / 7)));
-      const label = trimLabel(String(d.data?.display_name || d.data?.key || ''), maxChars);
-      node.style('font-size', vertical ? '11px' : '12px');
-      node.select('tspan.t1').text(label);
+      const avail = vertical ? tileH - 24 : tileW - 22;
+      const maxChars = Math.max(
+        4,
+        Math.min(vertical ? 48 : 32, Math.floor(avail / 7)),
+      );
+      const label = trimLabel(
+        String(d.data?.display_name || d.data?.key || ""),
+        maxChars,
+      );
+      node.style("font-size", vertical ? "11px" : "12px");
+      node.select("tspan.t1").text(label);
 
-      const t2 = node.select('tspan.t2');
+      const t2 = node.select("tspan.t2");
       if (vertical) {
-        t2.text('');
+        t2.text("");
         return;
       }
 
-      const showCount = (tileW >= 96) && (tileH >= 58);
+      const showCount = tileW >= 96 && tileH >= 58;
       if (!showCount) {
-        t2.text('');
+        t2.text("");
       } else {
         t2.text(countLabelFor(d, tileW - 22));
-        t2.attr('x', x(d.x0) + (tileW / 2));
+        t2.attr("x", x(d.x0) + tileW / 2);
       }
     });
 
-    labels.exit().transition(t).attr('opacity', 0).remove();
+    labels.exit().transition(t).attr("opacity", 0).remove();
 
     merged
-      .select('text.cell-label')
+      .select("text.cell-label")
       .transition(t)
-      .attr('x', (d) => (x(d.x0) + x(d.x1)) / 2)
-      .attr('y', (d) => (y(d.y0) + y(d.y1)) / 2)
-      .attr('clip-path', (d) => `url(#${safeIdFor(d)})`)
-      .attr('opacity', (d) => {
+      .attr("x", (d) => (x(d.x0) + x(d.x1)) / 2)
+      .attr("y", (d) => (y(d.y0) + y(d.y1)) / 2)
+      .attr("clip-path", (d) => `url(#${safeIdFor(d)})`)
+      .attr("opacity", (d) => {
         const rel = d.depth - focus.depth;
         if (rel < 1) return 0;
         if (d.children && d.children.length) return 0;
@@ -1107,33 +1194,41 @@ function renderCatalogueTreemap() {
         return rel === 1 ? 0.98 : 0.95;
       });
 
-    merged.select('text.cell-label').each(function (d) {
+    merged.select("text.cell-label").each(function (d) {
       const w = x(d.x1) - x(d.x0);
       const h = y(d.y1) - y(d.y0);
       const rel = Math.max(1, d.depth - focus.depth);
       const base = Math.min(w, h);
-      const fs = clampNum(Math.floor(base / (rel <= 1 ? 6.8 : 7.8)), 12, rel <= 1 ? 28 : 22);
+      const fs = clampNum(
+        Math.floor(base / (rel <= 1 ? 6.8 : 7.8)),
+        12,
+        rel <= 1 ? 28 : 22,
+      );
 
       const nodeSel = d3.select(this);
       nodeSel
-        .style('font-size', `${fs}px`)
-        .style('fill', '#ffffff')
-        .style('stroke', 'none')
-        .style('stroke-width', '0px');
+        .style("font-size", `${fs}px`)
+        .style("fill", "#ffffff")
+        .style("stroke", "none")
+        .style("stroke-width", "0px");
 
       const cx = (x(d.x0) + x(d.x1)) / 2;
       const cy = (y(d.y0) + y(d.y1)) / 2;
-      nodeSel.selectAll('tspan').remove();
+      nodeSel.selectAll("tspan").remove();
 
-      const name = String(d.data?.display_name || d.data?.key || '');
+      const name = String(d.data?.display_name || d.data?.key || "");
       const isLeaf = !(d.children && d.children.length);
       const availW = Math.max(0, w - 18);
-      const maxCharsPerLine = clampNum(Math.floor(availW / Math.max(1, fs * 0.58)), 6, 28);
-      const maxLabelLines = (h >= 140 && w >= 140) ? 3 : (h >= 84 ? 2 : 1);
+      const maxCharsPerLine = clampNum(
+        Math.floor(availW / Math.max(1, fs * 0.58)),
+        6,
+        28,
+      );
+      const maxLabelLines = h >= 140 && w >= 140 ? 3 : h >= 84 ? 2 : 1;
       const labelLines = wrapLabelWords(name, maxCharsPerLine, maxLabelLines);
 
-      const showCount = isLeaf ? (w >= 96 && h >= 54) : (w >= 110 && h >= 50);
-      const countText = showCount ? countLabelFor(d, w) : '';
+      const showCount = isLeaf ? w >= 96 && h >= 54 : w >= 110 && h >= 50;
+      const countText = showCount ? countLabelFor(d, w) : "";
 
       const lineHeightEm = 1.08;
       const totalLines = labelLines.length + (countText ? 1 : 0);
@@ -1141,28 +1236,28 @@ function renderCatalogueTreemap() {
 
       labelLines.forEach((line, idx) => {
         nodeSel
-          .append('tspan')
-          .attr('x', cx)
-          .attr('dy', `${idx === 0 ? startDy : lineHeightEm}em`)
-          .style('font-weight', 800)
+          .append("tspan")
+          .attr("x", cx)
+          .attr("dy", `${idx === 0 ? startDy : lineHeightEm}em`)
+          .style("font-weight", 800)
           .text(line);
       });
 
       if (countText) {
         nodeSel
-          .append('tspan')
-          .attr('x', cx)
-          .attr('dy', `${lineHeightEm}em`)
-          .style('font-size', `${Math.max(11, Math.floor(fs * 0.78))}px`)
-          .style('font-weight', 850)
-          .attr('opacity', 0.92)
+          .append("tspan")
+          .attr("x", cx)
+          .attr("dy", `${lineHeightEm}em`)
+          .style("font-size", `${Math.max(11, Math.floor(fs * 0.78))}px`)
+          .style("font-weight", 850)
+          .attr("opacity", 0.92)
           .text(countText);
       }
 
-      nodeSel.attr('x', cx).attr('y', cy);
+      nodeSel.attr("x", cx).attr("y", cy);
     });
 
-    cell.exit().transition(t).attr('opacity', 0).remove();
+    cell.exit().transition(t).attr("opacity", 0).remove();
   }
 
   function resetAll() {
@@ -1173,13 +1268,15 @@ function renderCatalogueTreemap() {
     loadProjects();
   }
 
-  svg.on('click', () => resetAll());
+  svg.on("click", () => resetAll());
   zoomTo(root);
 
   state.treemapApi = {
     reset: resetAll,
     zoomToId: (id) => {
-      const target = root.descendants().find((d) => Number(d.data?.id) === Number(id));
+      const target = root
+        .descendants()
+        .find((d) => Number(d.data?.id) === Number(id));
       if (!target) return false;
       setSelectedFromNode(target);
       if (target.children && target.children.length) {
@@ -1203,7 +1300,9 @@ async function loadFrameworkCatalogue() {
     return;
   }
 
-  const data = await apiFetch(`/v1/frameworks/${fw.id}/catalogue?latest_only=true`);
+  const data = await apiFetch(
+    `/v1/frameworks/${fw.id}/catalogue?latest_only=true`,
+  );
   state.catalogueTree = Array.isArray(data?.tree) ? data.tree : [];
 
   state.nodeById.clear();
@@ -1220,25 +1319,35 @@ async function loadFrameworkCatalogue() {
       project_count_direct: Number(n.project_count_direct || 0),
       project_count_descendants: Number(n.project_count_descendants || 0),
       project_count_total: Number(n.project_count_total || 0),
-      projects_direct: Array.isArray(n.projects_direct) ? n.projects_direct : [],
+      projects_direct: Array.isArray(n.projects_direct)
+        ? n.projects_direct
+        : [],
       projects_total: Array.isArray(n.projects_total) ? n.projects_total : [],
     });
-    state.nodePathById.set(Number(n.id), n.path || n.display_name || n.key || String(n.id));
+    state.nodePathById.set(
+      Number(n.id),
+      n.path || n.display_name || n.key || String(n.id),
+    );
 
     // Also build a reverse lookup for capability-path colouring in the project list.
     const rawPath = n.path || n.display_name || n.key || String(n.id);
     const parts = splitPathParts(rawPath);
     const fullKey = normalizePathKey(rawPath);
-    if (fullKey && !state.nodeIdByPath.has(fullKey)) state.nodeIdByPath.set(fullKey, Number(n.id));
+    if (fullKey && !state.nodeIdByPath.has(fullKey))
+      state.nodeIdByPath.set(fullKey, Number(n.id));
     // Alias without the root segment (some endpoints omit the framework root in capability_paths).
     if (parts.length > 1) {
-      const aliasKey = parts.slice(1).join(' > ').toLowerCase();
-      if (aliasKey && !state.nodeIdByPath.has(aliasKey)) state.nodeIdByPath.set(aliasKey, Number(n.id));
+      const aliasKey = parts.slice(1).join(" > ").toLowerCase();
+      if (aliasKey && !state.nodeIdByPath.has(aliasKey))
+        state.nodeIdByPath.set(aliasKey, Number(n.id));
     }
   });
 
   // If current selection no longer exists, clear it.
-  if (state.selectedNodeId && !state.nodeById.has(Number(state.selectedNodeId))) {
+  if (
+    state.selectedNodeId &&
+    !state.nodeById.has(Number(state.selectedNodeId))
+  ) {
     state.selectedNodeId = null;
   }
 
@@ -1247,7 +1356,7 @@ async function loadFrameworkCatalogue() {
 
 function wireEvents() {
   let qTimer = null;
-  el.q.addEventListener('input', () => {
+  el.q.addEventListener("input", () => {
     updateActiveFilterSummary();
     if (!autoApplyEnabled()) return;
     if (qTimer) window.clearTimeout(qTimer);
@@ -1256,80 +1365,81 @@ function wireEvents() {
     }, 250);
   });
 
-  el.languageFilter?.addEventListener('change', () => {
+  el.languageFilter?.addEventListener("change", () => {
     updateActiveFilterSummary();
     if (!autoApplyEnabled()) return;
     loadProjects();
   });
 
-  el.statusFilter?.addEventListener('change', () => {
+  el.statusFilter?.addEventListener("change", () => {
     updateActiveFilterSummary();
     if (!autoApplyEnabled()) return;
     loadProjects();
   });
 
   // Capability search: press Enter to jump/zoom to the first matching capability.
-  el.capabilitySearch.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
+  el.capabilitySearch.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
     e.preventDefault();
-    const term = (el.capabilitySearch.value || '').trim().toLowerCase();
+    const term = (el.capabilitySearch.value || "").trim().toLowerCase();
     if (!term) return;
 
     const matches = Array.from(state.nodePathById.entries())
-      .map(([id, path]) => ({ id, path: String(path || '').toLowerCase() }))
+      .map(([id, path]) => ({ id, path: String(path || "").toLowerCase() }))
       .filter((x) => x.path.includes(term));
     if (!matches.length) {
-      toast('No matching capabilities.', 'warn');
+      toast("No matching capabilities.", "warn");
       return;
     }
     const targetId = matches[0].id;
     const ok = state.treemapApi?.zoomToId?.(targetId);
-    if (!ok) toast('Unable to zoom to that capability.', 'warn');
+    if (!ok) toast("Unable to zoom to that capability.", "warn");
   });
 
-  el.applyFiltersBtn.addEventListener('click', () => {
+  el.applyFiltersBtn.addEventListener("click", () => {
     loadProjects();
   });
 
-  el.autoApplyFilters?.addEventListener('change', async () => {
+  el.autoApplyFilters?.addEventListener("change", async () => {
     try {
-      await saveUserPreferences({ auto_apply_enabled: !!el.autoApplyFilters.checked });
-      toast('Auto-apply preference saved.', 'success');
+      await saveUserPreferences({
+        auto_apply_enabled: !!el.autoApplyFilters.checked,
+      });
+      toast("Auto-apply preference saved.", "success");
     } catch (err) {
-      toast(err?.message || 'Failed to save auto-apply preference', 'error');
+      toast(err?.message || "Failed to save auto-apply preference", "error");
     }
   });
 
-  el.resetFiltersBtn.addEventListener('click', () => {
+  el.resetFiltersBtn.addEventListener("click", () => {
     resetFilters();
   });
 
-
-  el.selectVisibleBtn?.addEventListener('click', () => {
+  el.selectVisibleBtn?.addEventListener("click", () => {
     if (!state.canBuildManifests) return;
     state.projects.forEach((c) => state.selectedProjectIds.add(c.id));
     renderProjects();
     updateSelectionInfo();
   });
 
-  el.clearSelectionBtn?.addEventListener('click', () => {
+  el.clearSelectionBtn?.addEventListener("click", () => {
     state.selectedProjectIds.clear();
     renderProjects();
     updateSelectionInfo();
   });
 
-  el.exportJsonBtn?.addEventListener('click', () => exportManifest('json'));
-  el.exportXlsxBtn?.addEventListener('click', () => exportManifest('xlsx'));
-  el.exportMdBtn?.addEventListener('click', () => exportManifest('markdown'));
-  el.saveManifestBtn?.addEventListener('click', () => saveManifest());
+  el.exportJsonBtn?.addEventListener("click", () => exportManifest("json"));
+  el.exportXlsxBtn?.addEventListener("click", () => exportManifest("xlsx"));
+  el.exportMdBtn?.addEventListener("click", () => exportManifest("markdown"));
+  el.saveManifestBtn?.addEventListener("click", () => saveManifest());
 
   if (el.btnNewProject) {
-    el.btnNewProject.addEventListener('click', () => {
-      window.location.href = '/project-manage.html?create=1';
+    el.btnNewProject.addEventListener("click", () => {
+      window.location.href = "/project-manage.html?create=1";
     });
   }
 
-  window.addEventListener('resize', () => {
+  window.addEventListener("resize", () => {
     // Re-render treemap on resize (layout uses container size).
     renderCatalogueTreemap();
   });
@@ -1347,7 +1457,7 @@ async function init() {
 
   // Viewers (and other non-privileged roles) should not see the manifest builder at all.
   if (el.manifestBuilderCard && !state.canBuildManifests) {
-    el.manifestBuilderCard.style.display = 'none';
+    el.manifestBuilderCard.style.display = "none";
   }
 
   await loadFrameworks();
@@ -1361,13 +1471,13 @@ async function init() {
   await loadProjects();
 
   if (!canMaintainProjects()) {
-    if (el.btnNewProject) el.btnNewProject.style.display = 'none';
+    if (el.btnNewProject) el.btnNewProject.style.display = "none";
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener("DOMContentLoaded", () => {
   init().catch((err) => {
     console.error(err);
-    toast(err?.message || 'Failed to load page', 'error');
+    toast(err?.message || "Failed to load page", "error");
   });
 });

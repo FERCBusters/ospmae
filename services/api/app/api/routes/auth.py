@@ -1,45 +1,55 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
 from datetime import datetime, timedelta
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     HTTPException,
     Request,
     Response,
-    BackgroundTasks,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.api.payloads import (
-    LoginPayload,
     ChangePasswordPayload,
-    PasswordResetRequestPayload,
+    LoginPayload,
     PasswordResetConfirmPayload,
+    PasswordResetRequestPayload,
 )
 from app.core.config import settings
-from app.db.models import Session as SessionRow, User, PasswordResetToken
+from app.db.models import (
+    PasswordResetToken,
+    RateLimitEntry,
+    User,
+)
+from app.db.models import (
+    Session as SessionRow,
+)
 from app.db.session import get_db
+from app.security.audit import (
+    log_login_failure,
+    log_login_success,
+    log_logout,
+    log_password_reset_confirm,
+    log_password_reset_request,
+    log_security_alert,
+)
 from app.security.auth import (
     ROLE_ADMIN,
     authenticate_user,
     clear_session_cookie,
-    set_session_cookie,
     get_current_user,
     get_password_hash,
     get_user_by_email,
+    set_session_cookie,
 )
-from app.security.passwords import verify_password
-
+from app.security.client_addr import public_client_address
 from app.security.csrf import clear_csrf_cookie, generate_csrf_token, set_csrf_cookie
-from app.security.roles import ROLE_PENDING, attach_effective_role
-from app.security.sessions import (
-    create_session,
-    delete_session,
-    delete_all_sessions_for_user,
-)
 from app.security.oidc import (
     any_sso_enabled,
     build_authorize_redirect,
@@ -47,15 +57,15 @@ from app.security.oidc import (
     get_sso_provider,
     handle_callback,
 )
+from app.security.passwords import verify_password
 from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
-from app.security.audit import (
-    log_login_success,
-    log_login_failure,
-    log_logout,
-    log_password_reset_request,
-    log_password_reset_confirm,
-    log_security_alert,
+from app.security.roles import ROLE_PENDING, attach_effective_role
+from app.security.sessions import (
+    create_session,
+    delete_all_sessions_for_user,
+    delete_session,
 )
+from app.security.url_safety import safe_relative_route_path
 from app.services.mailer import send_password_reset_email
 from app.services.notification_recipients import notification_email_for_user
 
@@ -119,15 +129,36 @@ def auth_methods():
 
 
 def _get_client_ip(request: Request) -> str:
-    if settings.trust_proxy_headers:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """Client address resolved from the trusted-proxy chain, never the first
+    X-Forwarded-For entry, which clients control."""
+    peer = request.client.host if request.client else None
+    return (
+        public_client_address(peer, request.headers.get("X-Forwarded-For")) or "unknown"
+    )
 
 
 def _get_user_agent(request: Request) -> str | None:
     return request.headers.get("User-Agent") or None
+
+
+# Window for the per-address and per-username sign-in allowances.
+_LOGIN_WINDOW_SECONDS = 300
+_LOGIN_PER_ADDRESS = 10
+# Failed attempts one username name may absorb before every further failure
+# must run under the controlled-verification allowance below.
+_LOGIN_FAILURES_PER_NAME = 15
+# Once the failure allowance is spent, at most this many further password
+# verifications run per (username, address) window: a legitimate user's
+# correct password still logs in, while brute-force work stays bounded.
+_LOGIN_VERIFY_BUDGET = 5
+
+
+def _normalize_login_name(username: str) -> str:
+    """The form in which sign-in names are compared for limiting.
+
+    Folds case so spellings that name the same account share one allowance.
+    """
+    return " ".join(str(username or "").strip().casefold().split())
 
 
 @router.post("/v1/auth/login")
@@ -140,14 +171,22 @@ def login(
     client_ip = _get_client_ip(request)
     user_agent = _get_user_agent(request)
     username = (payload.username or "").strip()
+    # A blank username is refused before any rate limit or password work.
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
     rate_id = f"login:{client_ip}"
 
-    allowed, info = check_rate_limit(db, rate_id, max_attempts=10, window_seconds=300)
+    allowed, info = check_rate_limit(
+        db,
+        rate_id,
+        max_attempts=_LOGIN_PER_ADDRESS,
+        window_seconds=_LOGIN_WINDOW_SECONDS,
+    )
     if not allowed:
         log_security_alert(
             db,
             "rate_limit_exceeded",
-            {"action": "login", "username": username},
+            {"action": "login"},
             None,
             client_ip,
             user_agent,
@@ -160,14 +199,68 @@ def login(
 
     record_rate_limit_attempt(db, rate_id)
 
-    client_ip = _get_client_ip(request)
-    user_agent = _get_user_agent(request)
+    # One allowance per compared username, keyed by digest so the ledger
+    # neither grows with name length nor stores the attempted name.
+    from app.security.client_addr import allowance_address
 
-    user = authenticate_user(db, payload.username, payload.password)
-    if not user:
-        record_rate_limit_attempt(db, f"login_fail:{username}")
-        log_login_failure(db, username, "invalid_credentials", client_ip, user_agent)
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    name_key = hashlib.sha256(
+        _normalize_login_name(username).encode("utf-8")
+    ).hexdigest()
+    user_fail_id = f"login_fail_user:{name_key}"
+    user_allowed, user_info = check_rate_limit(
+        db,
+        user_fail_id,
+        max_attempts=_LOGIN_FAILURES_PER_NAME,
+        window_seconds=_LOGIN_WINDOW_SECONDS,
+    )
+
+    if user_allowed:
+        user = authenticate_user(db, payload.username, payload.password)
+        if not user:
+            record_rate_limit_attempt(db, user_fail_id)
+            log_login_failure(
+                db, username, "invalid_credentials", client_ip, user_agent
+            )
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        # Success clears any accumulating failure state for this name.
+        db.query(RateLimitEntry).filter(
+            RateLimitEntry.identifier == user_fail_id
+        ).delete(synchronize_session=False)
+        db.commit()
+    else:
+        # The failure allowance is spent -- someone is attacking this account.
+        # A correct password must still sign in: verifications proceed only
+        # under a small per-(name, address) budget, so distributed guessing
+        # can stay slow while the legitimate user always gets through.
+        verify_id = (
+            f"login_verify_user:{name_key}:{allowance_address(client_ip) or 'unknown'}"
+        )
+        verify_allowed, verify_info = check_rate_limit(
+            db,
+            verify_id,
+            max_attempts=_LOGIN_VERIFY_BUDGET,
+            window_seconds=_LOGIN_WINDOW_SECONDS,
+        )
+        if not verify_allowed:
+            return JSONResponse(
+                {
+                    "detail": "Too many failed attempts",
+                    "retry_after": user_info["retry_after"],
+                },
+                status_code=429,
+            )
+        record_rate_limit_attempt(db, verify_id)
+        user = authenticate_user(db, payload.username, payload.password)
+        if not user:
+            log_login_failure(
+                db, username, "invalid_credentials", client_ip, user_agent
+            )
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        # A success under the spent-failure budget clears the attack state.
+        db.query(RateLimitEntry).filter(
+            RateLimitEntry.identifier == user_fail_id
+        ).delete(synchronize_session=False)
+        db.commit()
 
     delete_all_sessions_for_user(db, user.id)
 
@@ -205,9 +298,20 @@ def login(
     return resp
 
 
+def _limit_sso_start(db: Session, request: Request) -> bool:
+    """A small per-address allowance on SSO starts: each writes a login-state
+    row, so an unauthenticated flood must not churn the database."""
+    allowed, _info = check_rate_limit(
+        db, f"sso_start:{_get_client_ip(request)}", max_attempts=20, window_seconds=300
+    )
+    return allowed
+
+
 @router.get("/v1/auth/oidc/start")
 async def oidc_start(request: Request, db: Session = Depends(get_db)):
     # Stable URL alias for the generic OpenID Connect provider.
+    if not _limit_sso_start(db, request):
+        raise HTTPException(status_code=429, detail="Too many requests")
     next_url = request.query_params.get("next")
     url = await build_authorize_redirect(
         request, db, next_url=next_url, provider_key="oidc"
@@ -223,6 +327,8 @@ async def oidc_callback(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/v1/auth/sso/{provider_key}/start")
 async def sso_start(provider_key: str, request: Request, db: Session = Depends(get_db)):
+    if not _limit_sso_start(db, request):
+        raise HTTPException(status_code=429, detail="Too many requests")
     next_url = request.query_params.get("next")
     url = await build_authorize_redirect(
         request, db, next_url=next_url, provider_key=provider_key
@@ -301,13 +407,15 @@ def _hash_reset_token(token: str) -> str:
 
 
 def _derive_public_base_url(request: Request) -> str:
+    """The public origin for links sent by email.
+
+    Host headers are client-controlled, so the base URL is never derived from
+    the request: without explicit configuration no absolute link can be built
+    and mail-dependent flows stay disabled (fail closed).
+    """
+
     configured = (getattr(settings, "public_base_url", "") or "").strip()
-    if configured:
-        return configured.rstrip("/")
-    try:
-        return str(request.base_url).rstrip("/")
-    except Exception:
-        return ""
+    return configured.rstrip("/") if configured else ""
 
 
 @router.post("/v1/auth/change-password")
@@ -319,6 +427,17 @@ def change_password(
 ) -> Response:
     if not _local_password_features_enabled():
         raise HTTPException(status_code=404, detail="Password change disabled")
+
+    # Current-password guessing through a stolen session is bounded per account.
+    attempt_id = f"pw_change:{int(me.id)}"
+    allowed, _info = check_rate_limit(
+        db, attempt_id, max_attempts=5, window_seconds=300
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429, detail="Too many attempts; try again later"
+        )
+    record_rate_limit_attempt(db, attempt_id)
 
     # Only allow password change for local sessions.
     sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
@@ -339,8 +458,13 @@ def change_password(
     if not verify_password(payload.current_password, me.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    me.password_hash = get_password_hash(payload.new_password)
-    db.add(me)
+    # The middleware attaches the actor to its own session; this route's
+    # session is a different one, so re-read the row here before writing.
+    user_row = db.query(User).filter(User.id == me.id).one_or_none()
+    if not user_row:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_row.password_hash = get_password_hash(payload.new_password)
+    db.add(user_row)
     db.commit()
     return Response(status_code=204)
 
@@ -366,6 +490,16 @@ def request_password_reset(
     if not ident:
         return Response(status_code=204)
 
+    # The endpoint answers identically for known and unknown names, so it is
+    # a favourite of both enumerators and mail-bombers: both allowances are
+    # checked before any account-dependent work.
+    client_ip = _get_client_ip(request)
+    allowed, _info = check_rate_limit(
+        db, f"pwreset_ip:{client_ip}", max_attempts=5, window_seconds=900
+    )
+    if not allowed:
+        return Response(status_code=204)
+
     user = None
     if "@" in ident:
         ident_l = ident.lower()
@@ -378,10 +512,23 @@ def request_password_reset(
 
     # Always return 204 to avoid enumeration.
     if not user or not bool(getattr(user, "is_active", False)):
+        # A rejection pays the same committed write as an issue, so wall
+        # clock cannot separate the two paths.
+        record_rate_limit_attempt(db, f"pwreset_dummy:{_hash_reset_token(ident)}")
         log_password_reset_request(
-            db, None, _get_client_ip(request), _get_user_agent(request)
+            db,
+            None,  # type: ignore[arg-type]  # an unknown name has no account row
+            client_ip,
+            _get_user_agent(request),
         )
         return Response(status_code=204)
+
+    target_id = f"pwreset_target:{int(user.id)}"
+    allowed, _info = check_rate_limit(db, target_id, max_attempts=3, window_seconds=900)
+    if not allowed:
+        record_rate_limit_attempt(db, target_id)
+        return Response(status_code=204)
+    record_rate_limit_attempt(db, target_id)
 
     # Always send account mail to the address the user has explicitly marked
     # primary. The resolver retains legacy fallbacks for pre-migration accounts.
@@ -396,8 +543,17 @@ def request_password_reset(
         )
         return Response(status_code=204)
 
+    base = _derive_public_base_url(request)
+    if not base:
+        # Without a configured public origin, the link's host would be chosen
+        # the requester's Host header, so no token is issued (fail closed).
+        log_password_reset_request(
+            db, user.id, _get_client_ip(request), _get_user_agent(request)
+        )
+        return Response(status_code=204)
+
     import secrets
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     token = secrets.token_urlsafe(32)
     token_hash = _hash_reset_token(token)
@@ -412,12 +568,7 @@ def request_password_reset(
     db.add(row)
     db.commit()
 
-    base = _derive_public_base_url(request)
-    reset_link = (
-        f"{base}/reset-password.html?token={token}"
-        if base
-        else f"/reset-password.html?token={token}"
-    )
+    reset_link = f"{base}/reset-password.html?token={token}"
 
     log_password_reset_request(
         db, user.id, _get_client_ip(request), _get_user_agent(request)
@@ -450,7 +601,7 @@ def reset_password(
     if not token:
         raise HTTPException(status_code=400, detail="Invalid token")
 
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     token_hash = _hash_reset_token(token)
     row = (
@@ -481,12 +632,8 @@ def reset_password(
 
 
 def _safe_next(next_url: str | None) -> str | None:
-    raw = (next_url or "").strip()
-    if not raw:
-        return None
-    if raw.startswith("/") and not raw.startswith("//") and "://" not in raw:
-        return raw
-    return None
+    """Same-origin relative route only; one shared helper decides safety."""
+    return safe_relative_route_path(next_url)
 
 
 def _derive_absolute_post_logout_redirect(request: Request, auth_method: str) -> str:
@@ -495,27 +642,36 @@ def _derive_absolute_post_logout_redirect(request: Request, auth_method: str) ->
     if configured:
         return configured
 
-    # Derive from the incoming request. If behind TLS termination and the
-    # scheme/host is incorrect, set the provider-specific post-logout URI.
-    try:
-        base = str(request.base_url).rstrip("/")
-    except Exception:
-        base = ""
-    if not base:
-        return ""
-    return f"{base}/login.html"
+    # A post-logout redirect address is never derived from the request: the
+    # Host header is client-controlled, so any derived value could send the
+    # browser to an attacker host. With no explicit configuration the provider
+    # lands on its own default page.
+    return ""
 
 
 @router.get("/v1/auth/logout")
 def logout_redirect(request: Request, db: Session = Depends(get_db)) -> Response:
     """Browser-friendly logout endpoint.
 
-    - Always clears the local session + CSRF cookies.
-    - If the current session was created via OIDC and an end-session endpoint is
-      configured, performs RP-initiated logout by redirecting to the provider.
+    - A `csrf` parameter must match the CSRF cookie before the server-side
+      session is destroyed, so a cross-site link cannot log a user out.
+    - If the current session was created via OIDC and an end-session endpoint
+      is configured, performs RP-initiated logout by redirecting to the
+      provider.
     """
 
     sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
+    csrf_cookie = (request.cookies.get(settings.csrf_cookie_name) or "").strip()
+    csrf_ok = bool(
+        csrf_cookie
+        and secrets.compare_digest(
+            (request.query_params.get("csrf") or "").strip(), csrf_cookie
+        )
+    )
+    if sid and not csrf_ok:
+        # Leave authentication state untouched and land somewhere harmless.
+        return RedirectResponse("/index.html", status_code=302)
+
     auth_method = ""
     oidc_id_token = ""
 
@@ -538,7 +694,7 @@ def logout_redirect(request: Request, db: Session = Depends(get_db)) -> Response
     client_id = (provider.client_id if provider else "").strip()
 
     if auth_method != "local" and end_session:
-        from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
         post_logout = _derive_absolute_post_logout_redirect(request, auth_method)
         params = dict(parse_qsl(urlsplit(end_session).query, keep_blank_values=True))

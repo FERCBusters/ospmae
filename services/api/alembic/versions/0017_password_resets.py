@@ -7,8 +7,8 @@ Create Date: 2026-02-26
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0017_password_resets"
 down_revision = "0016_session_auth_metadata"

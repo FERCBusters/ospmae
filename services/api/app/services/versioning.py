@@ -4,9 +4,12 @@ from typing import Any
 
 try:
     from packaging.version import InvalidVersion, Version
+
+    VERSION_SUPPORT = True
 except Exception:  # pragma: no cover - packaging is normally available transitively
-    InvalidVersion = ValueError
-    Version = None
+    VERSION_SUPPORT = False
+    InvalidVersion = ValueError  # type: ignore[misc,assignment]
+    Version = None  # type: ignore[misc,assignment]
 
 
 def _normalise_release_version(value: Any) -> str:

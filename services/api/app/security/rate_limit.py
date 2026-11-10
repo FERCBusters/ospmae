@@ -32,9 +32,6 @@ def check_rate_limit(
     """
     from datetime import datetime, timedelta
 
-    now = _now()
-    window_start = now - window_seconds
-
     # Clean up old entries
     cutoff = datetime.utcnow() - timedelta(seconds=window_seconds)
     db.query(RateLimitEntry).filter(
@@ -64,12 +61,17 @@ def check_rate_limit(
             .first()
         )
 
-        retry_after = (
-            int((oldest.timestamp + window_seconds - now) * 1000)
-            if oldest
-            else window_seconds
-        )
-        retry_after = max(1, retry_after)
+        retry_after = window_seconds
+        if oldest is not None:
+            retry_after = int(
+                (
+                    oldest.timestamp
+                    + timedelta(seconds=window_seconds)
+                    - datetime.utcnow()
+                ).total_seconds()
+                * 1000
+            )
+        retry_after = max(1, int(retry_after))
 
         return False, {
             "remaining": 0,

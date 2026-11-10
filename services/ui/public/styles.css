@@ -1,4 +1,4 @@
-@import url('/vendor/mosp-design-system/styles.css');
+@import url("/vendor/mosp-design-system/styles.css");
 
 /* OSPMAE legacy helpers (kept small): */
 
@@ -11,13 +11,13 @@
 
 /* ---- Shared colour tokens (used by legacy helpers) ---- */
 :root {
-  --border: var(--bs-border-color, #E5E7EB);
-  --border-strong: var(--bs-border-color, #E5E7EB);
+  --border: var(--bs-border-color, #e5e7eb);
+  --border-strong: var(--bs-border-color, #e5e7eb);
   --panel-2: var(--bs-body-bg, #fff);
-  --muted: var(--bs-secondary-color, #6B7280);
-  --accent-700: var(--mosp-accent-700, #4C2A85);
-  --accent-500: var(--mosp-accent, var(--keen-accent, #6F3CC3));
-  --accent-100: var(--mosp-accent-100, #F2E9FF);
+  --muted: var(--bs-secondary-color, #6b7280);
+  --accent-700: var(--mosp-accent-700, #4c2a85);
+  --accent-500: var(--mosp-accent, var(--keen-accent, #6f3cc3));
+  --accent-100: var(--mosp-accent-100, #f2e9ff);
 }
 
 /* -------- Cards / tags used in Find projects -------- */
@@ -73,7 +73,8 @@
 }
 
 /* ---- Manage projects page fixes (Bootstrap alignment) ---- */
-#projectBrowserCard.card, #projectEditorCard.card {
+#projectBrowserCard.card,
+#projectEditorCard.card {
   overflow: hidden; /* so header rounding looks like Keen */
 }
 
@@ -84,16 +85,20 @@
 
 #projectBrowserCard .card-header,
 #projectEditorCard .card-header {
-  background: color-mix(in srgb, var(--mosp-accent-100, #F2E9FF) 50%, var(--bs-body-bg, #fff));
-  border-bottom: 1px solid var(--bs-border-color, #E5E7EB);
+  background: color-mix(
+    in srgb,
+    var(--mosp-accent-100, #f2e9ff) 50%,
+    var(--bs-body-bg, #fff)
+  );
+  border-bottom: 1px solid var(--bs-border-color, #e5e7eb);
 }
 
 #projectBrowserCard label > span.small,
 #projectEditorCard label > span {
   display: block;
-  margin-bottom: .25rem;
-  color: var(--bs-secondary-color, #6B7280);
-  font-size: .875rem;
+  margin-bottom: 0.25rem;
+  color: var(--bs-secondary-color, #6b7280);
+  font-size: 0.875rem;
 }
 
 #projectBrowserCard input:not([type="checkbox"]):not([type="radio"]),
@@ -102,14 +107,14 @@
 #projectEditorCard select {
   width: 100%;
   display: block;
-  padding: .375rem .75rem;
+  padding: 0.375rem 0.75rem;
   font-size: 1rem;
   line-height: 1.5;
   color: var(--bs-body-color, #111827);
   background-color: var(--bs-body-bg, #fff);
   background-clip: padding-box;
-  border: 1px solid var(--bs-border-color, #D1D5DB);
-  border-radius: .375rem;
+  border: 1px solid var(--bs-border-color, #d1d5db);
+  border-radius: 0.375rem;
 }
 
 #projectBrowserCard input:not([type="checkbox"]):not([type="radio"]):focus,
@@ -117,12 +122,17 @@
 #projectEditorCard textarea:focus,
 #projectEditorCard select:focus {
   outline: 0;
-  border-color: color-mix(in srgb, var(--mosp-accent-500, #6F3CC3) 55%, var(--bs-border-color, #D1D5DB));
-  box-shadow: 0 0 0 .25rem color-mix(in srgb, var(--mosp-accent-500, #6F3CC3) 20%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--mosp-accent-500, #6f3cc3) 55%,
+    var(--bs-border-color, #d1d5db)
+  );
+  box-shadow: 0 0 0 0.25rem
+    color-mix(in srgb, var(--mosp-accent-500, #6f3cc3) 20%, transparent);
 }
 
 #projectEditorCard textarea {
-  min-height: calc(1.5em * 2 + .75rem + 2px);
+  min-height: calc(1.5em * 2 + 0.75rem + 2px);
 }
 
 #projectEditorCard label {
@@ -133,23 +143,36 @@
 .version-row {
   margin-bottom: 8px;
   padding: 10px;
-  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .version-row.version-row-selected {
   border-color: var(--accent-500);
-  box-shadow: 0 0 0 .2rem color-mix(in srgb, var(--accent-500) 18%, transparent);
-  background: color-mix(in srgb, var(--accent-100) 38%, var(--bs-body-bg, #fff));
+  box-shadow: 0 0 0 0.2rem
+    color-mix(in srgb, var(--accent-500) 18%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--accent-100) 38%,
+    var(--bs-body-bg, #fff)
+  );
 }
 
 .version-edit-context {
   display: none;
-  margin: .25rem 0 1rem;
-  padding: .65rem .75rem;
-  border: 1px solid color-mix(in srgb, var(--accent-500) 30%, var(--bs-border-color, #E5E7EB));
-  border-left: .35rem solid var(--accent-500);
-  border-radius: .5rem;
-  background: color-mix(in srgb, var(--accent-100) 52%, var(--bs-body-bg, #fff));
+  margin: 0.25rem 0 1rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid
+    color-mix(in srgb, var(--accent-500) 30%, var(--bs-border-color, #e5e7eb));
+  border-left: 0.35rem solid var(--accent-500);
+  border-radius: 0.5rem;
+  background: color-mix(
+    in srgb,
+    var(--accent-100) 52%,
+    var(--bs-body-bg, #fff)
+  );
 }
 
 .version-edit-context.active {
@@ -158,17 +181,27 @@
 
 #versionEditor.version-editor-active {
   border-color: var(--accent-500);
-  box-shadow: 0 0 0 .25rem color-mix(in srgb, var(--accent-500) 16%, transparent);
+  box-shadow: 0 0 0 0.25rem
+    color-mix(in srgb, var(--accent-500) 16%, transparent);
 }
 
 @keyframes ospmae-version-editor-pulse {
-  0% { box-shadow: 0 0 0 .1rem color-mix(in srgb, var(--accent-500) 12%, transparent); }
-  40% { box-shadow: 0 0 0 .45rem color-mix(in srgb, var(--accent-500) 24%, transparent); }
-  100% { box-shadow: 0 0 0 .25rem color-mix(in srgb, var(--accent-500) 16%, transparent); }
+  0% {
+    box-shadow: 0 0 0 0.1rem
+      color-mix(in srgb, var(--accent-500) 12%, transparent);
+  }
+  40% {
+    box-shadow: 0 0 0 0.45rem
+      color-mix(in srgb, var(--accent-500) 24%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0.25rem
+      color-mix(in srgb, var(--accent-500) 16%, transparent);
+  }
 }
 
 #versionEditor.version-editor-pulse {
-  animation: ospmae-version-editor-pulse .9s ease-out 1;
+  animation: ospmae-version-editor-pulse 0.9s ease-out 1;
 }
 
 /* ---- Keen-style vertical admin tabs ---- */

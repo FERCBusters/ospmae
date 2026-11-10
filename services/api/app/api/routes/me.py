@@ -1,32 +1,37 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.api.payloads import (
+    EmailVerifyPayload,
     MeProfileUpdatePayload,
     UserEmailCreatePayload,
     UserPreferencesUpdatePayload,
     UserShortcutCreatePayload,
 )
 from app.core.config import settings
-from app.security.oidc import any_sso_enabled, get_sso_provider
 from app.db.models import (
-    Session as SessionRow,
+    EmailVerificationToken,
+    Group,
+    Project,
+    ProjectSubscription,
     User,
     UserEmail,
+    UserGroup,
     UserIdentity,
     UserPreference,
     UserShortcut,
-    Group,
-    UserGroup,
-    Project,
-    ProjectSubscription,
+)
+from app.db.models import (
+    Session as SessionRow,
 )
 from app.db.session import get_db
+from app.security.oidc import any_sso_enabled, get_sso_provider
+from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
 from app.security.roles import ROLE_PENDING, attach_effective_role
 
 router = APIRouter()
@@ -77,7 +82,7 @@ def _resolved_email(db: Session, user: User) -> tuple[str | None, str | None]:
         db.query(UserIdentity.email)
         .filter(UserIdentity.user_id == user.id)
         .filter(UserIdentity.email.isnot(None))
-        .order_by(desc(UserIdentity.updated_at))
+        .order_by(desc(UserIdentity.updated_at))  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .first()
     )
     if ident and ident[0]:
@@ -92,6 +97,65 @@ def _normalize_email(value: str | None) -> str | None:
     if "@" not in email or email.startswith("@") or email.endswith("@"):
         raise HTTPException(status_code=400, detail="Invalid email address")
     return email
+
+
+def _maybe_send_email_verification(db: Session, user: User, row: UserEmail) -> None:
+    """Email a one-time mailbox proof for a self-asserted address.
+
+    Fails closed: with no SMTP configured or no explicit public base URL, the
+    address simply stays unverified and SSO linking will never trust it.
+    """
+
+    if bool(row.is_verified):
+        return
+    smtp_host = (settings.smtp_host or "").strip()
+    from_email = (settings.smtp_from_email or "").strip()
+    base = (settings.public_base_url or "").strip().rstrip("/")
+    if not smtp_host or not from_email or not base:
+        return
+
+    import hashlib
+    import secrets as _secrets
+
+    # Verification senders are rate limited per account.
+    allowed, _info = check_rate_limit(
+        db, f"email_verify:{int(user.id)}", max_attempts=5, window_seconds=3600
+    )
+    if not allowed:
+        return
+    record_rate_limit_attempt(db, f"email_verify:{int(user.id)}")
+
+    token = _secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = datetime.utcnow()
+    db.query(EmailVerificationToken).filter(
+        EmailVerificationToken.user_id == user.id,
+        EmailVerificationToken.email_lower == row.email_lower,
+        EmailVerificationToken.used_at.is_(None),
+    ).update({"used_at": now}, synchronize_session=False)
+    db.add(
+        EmailVerificationToken(
+            user_id=user.id,
+            email_lower=row.email_lower,
+            token_hash=token_hash,
+            created_at=now,
+            expires_at=now + timedelta(seconds=60 * 60 * 24),
+            used_at=None,
+        )
+    )
+    db.commit()
+
+    try:
+        from app.services.mailer import send_email_verification_email
+
+        send_email_verification_email(
+            to_email=row.email,
+            username=user.username,
+            verification_link=f"{base}/account.html?verify_email={token}",
+        )
+    except Exception:
+        # Mail failures must not block saving the account email.
+        pass
 
 
 def _serialize_user_email(row: UserEmail) -> dict:
@@ -129,7 +193,7 @@ def _ensure_user_email_row(
         if is_primary:
             (
                 db.query(UserEmail)
-                .filter(UserEmail.user_id == user_id, UserEmail.is_primary == True)
+                .filter(UserEmail.user_id == user_id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
                 .update({"is_primary": False}, synchronize_session=False)
             )  # noqa: E712
             existing.is_primary = True
@@ -142,7 +206,7 @@ def _ensure_user_email_row(
     if is_primary:
         (
             db.query(UserEmail)
-            .filter(UserEmail.user_id == user_id, UserEmail.is_primary == True)
+            .filter(UserEmail.user_id == user_id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
             .update({"is_primary": False}, synchronize_session=False)
         )  # noqa: E712
 
@@ -273,11 +337,39 @@ def _normalize_start_page(
     return raw
 
 
+# Keep this list in sync with the shared design system's palettes
+# (mosp-design-system src/js/05-theme-attributes.js).
+ALLOWED_THEMES: list[tuple[str, str]] = [
+    ("ink", "Ink"),
+    ("sand", "Sand"),
+    ("ocean", "Ocean"),
+    ("forest", "Forest"),
+    ("sunset", "Sunset"),
+    ("rose", "Rose"),
+    ("slate", "Slate"),
+    ("teal", "Teal"),
+    ("purple", "Purple"),
+]
+ALLOWED_THEMES += [
+    (f"{theme_id}-dark", f"{name} (dark)") for theme_id, name in ALLOWED_THEMES.copy()
+]
+
+
+def _validate_theme(theme: str | None) -> str:
+    candidate = (theme or "").strip()
+    if not candidate:
+        return ""
+    if candidate not in {t[0] for t in ALLOWED_THEMES}:
+        raise HTTPException(status_code=400, detail="Unknown theme")
+    return candidate
+
+
 def _serialize_preferences(
     pref: UserPreference | None, allowed_pages: set[str] | None = None
 ) -> dict:
     if not pref:
         return {
+            "theme": "ink",
             "node_colors": {},
             "default_start_page": _normalize_start_page(None, allowed_pages),
             "sticky_enabled": False,
@@ -291,7 +383,15 @@ def _serialize_preferences(
         ),
         "sticky_enabled": bool(getattr(pref, "sticky_enabled", False)),
         "auto_apply_enabled": bool(getattr(pref, "auto_apply_enabled", True)),
+        "theme": _serialize_theme(getattr(pref, "theme", None)),
     }
+
+
+def _serialize_theme(theme: str | None) -> str:
+    candidate = (theme or "").strip()
+    if candidate and candidate in {t[0] for t in ALLOWED_THEMES}:
+        return candidate
+    return "ink"
 
 
 def _get_or_create_preferences(db: Session, user_id: int) -> UserPreference:
@@ -353,6 +453,7 @@ def me(request: Request, db: Session = Depends(get_db)):
         "csrf_token": csrf_token,
         "app_title": settings.app_title,
         "preferences": _serialize_preferences(pref, allowed_pages),
+        "available_themes": [{"id": t[0], "name": t[1]} for t in ALLOWED_THEMES],
         "logout_url": logout_url,
         "logout_redirect": "/login.html",
     }
@@ -364,15 +465,15 @@ def list_my_emails(request: Request, db: Session = Depends(get_db)):
     if not isinstance(user, User):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # Keep the account-email table in sync with the legacy profile email.
+    # Keep the account-email table in sync with the legacy profile email,
+    # without marking a self-asserted address verified.
     if (user.email or "").strip():
         _ensure_user_email_row(
             db,
             user_id=user.id,
             email=str(user.email),
             source="user",
-            is_primary=True,
-            is_verified=True,
+            is_primary=False,
         )
 
     rows = (
@@ -398,10 +499,10 @@ def add_my_email(
         email=payload.email,
         source="user",
         is_primary=bool(payload.is_primary),
-        # Local account additions are user-managed aliases. OSPMAE enforces that
-        # a given email can belong to only one user and uses these aliases for
-        # future SSO linking.
-        is_verified=True,
+        # Local account additions are self-asserted: the row starts
+        # unverified and a mailbox proof (verification email) can mark it
+        # verified. A verified mailbox is what SSO auto-linking trusts.
+        is_verified=False,
     )
 
     # If the user explicitly marks an address primary, keep the legacy user.email
@@ -410,6 +511,8 @@ def add_my_email(
         user.email = row.email
         db.add(user)
         db.commit()
+
+    _maybe_send_email_verification(db, user, row)
 
     return _serialize_user_email(row)
 
@@ -432,7 +535,7 @@ def make_my_email_primary(
 
     (
         db.query(UserEmail)
-        .filter(UserEmail.user_id == user.id, UserEmail.is_primary == True)
+        .filter(UserEmail.user_id == user.id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
         .update({"is_primary": False}, synchronize_session=False)
     )  # noqa: E712
     row.is_primary = True
@@ -478,6 +581,64 @@ def delete_my_email(email_id: int, request: Request, db: Session = Depends(get_d
         db.commit()
 
     return {"deleted": True}
+
+
+@router.post("/v1/me/emails/{email_id}/verify-request")
+def request_email_verification(
+    email_id: int, request: Request, db: Session = Depends(get_db)
+):
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, User):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    row = (
+        db.query(UserEmail)
+        .filter(UserEmail.id == email_id, UserEmail.user_id == user.id)
+        .one_or_none()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Email address not found")
+    if bool(row.is_verified):
+        return {"queued": False, "reason": "already verified"}
+    _maybe_send_email_verification(db, user, row)
+    return {"queued": True}
+
+
+@router.post("/v1/me/emails/verify")
+def verify_my_email(payload: EmailVerifyPayload, db: Session = Depends(get_db)):
+    import hashlib
+
+    token = (payload.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid token")
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    row = (
+        db.query(EmailVerificationToken)
+        .filter(EmailVerificationToken.token_hash == token_hash)
+        .one_or_none()
+    )
+    now = datetime.utcnow()
+    if not row or row.used_at is not None or row.expires_at <= now:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    email_row = (
+        db.query(UserEmail)
+        .filter(
+            UserEmail.user_id == row.user_id, UserEmail.email_lower == row.email_lower
+        )
+        .one_or_none()
+    )
+    if not email_row:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    row.used_at = now
+    email_row.is_verified = True
+    db.add(row)
+    db.add(email_row)
+    db.commit()
+
+    return {"verified": email_row.email}
 
 
 @router.get("/v1/me/groups")
@@ -580,14 +741,17 @@ def update_my_profile(
     db.refresh(user)
 
     if new_email:
-        _ensure_user_email_row(
+        row = _ensure_user_email_row(
             db,
             user_id=user.id,
             email=new_email,
             source="user",
             is_primary=True,
-            is_verified=True,
+            # Self-asserted profile addresses stay unverified until the
+            # mailbox is proven with a verification link.
+            is_verified=False,
         )
+        _maybe_send_email_verification(db, user, row)
 
     return {"email": user.email}
 
@@ -636,6 +800,9 @@ def update_my_preferences(
     if payload.auto_apply_enabled is not None:
         pref.auto_apply_enabled = bool(payload.auto_apply_enabled)
 
+    if payload.theme is not None:
+        pref.theme = _validate_theme(payload.theme)
+
     db.add(pref)
     db.commit()
     db.refresh(pref)
@@ -649,24 +816,29 @@ def update_my_preferences(
 
 
 def _normalize_shortcut_url(value: str | None) -> str:
+    import re as _re
+
+    from app.security.url_safety import safe_relative_route_path
+
     raw = str(value or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="url is required")
 
-    # Only allow same-origin relative URLs.
-    if raw.startswith("http://") or raw.startswith("https://"):
-        raise HTTPException(status_code=400, detail="url must be a relative path")
-
-    if not raw.startswith("/"):
-        raw = f"/{raw}"
-
-    # Basic sanity: avoid whitespace/newlines
-    if any(ch.isspace() for ch in raw):
-        raise HTTPException(status_code=400, detail="url must not contain whitespace")
+    # Only same-origin relative routes are safe to navigate to from the
+    # navbar: the shared helper rejects absolute URLs, protocol-relative URLs
+    # (//evil), backslashes and control characters. A prefix that would turn
+    # into a scheme-like path (//javascript:alert(1) aside, "/js:" shaped
+    # values) is refused too.
+    prefixed = raw if raw.startswith("/") else f"/{raw}"
+    safe = safe_relative_route_path(prefixed)
+    if not safe or safe != prefixed:
+        raise HTTPException(status_code=400, detail="url must be a same-origin path")
+    if _re.match(r"^/[A-Za-z][A-Za-z0-9+.\-]*:", safe):
+        raise HTTPException(status_code=400, detail="url must not contain a scheme")
 
     if len(raw) > 4000:
         raise HTTPException(status_code=400, detail="url is too long")
-    return raw
+    return safe
 
 
 @router.get("/v1/me/shortcuts")
@@ -678,7 +850,7 @@ def list_my_shortcuts(request: Request, db: Session = Depends(get_db)) -> list[d
     rows = (
         db.query(UserShortcut)
         .filter(UserShortcut.user_id == user.id)
-        .order_by(desc(UserShortcut.updated_at), UserShortcut.name.asc())
+        .order_by(desc(UserShortcut.updated_at), UserShortcut.name.asc())  # type: ignore[arg-type]  # desc() chains are accepted by Query
         .all()
     )
 

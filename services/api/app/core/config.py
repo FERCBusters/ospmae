@@ -36,6 +36,20 @@ class Settings(BaseSettings):
     # client-supplied forwarded headers.
     trust_proxy_headers: bool = Field(default=False)
 
+    # Comma-separated CIDR networks whose hosts may form the trusted side of a
+    # forwarded client address chain (X-Forwarded-For / X-Real-IP). Client
+    # addresses for rate limits, audit records and identity headers are
+    # resolved by walking the forwarded list from the socket peer right-to-left
+    # only while each hop is inside these networks; everything else is treated
+    # as untrusted. Compose's default network gateway falls in 172.16.0.0/12.
+    trusted_proxy_cidrs: str = Field(default="127.0.0.1,::1")
+
+    # Hard ceiling on how long a session may live however recently it was used.
+    session_absolute_ttl_seconds: int = Field(default=60 * 60 * 24 * 30)
+
+    # Request-audit retention in days; the beat sweeper deletes older rows.
+    audit_log_retention_days: int = Field(default=90)
+
     # Native (local) username/password login
     local_auth_enabled: bool = Field(default=True)
 
@@ -175,6 +189,19 @@ class Settings(BaseSettings):
     # Safety limits for fetching/parsing feeds
     release_feed_max_bytes: int = Field(default=2_000_000)
     release_feed_max_redirects: int = Field(default=3)
+
+    # ---------------------------------------------------------------------
+    # Installation feature switches
+    # ---------------------------------------------------------------------
+    # Each switch turns an optional product area off entirely: its routes
+    # answer 404, its background tasks become no-ops and the UI hides its
+    # pages. Authentication, account security and administration stay on.
+    feature_frameworks: bool = Field(default=True)
+    feature_manifests: bool = Field(default=True)
+    feature_questions: bool = Field(default=True)
+    feature_dependency_scans: bool = Field(default=True)
+    feature_comparisons: bool = Field(default=True)
+    feature_release_feed: bool = Field(default=True)
 
     # ---------------------------------------------------------------------
     # Dependency discovery

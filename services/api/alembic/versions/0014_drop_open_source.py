@@ -8,8 +8,8 @@ Create Date: 2026-02-25
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0014_drop_open_source"
 down_revision = "0013_oidc_auth"

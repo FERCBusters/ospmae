@@ -12,7 +12,12 @@ from app.core.config import settings
 
 DEFAULT_ALLOWED_HOSTS = {"github.com", "gitlab.com", "codeberg.org"}
 
-from .parsers import DiscoveredDependency, is_supported_lockfile, parse_lockfile
+from .parsers import (  # noqa: E402 - module re-export root; config import precedes
+    DiscoveredDependency,
+    is_supported_lockfile,
+    parse_lockfile,
+    redact_url,
+)
 
 SKIP_DIRS = {
     ".git",
@@ -25,6 +30,9 @@ SKIP_DIRS = {
     "venv",
     "__pycache__",
 }
+
+# Component characters and whitespace are never part of a repository URL.
+_URL_REJECT_CHARS = set(" \t\r\n\0\\'\"<>")
 
 
 @dataclass
@@ -41,21 +49,66 @@ def _allowed_hosts() -> set[str]:
 
 
 def validate_repo_url(url: str) -> None:
-    parsed = urlparse(url)
+    raw = str(url or "").strip()
+    if not raw:
+        raise ValueError("Repository URL is empty")
+    if any(ch in _URL_REJECT_CHARS for ch in raw):
+        raise ValueError("Repository URL contains an unsafe character")
+
+    parsed = urlparse(raw)
+    if parsed.username or parsed.password:
+        # A token typed into a URL would be stored and echoed in error
+        # messages; credentials never belong in a repo URL here.
+        raise ValueError("Repository URL must not contain credentials")
+
     if parsed.scheme in ("http", "https", "git", "ssh"):
         host = (parsed.hostname or "").lower()
+        # The host is part of the allowlist decision; a URL without one (for
+        # example "https:/evil") can be re-interpreted by git as a different
+        # destination than urlparse saw, so it is refused outright.
+        if not host:
+            raise ValueError("Repository URL has no host")
         allow = _allowed_hosts()
-        if allow and host and host not in allow:
+        if allow and host not in allow:
             raise ValueError(f"Repo host not allowed: {host}")
         return
     # SCP-like ssh URL: git@github.com:org/repo.git
-    if "://" not in url and ":" in url and "@" in url:
-        host = url.split("@", 1)[1].split(":", 1)[0].lower()
+    if "://" not in raw and ":" in raw and "@" in raw:
+        host = raw.split("@", 1)[1].split(":", 1)[0].lower()
+        if not host:
+            raise ValueError("Repository URL has no host")
         allow = _allowed_hosts()
-        if allow and host and host not in allow:
+        if allow and host not in allow:
             raise ValueError(f"Repo host not allowed: {host}")
         return
     raise ValueError("Unsupported repository URL scheme")
+
+
+def _git_env() -> dict[str, str]:
+    """A fixed environment for git children, not the worker's full env.
+
+    Credential helpers, proxy variables and other worker configuration are
+    inherited by every clone otherwise; the clone world is limited to PATH,
+    locale markers, and git flags that disable prompts, config files (with
+    their hooks and rewrites) and askpass helpers.
+    """
+
+    path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    return {
+        "PATH": path,
+        "HOME": "/tmp",
+        "LC_ALL": "C",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_ASKPASS": "/bin/true",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+
+
+# Commands run with these fixed flags; http.followRedirects=off keeps the
+# validated allowlisted host from 3xx-ing a clone to any other destination.
+_GIT_FLAGS = ["-c", "http.followRedirects=off"]
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
@@ -66,15 +119,15 @@ def _run(cmd: list[str], *, cwd: Path | None = None, timeout: int = 180) -> str:
         stderr=subprocess.STDOUT,
         timeout=timeout,
         check=False,
-        env={
-            **os.environ,
-            "GIT_TERMINAL_PROMPT": "0",
-        },
+        env=_git_env(),
         text=True,
     )
     if proc.returncode != 0:
+        # The command line can carry a caller-supplied URL; report it
+        # credentials redacted.
         raise RuntimeError(
-            f"Command failed ({proc.returncode}): {' '.join(cmd)}\n{proc.stdout}"
+            f"Command failed ({proc.returncode}): "
+            f"{' '.join(redact_url(part) for part in cmd)}\n{redact_url(proc.stdout)}"
         )
     return proc.stdout
 
@@ -136,13 +189,25 @@ def _candidate_refs(*values: str | None) -> list[str]:
 
 
 def _remote_has_ref(url: str, ref: str, *, kind: str) -> bool:
-    """Check if remote has a tag/branch ref without cloning the full repo."""
+    """Check if remote has a tag/branch ref without cloning the full repo.
+
+    The ref is only ever used as a positional pattern prefixed with
+    ``refs/tags/`` or ``refs/heads/``, so an option-shaped value cannot reach
+    git's option parser.
+    """
+    safe_ref = str(ref or "").strip()
+    if (
+        not safe_ref
+        or safe_ref.startswith("-")
+        or any(ch in safe_ref for ch in "*?[]{}")
+    ):
+        return False
     if kind == "tag":
-        query = f"refs/tags/{ref}"
-        cmd = ["git", "ls-remote", "--tags", "--refs", url, query]
+        query = f"refs/tags/{safe_ref}"
+        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--tags", "--refs", url, query]
     else:
-        query = f"refs/heads/{ref}"
-        cmd = ["git", "ls-remote", "--heads", url, query]
+        query = f"refs/heads/{safe_ref}"
+        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--heads", url, query]
 
     timeout = int(
         getattr(settings, "dependency_discovery_clone_timeout_seconds", 180) or 180
@@ -153,10 +218,7 @@ def _remote_has_ref(url: str, ref: str, *, kind: str) -> bool:
         stderr=subprocess.STDOUT,
         timeout=timeout,
         check=False,
-        env={
-            **os.environ,
-            "GIT_TERMINAL_PROMPT": "0",
-        },
+        env=_git_env(),
         text=True,
     )
     return proc.returncode == 0 and bool((proc.stdout or "").strip())
@@ -198,6 +260,7 @@ def clone_repo(url: str, version_hint: str | None = None) -> tuple[Path, str | N
             _run(
                 [
                     "git",
+                    *_GIT_FLAGS,
                     "clone",
                     "--depth",
                     "1",
@@ -212,7 +275,7 @@ def clone_repo(url: str, version_hint: str | None = None) -> tuple[Path, str | N
         else:
             # default branch as before
             _run(
-                ["git", "clone", "--depth", "1", clone_url, str(tmpdir)],
+                ["git", *_GIT_FLAGS, "clone", "--depth", "1", clone_url, str(tmpdir)],
                 timeout=timeout,
             )
 
@@ -232,6 +295,7 @@ def find_lockfiles(repo_root: Path) -> list[Path]:
 
     out: list[Path] = []
     visited = 0
+    files_seen = 0
     for root, dirs, files in os.walk(repo_root):
         # prune
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -241,9 +305,17 @@ def find_lockfiles(repo_root: Path) -> list[Path]:
             break
 
         for f in files:
+            files_seen += 1
+            if files_seen > max_files:
+                out = out[:60]
+                return out
             if f in (".DS_Store",):
                 continue
             p = Path(root) / f
+            # Symlinks never contribute a lockfile here: a link named
+            # package-lock.json could point anywhere on the worker fs.
+            if p.is_symlink():
+                continue
             if is_supported_lockfile(p):
                 out.append(p)
         if len(out) >= 60:

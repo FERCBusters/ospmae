@@ -7,8 +7,8 @@ Create Date: 2026-02-24 00:00:00
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql as pg
 
 # NOTE: Alembic's default alembic_version.version_num column is VARCHAR(32).
@@ -140,42 +140,50 @@ def upgrade() -> None:
             )
 
     # Convert {"component_ids":[...]} to {"project_ids":[...]} for existing manifests.
-    op.execute(sa.text("""UPDATE manifests
+    op.execute(
+        sa.text("""UPDATE manifests
         SET filters_json =
             CASE
                 WHEN filters_json ? 'component_ids' THEN
                     (filters_json - 'component_ids') || jsonb_build_object('project_ids', filters_json->'component_ids')
                 ELSE filters_json
             END
-    """))
-    op.execute(sa.text("""UPDATE manifests
+    """)
+    )
+    op.execute(
+        sa.text("""UPDATE manifests
         SET filters_json =
             CASE
                 WHEN filters_json ? 'component_id' THEN
                     (filters_json - 'component_id') || jsonb_build_object('project_id', filters_json->'component_id')
                 ELSE filters_json
             END
-    """))
+    """)
+    )
 
 
 def downgrade() -> None:
     # --- reverse data: manifests filter json key ---
-    op.execute(sa.text("""UPDATE manifests
+    op.execute(
+        sa.text("""UPDATE manifests
         SET filters_json =
             CASE
                 WHEN filters_json ? 'project_ids' THEN
                     (filters_json - 'project_ids') || jsonb_build_object('component_ids', filters_json->'project_ids')
                 ELSE filters_json
             END
-    """))
-    op.execute(sa.text("""UPDATE manifests
+    """)
+    )
+    op.execute(
+        sa.text("""UPDATE manifests
         SET filters_json =
             CASE
                 WHEN filters_json ? 'project_id' THEN
                     (filters_json - 'project_id') || jsonb_build_object('component_id', filters_json->'project_id')
                 ELSE filters_json
             END
-    """))
+    """)
+    )
 
     # If we upgraded manifests.filters_json to JSONB on upgrade, downgrade it back to JSON
     # to match the historical schema.

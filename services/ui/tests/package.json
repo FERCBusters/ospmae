@@ -1,0 +1,9 @@
+{
+  "name": "ospmae-ui-tests",
+  "private": true,
+  "description": "Locked test-only tooling for the OSPMAE UI: c8 coverage and prettier.",
+  "devDependencies": {
+    "c8": "^10.1.3",
+    "prettier": "^3.4.2"
+  }
+}

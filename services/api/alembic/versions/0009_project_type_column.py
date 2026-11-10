@@ -13,8 +13,8 @@ application code expects 'project_type'.
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0009_project_type"
 down_revision = "0008_projects_rename"

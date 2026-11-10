@@ -1,0 +1,114 @@
+name: OSPMAE CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Images are pinned by digest; tools/docker_image_pins.py keeps them current.
+    container:
+      image: docker.io/library/debian:13@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
+    services:
+      postgres:
+        image: docker.io/library/postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
+        env:
+          POSTGRES_USER: ospmae_test
+          POSTGRES_PASSWORD: ospmae_test
+          POSTGRES_DB: ospmae_test
+        options: >-
+          --health-cmd "pg_isready -U ospmae_test -d ospmae_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PYTHON_BIN: python3
+      POETRY_VERSION: "2.4.1"
+      OSPMAE_TEST_DATABASE_URL: postgresql+psycopg://ospmae_test:ospmae_test@postgres:5432/ospmae_test
+      TZ: UTC
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          set -eu
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git tar gzip findutils bash nodejs npm \
+            python3 python3-venv python3-pip build-essential
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Install locked frontend test dependencies
+        run: |
+          set -eu
+          npm ci --prefix services/ui/tests --ignore-scripts --no-audit --no-fund
+
+      - name: Install Poetry
+        run: |
+          set -eu
+          "${PYTHON_BIN}" -m venv /opt/ospmae-ci-poetry
+          /opt/ospmae-ci-poetry/bin/python -m pip install "poetry==${POETRY_VERSION}"
+          echo /opt/ospmae-ci-poetry/bin >> "$GITHUB_PATH"
+          /opt/ospmae-ci-poetry/bin/poetry --version
+
+      - name: Install locked application and test dependencies
+        run: |
+          set -eu
+          cd services/api
+          poetry env use "${PYTHON_BIN}"
+          poetry install --with dev --no-root --no-interaction --no-ansi
+
+      - name: Check Python formatting
+        run: |
+          cd services/api
+          poetry run ruff format --check ../..
+
+      - name: Check Python lint
+        run: |
+          mkdir -p test-results
+          cd services/api
+          # The JSON findings feed the ruff badge; the second run decides the step.
+          poetry run ruff check ../.. --exit-zero --output-format=json \
+            --output-file ../../test-results/ruff-findings.json
+          poetry run ruff check ../..
+
+      - name: Check Python types
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          cd services/api
+          # mypy's summary line, kept in the report, feeds the mypy badge.
+          poetry run mypy | tee ../../test-results/mypy-report.txt
+
+      - name: Check frontend formatting
+        run: |
+          bash format-ui.sh --check
+
+      - name: Run tests
+        run: |
+          set -eu
+          bash tests.sh
+
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ospmae-test-results
+          path: test-results/
+          if-no-files-found: warn

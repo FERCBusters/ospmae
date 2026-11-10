@@ -39,6 +39,33 @@ def _require_admin(db: Session, user: User) -> None:
         raise HTTPException(status_code=403, detail="Admin role required")
 
 
+def _can_view_drafts_for_project(db: Session, user: User, project_id: int) -> bool:
+    """Drafts are visible to admins and each project's owners (user or group)."""
+
+    attach_effective_role(db, user)
+    owner = db.query(Project).filter(Project.id == project_id).one_or_none()
+    if owner and owner.created_by_user_id == user.id:
+        return True
+
+    user_groups = {
+        int(gid)
+        for (gid,) in db.query(UserGroup.group_id)
+        .filter(UserGroup.user_id == user.id)
+        .all()
+        if gid is not None
+    }
+    if not user_groups:
+        return False
+    owner_groups = {
+        int(gid)
+        for (gid,) in db.query(ProjectOwnerGroup.group_id)
+        .filter(ProjectOwnerGroup.project_id == project_id)
+        .all()
+        if gid is not None
+    }
+    return bool(user_groups & owner_groups)
+
+
 def _require_admin_or_project_owner(db: Session, user: User, project: Project) -> None:
     if _is_admin(db, user):
         return
@@ -516,7 +543,7 @@ def dependencies_bipartite(
             ProjectVersion,
             ProjectVersion.id == ProjectVersionDependency.project_version_id,
         )
-        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)
+        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .group_by(ProjectVersionDependency.dependency_version_id)
         .having(
             func.count(func.distinct(ProjectVersionDependency.project_version_id))
@@ -672,7 +699,7 @@ def _capabilities_bipartite(
             ProjectVersion,
             ProjectVersion.id == ProjectVersionFrameworkNode.project_version_id,
         )
-        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)
+        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .group_by(ProjectVersionFrameworkNode.framework_node_id)
         .having(
             func.count(func.distinct(ProjectVersionFrameworkNode.project_version_id))
@@ -835,7 +862,7 @@ def _licenses_bipartite(
         )
         .select_from(Project)
         .join(ProjectVersion, ProjectVersion.project_id == Project.id)
-        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)
+        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .group_by(license_expr)
         .having(func.count(func.distinct(Project.id)) >= int(min_usage))
         .order_by(func.count(func.distinct(Project.id)).desc())
@@ -863,7 +890,7 @@ def _licenses_bipartite(
             license_expr.label("license"),
         )
         .join(Project, Project.id == ProjectVersion.project_id)
-        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)
+        .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .filter(license_expr.in_(top_licenses))
         .order_by(func.coalesce(Project.display_name, Project.machine_name).asc())
         .limit(int(limit_projects))
@@ -946,9 +973,9 @@ def visualisations_bipartite(
       - licenses: project versions <-> project license strings
     """
 
-    l = str(lens or "dependencies").lower().strip()
+    lens_value = str(lens or "dependencies").lower().strip()
 
-    if l in {"dependency", "dependencies", "deps"}:
+    if lens_value in {"dependency", "dependencies", "deps"}:
         return dependencies_bipartite(
             latest_only=latest_only,
             limit_projects=limit_projects,
@@ -958,7 +985,7 @@ def visualisations_bipartite(
             user=user,
         )
 
-    if l in {"capability", "capabilities", "framework", "framework_nodes"}:
+    if lens_value in {"capability", "capabilities", "framework", "framework_nodes"}:
         return _capabilities_bipartite(
             latest_only=latest_only,
             limit_projects=limit_projects,
@@ -967,7 +994,7 @@ def visualisations_bipartite(
             db=db,
         )
 
-    if l in {"license", "licenses"}:
+    if lens_value in {"license", "licenses"}:
         return _licenses_bipartite(
             latest_only=latest_only,
             limit_projects=limit_projects,
@@ -1237,6 +1264,10 @@ def capability_detail(
 
     path = path_for(int(framework_node_id))
 
+    # Draft versions are only exposed to accounts that can view them for the
+    # owning project; every other caller sees released versions only.
+    admin_view = attach_effective_role(db, user) == ROLE_ADMIN
+
     used_by = (
         db.query(
             ProjectVersionFrameworkNode.project_version_id.label("project_version_id"),
@@ -1244,6 +1275,7 @@ def capability_detail(
             ProjectVersion.version.label("pv_version"),
             ProjectVersion.is_latest.label("is_latest"),
             ProjectVersion.is_draft.label("is_draft"),
+            ProjectVersion.project_id.label("version_project_id"),
             Project.id.label("project_id"),
             func.coalesce(Project.display_name, Project.machine_name).label(
                 "project_name"
@@ -1262,8 +1294,16 @@ def capability_detail(
         .all()
     )
 
+    draft_owners = {int(r.project_id) for r in used_by if bool(r.is_draft)}
+    drafts_visible: set[int] = set()
+    for project_id in draft_owners:
+        if admin_view or _can_view_drafts_for_project(db, user, project_id):
+            drafts_visible.add(project_id)
+
     projects: list[dict[str, Any]] = []
     for r in used_by:
+        if bool(r.is_draft) and int(r.project_id) not in drafts_visible:
+            continue
         projects.append(
             {
                 "project_id": int(r.project_id),

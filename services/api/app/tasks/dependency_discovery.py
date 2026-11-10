@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections import defaultdict
+import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from celery.utils.log import get_task_logger
 from sqlalchemy import func, update
@@ -18,13 +19,28 @@ from app.db.models import (
     ProjectVersionDependency,
 )
 from app.db.session import SessionLocal
-from app.depscan.parsers import DiscoveredDependency
-from app.depscan.scan import clone_repo, find_lockfiles
 from app.depscan.grype import scan_grype
-from app.depscan.parsers import parse_lockfile
+from app.depscan.parsers import DiscoveredDependency, parse_lockfile, redact_url
+from app.depscan.scan import clone_repo, find_lockfiles
 from app.depscan.syft import scan_syft
 
 log = get_task_logger(__name__)
+
+
+# Scanner and lockfile output is untrusted third-party content (any repo owner
+# controls package names, versions and titles), so stored display fields get a
+# conservative charset and length; the ID columns these derive from are
+# normalized independently.
+_NAME_BAD_CHARS = set("<>{}[]()\"';\\")
+_VALUE_MAX_LENGTH = 255
+
+
+def _clean_display_value(raw: Any, *, max_length: int = _VALUE_MAX_LENGTH) -> str:
+    s = str(raw or "").strip()
+    s = "".join(ch for ch in s if ord(ch) >= 32 and ord(ch) != 0x7F)
+    if any(ch in _NAME_BAD_CHARS for ch in s):
+        s = re.sub(r"[<>{}\[\]()\"';\\]", "", s)
+    return s[:max_length]
 
 
 def _normalize(dep_name: str) -> str:
@@ -40,11 +56,17 @@ def _upsert_dependency(db: Session, ecosystem: str, name: str) -> DependencyPack
         .one_or_none()
     )
     if dep:
-        # keep latest observed display name
-        if dep.name != name:
-            dep.name = name
+        # Only enrich an empty display name; a scan from one project must not
+        # rename a package display shared with every other project.
+        clean = _clean_display_value(name)
+        if clean and not dep.name:
+            dep.name = clean
         return dep
-    dep = DependencyPackage(ecosystem=ecosystem, name=name, normalized_name=norm)
+    dep = DependencyPackage(
+        ecosystem=ecosystem,
+        name=_clean_display_value(name) or norm,
+        normalized_name=norm,
+    )
     db.add(dep)
     db.flush()
     return dep
@@ -53,7 +75,7 @@ def _upsert_dependency(db: Session, ecosystem: str, name: str) -> DependencyPack
 def _upsert_dependency_version(
     db: Session, dep: DependencyPackage, version: str
 ) -> DependencyVersion:
-    ver = str(version or "").strip()
+    ver = str(version or "").strip()[:200]
     dv = (
         db.query(DependencyVersion)
         .filter(DependencyVersion.dependency_id == dep.id)
@@ -157,9 +179,9 @@ def _apply_vulns(db: Session, *, findings: list, project_version_id: int) -> int
 
     for f in findings:
         eco = str(getattr(f, "ecosystem", "") or "").strip().lower()
-        pkg = str(getattr(f, "package", "") or "").strip()
-        ver = str(getattr(f, "version", "") or "").strip()
-        vuln_id = str(getattr(f, "vulnerability_id", "") or "").strip()
+        pkg = _clean_display_value(getattr(f, "package", ""))
+        ver = str(getattr(f, "version", "") or "").strip()[:100]
+        vuln_id = str(getattr(f, "vulnerability_id", "") or "").strip()[:100]
         if not (eco and pkg and vuln_id):
             continue
 
@@ -170,6 +192,13 @@ def _apply_vulns(db: Session, *, findings: list, project_version_id: int) -> int
             continue
         seen.add(dedupe_key)
 
+        severity = _clean_display_value(str(getattr(f, "severity", "") or "")[:40])
+        title = _clean_display_value(str(getattr(f, "title", "") or "")[:500])
+        fixed = str(getattr(f, "fixed_version", "") or "").strip()[:100]
+        references = [
+            _clean_display_value(str(r or "")[:500])[:500]
+            for r in (list(getattr(f, "references", []) or []))[:10]
+        ]
         existing = (
             db.query(DependencyVulnerability)
             .filter(DependencyVulnerability.dependency_version_id == dv.id)
@@ -178,22 +207,32 @@ def _apply_vulns(db: Session, *, findings: list, project_version_id: int) -> int
             .one_or_none()
         )
         if existing:
-            existing.severity = f.severity
-            existing.title = f.title
-            existing.fixed_version = f.fixed_version
-            existing.references = list(getattr(f, "references", []) or [])
-            existing.raw = dict(getattr(f, "raw", {}) or {})
+            existing.severity = severity
+            existing.title = title
+            existing.fixed_version = fixed
+            existing.references = references
+            existing.raw = {
+                str(k)[:60]: str(v)[:2000]
+                if isinstance(v, (str, int, float, bool))
+                else None
+                for k, v in list(dict(getattr(f, "raw", {}) or {}).items())[:50]
+            }
         else:
             db.add(
                 DependencyVulnerability(
                     dependency_version_id=dv.id,
                     scanner="grype",
                     vulnerability_id=vuln_id,
-                    severity=f.severity,
-                    title=f.title,
-                    fixed_version=f.fixed_version,
-                    references=list(getattr(f, "references", []) or []),
-                    raw=dict(getattr(f, "raw", {}) or {}),
+                    severity=severity,
+                    title=title,
+                    fixed_version=fixed,
+                    references=references,
+                    raw={
+                        str(k)[:60]: str(v)[:2000]
+                        if isinstance(v, (str, int, float, bool))
+                        else None
+                        for k, v in list(dict(getattr(f, "raw", {}) or {}).items())[:50]
+                    },
                 )
             )
 
@@ -221,6 +260,10 @@ def _count_project_version_vulns(db: Session, *, project_version_id: int) -> int
     name="app.tasks.dependency_discovery.discover_project_version_dependencies"
 )
 def discover_project_version_dependencies(project_version_id: int) -> dict:
+    from app.core.features import is_enabled
+
+    if not is_enabled("dependency_scans"):
+        return {"skipped": True, "reason": "dependency_scans feature disabled"}
     if not bool(getattr(settings, "dependency_discovery_enabled", True)):
         return {"skipped": True, "reason": "disabled"}
 
@@ -342,13 +385,13 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
                 .values(
                     dependency_discovery_status="error",
                     dependency_discovery_finished_at=datetime.utcnow(),
-                    dependency_discovery_error=str(exc),
+                    dependency_discovery_error=redact_url(str(exc))[:2000],
                 )
             )
             db.commit()
         except Exception:
             db.rollback()
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": redact_url(str(exc))[:2000]}
     finally:
         try:
             if repo_dir:

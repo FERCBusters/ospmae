@@ -1,15 +1,25 @@
 {
   "name": "ospmae-ui",
-  "version": "0.1.0",
   "private": true,
-  "description": "OSPMAE UI vendor assets",
-  "scripts": {
-    "vendor-assets": "node scripts/vendor-assets.mjs"
-  },
+  "type": "module",
   "dependencies": {
-    "bootstrap": "^5.3.8",
-    "bootstrap-icons": "^1.11.3",
-    "d3": "^7.9.0",
+    "@fercbusters/mosp-design-system": "github:FERCBusters/mosp-design-system#d9688500e4985ebda7d58fc668620c91a5bb0ffe",
+    "bootstrap": "5.3.8",
+    "bootstrap-icons": "1.13.1",
+    "d3": "7.9.0",
     "jspdf": "^4.2.1"
-  }
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  },
+  "scripts": {
+    "vendor": "node scripts/vendor-assets.mjs",
+    "minify:public": "node scripts/minify-public.mjs",
+    "build": "npm run vendor && npm run minify:public",
+    "test": "node --experimental-vm-modules --test tests/*.test.mjs",
+    "test:coverage": "bash ../../tests-ui.sh",
+    "format": "bash ../../format-ui.sh --write",
+    "format:check": "bash ../../format-ui.sh --check"
+  },
+  "version": "1.0.0"
 }
