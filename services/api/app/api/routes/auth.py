@@ -264,11 +264,33 @@ def login(
 
     delete_all_sessions_for_user(db, user.id)
 
+    from app.security import mfa
+
+    if user.mfa_enabled or mfa.required(db, user):
+        # The password is proven; the browser now holds the ceremony cookie
+        # while /v1/auth/mfa/* runs outside of any session.
+        return mfa.start(db, user, request)
+
+    return complete_local_login(db, user, request)
+
+
+def complete_local_login(
+    db: Session,
+    user: User,
+    request: Request,
+    *,
+    mfa_verified: bool = False,
+    verified_version: int | None = None,
+):
     sid = create_session(
         db,
         user_id=user.id,
         ttl_seconds=int(settings.session_ttl_seconds),
         auth_method="local",
+        mfa_verified=bool(mfa_verified),
+        mfa_version=int(user.mfa_version)
+        if verified_version is None
+        else int(verified_version),
     )
 
     try:
@@ -277,7 +299,9 @@ def login(
         db.commit()
         request.state.user = user
 
-        log_login_success(db, user.id, "local", client_ip, user_agent)
+        log_login_success(
+            db, user.id, "local", _get_client_ip(request), _get_user_agent(request)
+        )
     except Exception:
         db.rollback()
 
@@ -389,7 +413,10 @@ def logout(request: Request, db: Session = Depends(get_db)) -> Response:
         delete_all_sessions_for_user(db, user.id)
         log_logout(db, user.id, _get_client_ip(request), _get_user_agent(request))
 
+    from app.security import mfa
+
     resp = Response(status_code=204)
+    mfa.cancel(db, request, resp)
     clear_session_cookie(resp)
     clear_csrf_cookie(resp)
     return resp
@@ -720,7 +747,10 @@ def logout_redirect(request: Request, db: Session = Depends(get_db)) -> Response
             )
         )
 
+    from app.security import mfa
+
     resp = RedirectResponse(dest, status_code=302)
+    mfa.cancel(db, request, resp)
     clear_session_cookie(resp)
     clear_csrf_cookie(resp)
     return resp

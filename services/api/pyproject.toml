@@ -27,6 +27,12 @@ starlette = "^1"
 authlib = "^1.6.8"
 httpx = "^0.28.0"
 
+# Local second factor (TOTP + WebAuthn + recovery codes)
+pyotp = "^2.10"
+qrcode = "^8.2"
+webauthn = "^2.8"
+cryptography = ">=50"
+
 # Async dependency discovery + background jobs
 celery = "^5.6.2"
 redis = "^8"

@@ -26,7 +26,12 @@ from app.security.roles import (
     attach_effective_role,
     canonicalize_role,
 )
-from app.security.sessions import create_session, get_session, refresh_session
+from app.security.sessions import (
+    create_session,
+    delete_session,
+    get_session,
+    refresh_session,
+)
 
 ALLOWED_USER_ROLES = {
     ROLE_ADMIN,
@@ -211,6 +216,14 @@ def get_current_user_from_headers_cookies(
     if not user:
         return None
 
+    # A local session must still prove its second factor against the
+    # account's current enrolment; anything stale is deleted and refused.
+    from app.security.mfa import local_session_allowed
+
+    if not local_session_allowed(db, user, session_row):
+        delete_session(db, session_row.session_id)
+        return None
+
     refresh_session(db, session_row, settings.session_ttl_seconds)
     return user
 
@@ -268,8 +281,20 @@ def clear_session_cookie(response: Response) -> None:
     )
 
 
-def create_login_session(db: Session, user: User) -> str:
-    return create_session(db, user_id=user.id, ttl_seconds=settings.session_ttl_seconds)
+def create_login_session(
+    db: Session,
+    user: User,
+    *,
+    mfa_verified: bool = False,
+    mfa_version: int = 0,
+) -> str:
+    return create_session(
+        db,
+        user_id=user.id,
+        ttl_seconds=settings.session_ttl_seconds,
+        mfa_verified=mfa_verified,
+        mfa_version=mfa_version,
+    )
 
 
 def create_user(

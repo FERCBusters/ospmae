@@ -11,7 +11,7 @@ Applications in the same family share a design system and conventions: **KEEN** 
 - **Dependency scanning** - an operator-configured Grype/Syft pipeline clones policy-permitted repositories (host allowlist, command allowlists, fixed scrubbed environment), parses lockfiles/SBOMs and records dependencies, vulnerabilities and remediation status against each version.
 - **Comparisons** - side-by-side project/version diffs with capability matrices and dependency/vulnerability deltas, plus CSV/XLSX/PDF exports served as neutral attachments.
 - **Questions and notifications** - account-threaded questions on project versions with role-based answer permissions, e-mail notifications, and realtime browser notification over a bounded WebSocket channel.
-- **Authentication** - local accounts (PBKDF2/260k), OpenID Connect with per-provider configuration, optional trusted header identity from an authenticating proxy, database-backed sessions with rolling and absolute lifetimes, and CSRF-protected unsafe writes.
+- **Authentication** - local accounts (PBKDF2/260k) with a second factor (TOTP authenticator apps, WebAuthn security keys/passkeys and single-use recovery codes), OpenID Connect with per-provider configuration, optional trusted header identity from an authenticating proxy, database-backed sessions with rolling and absolute lifetimes, and CSRF-protected unsafe writes. The second factor applies to local sign-in under the `OSPMAE_MFA_POLICY` setting (`optional`, `admins`, or `all`); an account's enrolment change invalidates its existing local sessions, a five-minute browser ceremony runs outside the session cookie, and WebAuthn requires an HTTPS `OSPMAE_PUBLIC_BASE_URL`.
 
 ## Installation feature switches
 
@@ -47,6 +47,28 @@ The services:
 
 Third-party container images are pinned by digest; `tools/docker_image_pins.py check` verifies that every tracked tag still resolves to its pinned digest, and the nightly workflow opens review when an upstream tag moves (see `.github/workflows/docker-image-pins.yml`).
 
+### Initial user creation
+
+Run the following to create the initial (admin) user:
+
+```bash
+docker compose exec -T component-api python - <<'PY'
+from app.db.session import SessionLocal
+from app.security.auth import create_user
+db = SessionLocal()
+try:
+    create_user(
+        db,
+        username="admin",            # 1-64 chars: letters, digits, _ - .
+        password="SomethingStrongHere!",  # >= 8 chars
+        email="admin@example.com",   # optional but enables reset/SSO linking
+        role="admin",
+    )
+finally:
+    db.close()
+PY
+```
+
 ### Environment settings worth knowing
 
 | Setting | Purpose |
@@ -54,6 +76,7 @@ Third-party container images are pinned by digest; `tools/docker_image_pins.py c
 | `OSPMAE_PUBLIC_BASE_URL` | The origin used in links printed into e-mail (reset, approval, verification). Set this before enabling mail flows. |
 | `OSPMAE_FEATURE_*` | Installation switches above. |
 | `OSPMAE_LOCAL_AUTH_ENABLED`, `OSPMAE_PASSWORD_RESET_*` | Local accounts, reset/verification flows. |
+| `OSPMAE_MFA_POLICY`, `OSPMAE_MFA_ENCRYPTION_KEY` | Local second factor: `optional` (default), `admins` or `all` accounts must complete TOTP/security-key/recovery-code verification on local sign-in; the key is a persistent Fernet key (`openssl rand -base64 32`) that encrypts TOTP secrets at rest and belongs in your secrets manager. |
 | `OSPMAE_OIDC_*` (or `OSPMAE_GITHUB_*`) | SSO providers; each enabled provider requires explicit `CLIENT_ID`, `CLIENT_SECRET`, endpoints and `REDIRECT_URI`. |
 | `OSPMAE_TRUST_REMOTE_USER` + `OSPMAE_REMOTE_USER_HEADER_NAME` | Trusted header identity for deployments where the network path alone reaches the API through the authenticating proxy. |
 | `OSPMAE_TRUSTED_PROXY_CIDRS` | Networks whose hosts may form the trusted side of a forwarded client address chain (rate limits, audit records). |

@@ -190,6 +190,12 @@
         return;
       }
 
+      if (res.mfa_required) {
+        setMsg("Second factor required. Redirecting…");
+        window.location.replace("/mfa.html");
+        return;
+      }
+
       setMsg("Signed in. Redirecting…");
       const role = String(res.effective_role || res.role || "").toLowerCase();
       window.location.replace(

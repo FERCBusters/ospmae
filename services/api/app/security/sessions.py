@@ -29,6 +29,8 @@ def create_session(
     ttl_seconds: int,
     auth_method: str = "local",
     oidc_id_token: str | None = None,
+    mfa_verified: bool = False,
+    mfa_version: int = 0,
 ) -> str:
     sid = secrets.token_urlsafe(32)
     row = SessionRow(
@@ -37,6 +39,10 @@ def create_session(
         expires_at=_now() + timedelta(seconds=int(ttl_seconds)),
         auth_method=(auth_method or "local")[:20],
         oidc_id_token=oidc_id_token,
+        # The second-factor state proven when this session was issued; the
+        # account's later enrolment bumps are refused at resolution.
+        mfa_verified=bool(mfa_verified),
+        mfa_version=int(mfa_version),
     )
     db.add(row)
     db.commit()

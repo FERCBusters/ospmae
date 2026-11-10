@@ -1,8 +1,11 @@
-"""Mailbox verification tokens and session creation timestamps.
+"""Mailbox verification tokens.
 
 Revision ID: 0026_email_verification_tokens
 Revises: 0025_company_to_organisation
 Create Date: 2026-09-22
+
+Session rows already carry created_at from the initial schema (0001), so this
+revision only adds the verification-token table.
 """
 
 from __future__ import annotations
@@ -17,15 +20,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "sessions",
-        sa.Column(
-            "created_at",
-            sa.DateTime(),
-            nullable=False,
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-        ),
-    )
     op.create_table(
         "email_verification_tokens",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -58,4 +52,3 @@ def downgrade() -> None:
         "ix_email_verification_tokens_user_id", table_name="email_verification_tokens"
     )
     op.drop_table("email_verification_tokens")
-    op.drop_column("sessions", "created_at")

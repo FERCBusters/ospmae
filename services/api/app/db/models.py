@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -75,6 +76,29 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(50), default="viewer", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Local second factor: enabled means local sign-in needs the ceremony.
+    # Every change to the enrolment bumps mfa_version, and a session whose
+    # recorded version no longer matches is refused at resolution, so the
+    # browser's other sessions end with the change. Wrong TOTP and recovery
+    # codes are counted across sign-ins from mfa_code_failures_since; see
+    # app/security/mfa.py.
+    mfa_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    mfa_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    mfa_totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mfa_totp_last_step: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=-1, server_default="-1"
+    )
+    mfa_code_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    mfa_code_failures_since: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -118,9 +142,71 @@ class Session(Base):
         String(20), nullable=False, default="local"
     )
 
+    # The second-factor state this session was issued with: a session proves
+    # the factor only when its recorded enrolment version matches the
+    # account's and the ceremony completed. See local_session_allowed in
+    # app/security/mfa.py.
+    mfa_verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    mfa_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     # Optional: store the last OIDC id_token for this session so we can pass
     # id_token_hint to the provider's end_session endpoint (if configured).
     oidc_id_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MfaCredential(Base):
+    """A registered WebAuthn security key or passkey."""
+
+    __tablename__ = "mfa_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    credential_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sign_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class MfaRecoveryCode(Base):
+    """One-time recovery codes, stored hashed."""
+
+    __tablename__ = "mfa_recovery_codes"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+
+class MfaChallenge(Base):
+    """A pending second-factor ceremony, never part of the session namespace.
+
+    The browser holds only the unhashed token; the row is looked up by the
+    token's SHA-256 digest and carries the account state it was issued for.
+    """
+
+    __tablename__ = "mfa_challenges"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    password_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 # -----------------------------------------------------------------------------

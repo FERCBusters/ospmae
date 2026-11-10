@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,6 +52,25 @@ class Settings(BaseSettings):
 
     # Native (local) username/password login
     local_auth_enabled: bool = Field(default=True)
+
+    # ---------------------------------------------------------------------
+    # Local second factor (TOTP, security keys/passkeys, recovery codes)
+    # ---------------------------------------------------------------------
+    # Which accounts must present a second factor on local sign-in:
+    # "optional", "admins" or "all".
+    mfa_policy: str = Field(default="optional")
+    # Persistent Fernet key (base64, 32 url-safe base64-encoded bytes) used to
+    # encrypt at-rest TOTP secrets, e.g. `openssl rand -base64 32`. Without a
+    # valid key TOTP enrolment and verification answer 503, and existing
+    # secrets cannot be decrypted, so enrolment stays refused.
+    mfa_encryption_key: str = Field(default="", repr=False)
+
+    @field_validator("mfa_policy")
+    @classmethod
+    def _validate_mfa_policy(cls, value: str) -> str:
+        if value not in {"optional", "admins", "all"}:
+            raise ValueError("MFA policy must be optional, admins or all")
+        return value
 
     # ---------------------------------------------------------------------
     # Post-login redirect allowlist

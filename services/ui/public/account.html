@@ -253,6 +253,28 @@
         <div class="text-secondary small" id="passwordUnavailableMsg"></div>
       </div>
     </div>
+      <div class="card d-none" id="mfaCard">
+        <div class="card-header">
+          <div class="fw-bold">Two-factor authentication</div>
+          <div class="small-muted">Protect local sign-in with an authenticator app, security key or passkey. Recovery codes let you sign in if you lose your authenticator.</div>
+        </div>
+        <div class="card-body">
+          <p id="securitySummary" role="status">Loading</p>
+          <form id="securityForm" class="row g-2 align-items-end">
+            <div class="col-12 col-lg-6">
+              <label class="form-label small-muted mb-1" for="securityPassword">Confirm your local password to manage authenticators</label>
+              <input id="securityPassword" class="form-control" type="password" autocomplete="current-password" required />
+            </div>
+            <div class="col-12 col-lg-3 d-flex justify-content-lg-end">
+              <button id="manageMfaBtn" class="btn btn-primary" type="submit">
+                <i class="bi bi-shield-lock"></i> Manage account security
+              </button>
+            </div>
+          </form>
+          <div class="text-secondary small mt-2" id="mfaMsg"></div>
+        </div>
+      </div>
+    </div>
 
   </main>
 

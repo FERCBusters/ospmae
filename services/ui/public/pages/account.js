@@ -73,6 +73,12 @@
     subscriptionsMsg: document.getElementById("subscriptionsMsg"),
     passwordCard: document.getElementById("passwordCard"),
     passwordUnavailableMsg: document.getElementById("passwordUnavailableMsg"),
+    mfaCard: document.getElementById("mfaCard"),
+    securitySummary: document.getElementById("securitySummary"),
+    securityForm: document.getElementById("securityForm"),
+    securityPassword: document.getElementById("securityPassword"),
+    manageMfaBtn: document.getElementById("manageMfaBtn"),
+    mfaMsg: document.getElementById("mfaMsg"),
     changePasswordForm: document.getElementById("changePasswordForm"),
     currentPassword: document.getElementById("currentPassword"),
     newPassword: document.getElementById("newPassword"),
@@ -255,7 +261,9 @@
         body: { token },
       });
       toast(`Email ${res?.verified || ""} verified.`, "success");
-      await loadLinkedEmails();
+    await loadLinkedEmails();
+
+    await loadMfaStatus();
     } catch (err) {
       toast(err?.message || "Verification link invalid or expired", "error");
     }
@@ -760,6 +768,54 @@
     toast("Password updated.", "success");
   }
 
+  function setMfaMsg(text, kind = "info") {
+    if (!el.mfaMsg) return;
+    el.mfaMsg.textContent = text || "";
+    el.mfaMsg.className =
+      "small mt-2 " + (kind === "error" ? "text-danger" : "text-secondary");
+  }
+
+  async function loadMfaStatus() {
+    if (!el.securitySummary) return;
+    try {
+      const state2 = await api("/v1/me/mfa");
+      if (!state2.local_enabled) {
+        el.securitySummary.textContent =
+          "Password sign-in is disabled. Manage multi-factor authentication with your sign-in provider.";
+        if (el.securityForm) el.securityForm.classList.add("d-none");
+        return;
+      }
+      el.securitySummary.textContent = state2.enabled
+        ? `Two-factor authentication is enabled. ${state2.totp ? "Authenticator app; " : ""}${state2.credentials.length} security keys/passkeys; ${state2.recovery_codes_remaining} recovery codes remaining.`
+        : "Two-factor authentication is not configured for password sign-in.";
+      if (state2.required) {
+        el.securitySummary.textContent += " Your administrator requires a second factor.";
+      }
+      setMfaMsg("");
+    } catch (err) {
+      el.securitySummary.textContent = err?.message || "Could not load security settings.";
+    }
+  }
+
+  async function submitMfaManage() {
+    const password = String(el.securityPassword?.value || "");
+    if (!password) {
+      setMfaMsg("Enter your current password.", "error");
+      return;
+    }
+    if (el.manageMfaBtn) el.manageMfaBtn.disabled = true;
+    try {
+      await api("/v1/auth/mfa/manage/start", { method: "POST", body: { password } });
+      if (el.securityPassword) el.securityPassword.value = "";
+      window.location.assign("/mfa.html");
+    } catch (err) {
+      setMfaMsg(err?.message || "Verification failed.", "error");
+      if (el.securityPassword) el.securityPassword.value = "";
+    } finally {
+      if (el.manageMfaBtn) el.manageMfaBtn.disabled = false;
+    }
+  }
+
   function wireEvents() {
     el.saveEmailBtn?.addEventListener("click", () => {
       saveEmail();
@@ -817,6 +873,14 @@
         console.error(err);
         setPasswordMsg(err?.message || "Failed to change password", "error");
         toast(err?.message || "Failed to change password", "error");
+      });
+    });
+
+    el.securityForm?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      submitMfaManage().catch((err) => {
+        console.error(err);
+        setMfaMsg(err?.message || "Failed to start account security management", "error");
       });
     });
 
@@ -966,6 +1030,13 @@
       el.passwordUnavailableMsg.textContent = canChangePassword
         ? ""
         : "Password changes are only available for local accounts when external single sign-on is disabled.";
+    }
+    if (el.mfaCard) {
+      if (canChangePassword) {
+        el.mfaCard.classList.remove("d-none");
+      } else {
+        el.mfaCard.classList.add("d-none");
+      }
     }
 
     state.prefs = getUserPreferences() || {};
