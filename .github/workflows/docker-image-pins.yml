@@ -26,5 +26,8 @@ jobs:
       - name: Verify every tracked tag still resolves to its pinned digest
         run: |
           set -euo pipefail
-          python3 -I tools/docker_image_pins.py check --report-dir "$RUNNER_TEMP/image-pins"
-          cat "$RUNNER_TEMP/image-pins/outputs.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          python3 -I tools/docker_image_pins.py check
+          # New digests land through reviewed commits: a maintainer runs
+          # python3 -I tools/docker_image_pins.py update (optionally with
+          # --report-dir, which writes pr-body.md, commit-message.txt and
+          # outputs.txt) and reviews the result in the normal flow.
