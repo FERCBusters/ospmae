@@ -1,4 +1,4 @@
-# OSPMAE — Open Source Programme Applications
+# OSPMAE - Open Source Project Management and Analysis Environment
 
 OSPMAE encodes open-source projects, architectures, frameworks, standards, capabilities and their evidence requirements in machine-readable and visual forms. A project maintainer maps a release once; any adopter (or ecosystem operator) reads that mapping each time from the machine-readable record. The Grype/Syft dependency pipeline turns a project's repositories into a live source of vulnerability findings for the whole catalogue, and each release keeps an exportable record of what it contains.
 
@@ -6,12 +6,12 @@ Applications in the same family share a design system and conventions: **KEEN** 
 
 ## What is in the box
 
-- **Projects and versions** — a catalogue of open-source projects with releases, drafts, subscriptions, changelog records and exportable manifests. Owners and owner groups manage their own projects; the catalogue is the common meeting point between project capabilities and adopter needs.
-- **Frameworks and capability mapping** — architecture frameworks (Universal Wallet Reference Architecture by default) encoded as machine-readable trees with per-node capability definitions, project-to-framework mappings and D3 visualisations.
-- **Dependency scanning** — an operator-configured Grype/Syft pipeline clones policy-permitted repositories (host allowlist, command allowlists, fixed scrubbed environment), parses lockfiles/SBOMs and records dependencies, vulnerabilities and remediation status against each version.
-- **Comparisons** — side-by-side project/version diffs with capability matrices and dependency/vulnerability deltas, plus CSV/XLSX/PDF exports served as neutral attachments.
-- **Questions and notifications** — account-threaded questions on project versions with role-based answer permissions, e-mail notifications, and realtime browser notification over a bounded WebSocket channel.
-- **Authentication** — local accounts (PBKDF2/260k), OpenID Connect with per-provider configuration, optional trusted header identity from an authenticating proxy, database-backed sessions with rolling and absolute lifetimes, and CSRF-protected unsafe writes.
+- **Projects and versions** - a catalogue of open-source projects with releases, drafts, subscriptions, changelog records and exportable manifests. Owners and owner groups manage their own projects; the catalogue is the common meeting point between project capabilities and adopter needs.
+- **Frameworks and capability mapping** - architecture frameworks (Universal Wallet Reference Architecture by default) encoded as machine-readable trees with per-node capability definitions, project-to-framework mappings and D3 visualisations.
+- **Dependency scanning** - an operator-configured Grype/Syft pipeline clones policy-permitted repositories (host allowlist, command allowlists, fixed scrubbed environment), parses lockfiles/SBOMs and records dependencies, vulnerabilities and remediation status against each version.
+- **Comparisons** - side-by-side project/version diffs with capability matrices and dependency/vulnerability deltas, plus CSV/XLSX/PDF exports served as neutral attachments.
+- **Questions and notifications** - account-threaded questions on project versions with role-based answer permissions, e-mail notifications, and realtime browser notification over a bounded WebSocket channel.
+- **Authentication** - local accounts (PBKDF2/260k), OpenID Connect with per-provider configuration, optional trusted header identity from an authenticating proxy, database-backed sessions with rolling and absolute lifetimes, and CSRF-protected unsafe writes.
 
 ## Installation feature switches
 
@@ -41,9 +41,9 @@ docker compose up --build
 
 The services:
 
-- `component-ui` — nginx serving the built UI, proxying `/v1/` and `/ws/` to the API, adding the security headers and cache policy from `services/ui/nginx/default.conf`.
-- `component-api` — the FastAPI application (uvicorn) alongside Celery workers and a beat scheduler.
-- `postgres` / `valkey` — catalogue storage and the Celery broker.
+- `component-ui` - nginx serving the built UI, proxying `/v1/` and `/ws/` to the API, adding the security headers and cache policy from `services/ui/nginx/default.conf`.
+- `component-api` - the FastAPI application (uvicorn) alongside Celery workers and a beat scheduler.
+- `postgres` / `valkey` - catalogue storage and the Celery broker.
 
 Third-party container images are pinned by digest; `tools/docker_image_pins.py check` verifies that every tracked tag still resolves to its pinned digest, and the nightly workflow opens review when an upstream tag moves (see `.github/workflows/docker-image-pins.yml`).
 
