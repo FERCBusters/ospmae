@@ -56,9 +56,21 @@
     // Keep the navbar unified across apps; Account is provided by the shared UI.
     links: [
       {
+        key: "dashboard",
+        label: "Dependency dashboard",
+        href: "/dashboard.html",
+        requireAny: ["can_view_catalogue"],
+      },
+      {
         key: "find",
         label: "Find projects",
         href: "/index.html",
+        requireAny: ["can_view_catalogue"],
+      },
+      {
+        key: "deps",
+        label: "Dependencies",
+        href: "/dependencies.html",
         requireAny: ["can_view_catalogue"],
       },
       {

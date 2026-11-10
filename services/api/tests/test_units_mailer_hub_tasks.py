@@ -62,7 +62,7 @@ def test_subject_newlines_are_stripped(monkeypatch):
 
     fake, saved = _capture(monkeypatch)
     try:
-        mailer._send_email(
+        mailer.send_email(
             to_email="a@example.com",
             subject="line one\nline two\rline three",
             body="body",
@@ -91,83 +91,161 @@ def test_mailer_skips_without_configuration(monkeypatch):
     settings.smtp_host = ""
     settings.smtp_from_email = ""
     try:
-        mailer._send_email(to_email="a@example.com", subject="s", body="b")
+        mailer.send_email(to_email="a@example.com", subject="s", body="b")
     finally:
         settings.smtp_host, settings.smtp_from_email = saved
 
 
-def test_all_mailer_helpers_shape_messages(monkeypatch):
+def test_all_mailer_helpers_queue_into_the_outbox(monkeypatch, db):
+    """Every mailer composer now queues an outbox row in the caller's
+    transaction; the transport stays the worker's job (deliver_pending)."""
+    from app.db.models import Notification
+    from app.db.session import SessionLocal
     from app.services import mailer
 
-    fake, saved = _capture(monkeypatch)
-    prev_admin_email = settings.admin_notification_email
+    saved = (
+        settings.smtp_host,
+        settings.smtp_port,
+        settings.smtp_from_email,
+        settings.smtp_from_name,
+        settings.admin_notification_email,
+    )
+    settings.smtp_host = "smtp.example.com"
+    settings.smtp_port = 587
+    settings.smtp_from_email = "noreply@example.com"
+    settings.smtp_from_name = "OSPMAE"
     settings.admin_notification_email = "ops@example.com"
     try:
-        mailer.send_password_reset_email(
-            to_email="u@example.com",
-            username="u",
-            reset_link="https://x/reset",
-            expires_minutes=60,
-        )
-        try:
+        with SessionLocal() as s:
+            mailer.send_password_reset_email(
+                db=s,
+                user_id=None,
+                to_email="u@example.com",
+                username="u",
+                reset_link="https://x/reset",
+                expires_minutes=60,
+            )
             mailer.send_new_user_admin_notification_email(
+                db=s,
                 username="u2",
                 email="u2@example.com",
                 provider_label="OIDC",
                 role="pending",
                 admin_url="https://x/admin.html",
             )
-        finally:
-            settings.admin_notification_email = prev_admin_email
-        mailer.send_account_approved_email(to_email="u3@example.com", username="u3")
-        mailer.send_project_version_published_email(
-            to_email="u4@example.com",
-            project_name="proj",
-            version="1.0",
-            project_url="https://x/p",
-        )
-        mailer.send_project_version_draft_email(
-            to_email="u5@example.com",
-            project_name="proj",
-            version="2.0",
-        )
-        mailer.send_manifest_shared_email(
-            to_email="u6@example.com",
-            manifest_name="m",
-            shared_by_username="owner",
-        )
-        mailer.send_project_question_created_email(
-            to_email="u7@example.com",
-            project_name="proj",
-            question_body="q?",
-        )
-        mailer.send_project_question_replied_email(
-            to_email="u8@example.com",
-            project_name="proj",
-            reply_body="r",
-        )
-        mailer.send_email_verification_email(
-            to_email="u9@example.com",
-            username="u9",
-            verification_link="https://x/v",
-        )
-        subjects = [str(m["Subject"]) for m in fake.sent]
-        assert len(fake.sent) == 9, f"captured subjects: {subjects}"
-        names = sorted(str(m["Subject"]) for m in fake.sent)
-        assert any("Password reset" in s for s in names)
-        assert any("New reply on" in s for s in names)
+            mailer.send_account_approved_email(
+                db=s, user_id=None, to_email="u3@example.com", username="u3"
+            )
+            mailer.send_project_version_published_email(
+                db=s,
+                to_email="u4@example.com",
+                project_name="proj",
+                version="1.0",
+                project_url="https://x/p",
+            )
+            mailer.send_project_version_draft_email(
+                db=s, to_email="u5@example.com", project_name="proj", version="2.0"
+            )
+            mailer.send_manifest_shared_email(
+                db=s,
+                to_email="u6@example.com",
+                manifest_name="m",
+                shared_by_username="owner",
+            )
+            mailer.send_project_question_created_email(
+                db=s,
+                to_email="u7@example.com",
+                project_name="proj",
+                question_body="q?",
+            )
+            mailer.send_project_question_replied_email(
+                db=s,
+                to_email="u8@example.com",
+                project_name="proj",
+                reply_body="r",
+            )
+            mailer.send_email_verification_email(
+                db=s,
+                to_email="u9@example.com",
+                username="u9",
+                verification_link="https://x/v",
+            )
+            s.commit()
+            rows = s.query(Notification).all()
+            subjects = [r.subject for r in rows]
+            assert len(rows) == 9, f"queued subjects: {subjects}"
+            assert any("Password reset" in s2 for s2 in subjects)
+            assert any("New reply on" in s2 for s2 in subjects)
+            assert all(r.status == "pending" for r in rows)
+
     finally:
         (
             settings.smtp_host,
             settings.smtp_port,
             settings.smtp_from_email,
             settings.smtp_from_name,
-        ) = (
-            saved[0],
-            saved[1],
-            saved[2],
-            saved[3],
-        )
+            settings.admin_notification_email,
+        ) = saved
+
+
+def test_outbox_delivers_pending_rows_and_records_failure(monkeypatch, db):
+    from datetime import datetime as dt
+
+    from app.db.models import Notification
+    from app.db.session import SessionLocal
+    from app.services import notifications
+
+    saved = (settings.smtp_host, settings.smtp_from_email)
+    settings.smtp_host = "smtp.example.com"
+    settings.smtp_from_email = "noreply@example.com"
+    try:
+        with SessionLocal() as s:
+            row = notifications.queue_email(
+                s, user_id=None, recipient="to@example.com", subject="s", body="b"
+            )
+            s.commit()
+            assert row is not None and row.status == "pending"
+
+            deliveries = []
+
+            def fake_send_email(*, to_email, subject, body):
+                deliveries.append(to_email)
+
+            monkeypatch.setattr("app.services.mailer.send_email", fake_send_email)
+            row_id = row.id
+            assert notifications.deliver_pending(limit=2) == 1
+            with SessionLocal() as s2:
+                spent = s2.get(Notification, row_id)
+                assert spent.status == "sent"
+                assert spent.body == ""
+                assert spent.sent_at is not None
+
+            # A failing transport keeps the row pending with a backoff stamp
+            # (only the exception class is recorded).
+            with SessionLocal() as s3:
+                failure = notifications.queue_email(
+                    s3,
+                    user_id=None,
+                    recipient="fail@example.com",
+                    subject="f",
+                    body="b",
+                )
+                s3.commit()
+                failure_id = failure.id
+
+            def broken_send(*, to_email, subject, body):
+                raise OSError("no network here")
+
+            monkeypatch.setattr("app.services.mailer.send_email", broken_send)
+            assert notifications.deliver_pending(limit=2) == 0
+            with SessionLocal() as s4:
+                failed_row = s4.get(Notification, failure_id)
+                assert failed_row.status == "pending"
+                assert failed_row.attempts == 1
+                assert failed_row.last_error == "OSError"
+                assert failed_row.next_attempt_at > dt.utcnow()
+    finally:
+        settings.smtp_host, settings.smtp_from_email = saved
 
 
 def test_preview_text_limits_length(monkeypatch):

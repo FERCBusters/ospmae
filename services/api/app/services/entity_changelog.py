@@ -50,6 +50,7 @@ _CHANGE_FIELD_LABELS = {
 _ENTITY_LABELS = {
     "project": "Project",
     "project_version": "Project version",
+    "organisation": "Organisation",
 }
 
 

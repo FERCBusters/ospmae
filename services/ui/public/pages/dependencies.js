@@ -375,9 +375,10 @@
   }
 
   async function init() {
-    const params = new URLSearchParams(window.location.search || "");
-    const id = Number(params.get("id"));
-    state.id = Number.isFinite(id) && id > 0 ? id : null;
+    // The id is either a legacy numeric dependency-version id or the UUID
+    // public id the dependency browser deep-links; the API resolves both.
+    const id = (params.get("id") || "").trim();
+    state.id = id && /^[a-z0-9-]{1,64}$/i.test(id) ? id : null;
 
     // Admin-only page (dependency metadata is global).
     try {

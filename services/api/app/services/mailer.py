@@ -4,47 +4,75 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
+from app.services import notifications as outbox
 
 
-def _smtp_config_ok() -> bool:
+def smtp_configured() -> bool:
     return bool((settings.smtp_host or "").strip()) and bool(
         (settings.smtp_from_email or "").strip()
     )
 
 
-def send_password_reset_email(
-    *, to_email: str, username: str, reset_link: str, expires_minutes: int
-) -> None:
-    """Send a password reset email.
+def _smtp_config_ok() -> bool:
+    return smtp_configured()
 
-    This is intentionally small + stdlib-only.
+
+def send_email(*, to_email: str, subject: str, body: str) -> None:
+    """Transport used by the notification worker; raises on failure.
+
+    The rest of the application never sends directly: it queues a
+    notification row (see app/services/notifications.py), so delivery is
+    observable and retried out of band.
+    """
+    _deliver_email(to_email=to_email, subject=subject, body=body)
+
+
+def queue_email(
+    db: Session,
+    *,
+    user_id: int | None,
+    recipient: str,
+    subject: str,
+    body: str,
+) -> None:
+    """Queue through the caller's transaction-aware outbox."""
+    if not smtp_configured() or not (recipient or "").strip():
+        return
+    outbox.queue_email(
+        db, user_id=user_id, recipient=recipient, subject=subject, body=body
+    )
+
+
+def send_password_reset_email(
+    *,
+    db: Session,
+    user_id: int | None,
+    to_email: str,
+    username: str,
+    reset_link: str,
+    expires_minutes: int,
+) -> None:
+    """Queue a password reset email.
+
+    The one-time reset link is posed to the outbox in the caller's
+    transaction; the worker sends it.
     """
 
     if not _smtp_config_ok():
         return
 
-    host = (settings.smtp_host or "").strip()
-    port = int(getattr(settings, "smtp_port", 587) or 587)
-    user = (settings.smtp_username or "").strip() or None
-    pwd = (settings.smtp_password or "").strip() or None
-    use_tls = bool(getattr(settings, "smtp_use_tls", True))
-    use_ssl = bool(getattr(settings, "smtp_use_ssl", False))
-    timeout = int(getattr(settings, "smtp_timeout_seconds", 20) or 20)
-
-    from_email = (settings.smtp_from_email or "").strip()
     from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
 
     to_addr = (to_email or "").strip()
     if not to_addr:
         return
 
-    msg = EmailMessage()
-    msg["Subject"] = f"{from_name}: Password reset"
-    msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
-    msg["To"] = to_addr
-
     safe_user = username or "your account"
+
+    subject = f"{from_name}: Password reset"
 
     body = (
         f"Hello {safe_user},\n\n"
@@ -54,29 +82,12 @@ def send_password_reset_email(
         f"If you did not request this, you can ignore this email.\n"
     )
 
-    msg.set_content(body)
-
-    context = ssl.create_default_context()
-
-    if use_ssl:
-        with smtplib.SMTP_SSL(host, port, timeout=timeout, context=context) as s:
-            if user and pwd:
-                s.login(user, pwd)
-            s.send_message(msg)
-        return
-
-    with smtplib.SMTP(host, port, timeout=timeout) as s:
-        s.ehlo()
-        if use_tls:
-            s.starttls(context=context)
-            s.ehlo()
-        if user and pwd:
-            s.login(user, pwd)
-        s.send_message(msg)
+    queue_email(db, user_id=user_id, recipient=to_addr, subject=subject, body=body)
 
 
 def send_new_user_admin_notification_email(
     *,
+    db: Session,
     username: str,
     email: str | None = None,
     provider_label: str | None = None,
@@ -89,7 +100,7 @@ def send_new_user_admin_notification_email(
     a single email address or a comma-separated list accepted by SMTP.
     """
 
-    to_email = (getattr(settings, "admin_notification_email", "") or "").strip()
+    to_email = (settings.admin_notification_email or "").strip()
     if not to_email:
         return
 
@@ -113,11 +124,11 @@ def send_new_user_admin_notification_email(
         body += f"\nAdmin page: {admin_url}\n"
     body += "\nIf this sign-in was unexpected, leave the user pending or disable the account.\n"
 
-    _send_email(to_email=to_email, subject=subject, body=body)
+    queue_email(db, user_id=None, recipient=to_email, subject=subject, body=body)
 
 
-def _send_email(*, to_email: str, subject: str, body: str) -> None:
-    if not _smtp_config_ok():
+def _deliver_email(*, to_email: str, subject: str, body: str) -> None:
+    if not smtp_configured():
         return
 
     host = (settings.smtp_host or "").strip()
@@ -163,6 +174,8 @@ def _send_email(*, to_email: str, subject: str, body: str) -> None:
 
 def send_account_approved_email(
     *,
+    db: Session,
+    user_id: int | None = None,
     to_email: str,
     username: str | None = None,
     login_url: str | None = None,
@@ -186,11 +199,13 @@ def send_account_approved_email(
     if login_url:
         body += f"\nSign in: {login_url}\n"
 
-    _send_email(to_email=recipient, subject=subject, body=body)
+    queue_email(db, user_id=user_id, recipient=recipient, subject=subject, body=body)
 
 
 def send_project_version_published_email(
     *,
+    db: Session,
+    user_id: int | None = None,
     to_email: str,
     project_name: str,
     version: str,
@@ -208,11 +223,13 @@ def send_project_version_published_email(
         body += f"View project: {project_url}\n\n"
     body += "You are receiving this email because you subscribed to this project.\n"
 
-    _send_email(to_email=to_email, subject=subject, body=body)
+    queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)
 
 
 def send_project_version_draft_email(
     *,
+    db: Session,
+    user_id: int | None = None,
     to_email: str,
     project_name: str,
     version: str,
@@ -233,11 +250,13 @@ def send_project_version_draft_email(
         body += f"Review/publish: {project_url}\n\n"
     body += "If this release is correct, edit the version and uncheck 'Draft' to publish it.\n"
 
-    _send_email(to_email=to_email, subject=subject, body=body)
+    queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)
 
 
 def send_manifest_shared_email(
     *,
+    db: Session,
+    user_id: int | None = None,
     to_email: str,
     manifest_name: str,
     shared_by_username: str | None = None,
@@ -261,7 +280,7 @@ def send_manifest_shared_email(
         body += f"Open it here: {manifest_url}\n\n"
     body += "Log in to OSPMAE and open the 'Saved manifests' page to view, export, or clone it.\n"
 
-    _send_email(to_email=to_email, subject=subject, body=body)
+    queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)
 
 
 def _preview_text(value: str | None, limit: int = 240) -> str:
@@ -276,6 +295,8 @@ def _preview_text(value: str | None, limit: int = 240) -> str:
 
 def send_project_question_created_email(
     *,
+    db: Session,
+    user_id: int | None = None,
     to_email: str,
     project_name: str,
     question_body: str | None = None,
@@ -294,11 +315,13 @@ def send_project_question_created_email(
         body += f"View project (Questions tab): {project_url}\n\n"
     body += "You are receiving this email because you subscribed to questions/replies for this project.\n"
 
-    _send_email(to_email=to_email, subject=subject, body=body)
+    queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)
 
 
 def send_project_question_replied_email(
     *,
+    db: Session,
+    user_id: int | None = None,
     to_email: str,
     project_name: str,
     reply_body: str | None = None,
@@ -317,16 +340,18 @@ def send_project_question_replied_email(
         body += f"View project (Questions tab): {project_url}\n\n"
     body += "You are receiving this email because you subscribed to questions/replies for this project.\n"
 
-    _send_email(to_email=to_email, subject=subject, body=body)
+    queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)
 
 
 def send_email_verification_email(
     *,
+    db: Session,
+    user_id: int | None = None,
     to_email: str,
     username: str | None,
     verification_link: str,
 ) -> None:
-    """Send the one-time mailbox verification link for a self-asserted address."""
+    """Queue the one-time mailbox verification link for a self-asserted address."""
 
     from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
     subject = f"{from_name}: Verify your email address"
@@ -340,4 +365,4 @@ def send_email_verification_email(
         "If you did not request this, you can ignore this email.\n"
     )
 
-    _send_email(to_email=to_email, subject=subject, body=body)
+    queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)

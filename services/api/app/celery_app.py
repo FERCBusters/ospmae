@@ -29,6 +29,8 @@ celery_app = Celery(
     include=[
         "app.tasks.dependency_discovery",
         "app.tasks.dependency_queue",
+        "app.tasks.maintenance",
+        "app.tasks.notifications",
         "app.tasks.release_feed",
     ],
 )
@@ -85,3 +87,12 @@ celery_app.conf.beat_schedule = {
         "schedule": timedelta(minutes=15),
     },
 }
+
+# The e-mail outbox drains on a short beat so queued mail never waits longer
+# than minutes even when an interactive kick was missed.
+_celery_beat = dict(celery_app.conf.beat_schedule or {})
+_celery_beat["deliver-notifications"] = {
+    "task": "app.tasks.notifications.deliver_notifications",
+    "schedule": timedelta(minutes=2),
+}
+celery_app.conf.beat_schedule = _celery_beat

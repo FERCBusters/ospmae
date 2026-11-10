@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
     Request,
@@ -500,7 +499,6 @@ def change_password(
 def request_password_reset(
     payload: PasswordResetRequestPayload,
     request: Request,
-    background: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> Response:
     if not _local_password_features_enabled():
@@ -601,14 +599,18 @@ def request_password_reset(
         db, user.id, _get_client_ip(request), _get_user_agent(request)
     )
 
-    # Send email in the background to keep response quick.
-    background.add_task(
-        send_password_reset_email,
+    # Queue in the caller's transaction; the worker delivers with retries.
+    send_password_reset_email(
+        db=db,
+        user_id=user.id,
         to_email=recipient,
         username=user.username,
         reset_link=reset_link,
         expires_minutes=int(getattr(settings, "password_reset_token_ttl_minutes", 60)),
     )
+    from app.tasks.notifications import kick_delivery
+
+    kick_delivery()
 
     return Response(status_code=204)
 

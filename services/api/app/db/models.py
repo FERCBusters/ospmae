@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -442,6 +443,69 @@ class GroupPermission(Base):
     )
 
 
+class Organisation(Base):
+    """A developing or sponsoring organisation for projects.
+
+    Created and administered by administrators; membership may name users or
+    groups, at most one of the two per row. Projects carry an organisation FK
+    so the catalogue can be filtered, grouped and reported per organisation.
+    """
+
+    __tablename__ = "organisations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(
+        String(200), unique=True, index=True, nullable=False
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    website: Mapped[str | None] = mapped_column(String(600), nullable=True)
+
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    projects: Mapped[list["Project"]] = relationship(
+        "Project", back_populates="organisation_ref"
+    )
+
+
+class OrganisationMember(Base):
+    """A user or group on an organisation's view, exactly one of the two."""
+
+    __tablename__ = "organisation_members"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("groups.id", ondelete="CASCADE"), nullable=True
+    )
+    role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "user_id",
+            "group_id",
+            name="uq_organisation_member",
+        ),
+    )
+
+
 # -----------------------------------------------------------------------------
 # Frameworks & node taxonomies
 # -----------------------------------------------------------------------------
@@ -522,6 +586,13 @@ class Project(Base):
     )
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
 
+    # The developing organisation: a first-class record so projects can be
+    # filtered, grouped and reported per organisation. Kept alongside the
+    # historic free-text column filled by the 0031 backfill.
+    organisation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organisations.id", ondelete="SET NULL"), nullable=True
+    )
+    # The historic free-text name retained for reference after the backfill.
     organisation: Mapped[str | None] = mapped_column(String(200), nullable=True)
     project_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
     license: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -588,6 +659,10 @@ class Project(Base):
     )
 
     created_by_user: Mapped[User | None] = relationship("User")
+
+    organisation_ref: Mapped["Organisation | None"] = relationship(
+        "Organisation", back_populates="projects"
+    )
 
     owner_group_links: Mapped[list["ProjectOwnerGroup"]] = relationship(
         "ProjectOwnerGroup", cascade="all, delete-orphan", back_populates="project"
@@ -740,6 +815,11 @@ class DependencyPackage(Base):
     __tablename__ = "dependency_packages"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # The externally used identifier (UUIDv4); sequence numbers never leave
+    # the database, so an enumeration walk cannot probe dependency rows.
+    public_id: Mapped[str | None] = mapped_column(
+        String(36), unique=True, nullable=True, default=lambda: str(uuid.uuid4())
+    )
     ecosystem: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     normalized_name: Mapped[str] = mapped_column(
@@ -764,6 +844,9 @@ class DependencyVersion(Base):
     __tablename__ = "dependency_versions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str | None] = mapped_column(
+        String(36), unique=True, nullable=True, default=lambda: str(uuid.uuid4())
+    )
     dependency_id: Mapped[int] = mapped_column(
         ForeignKey("dependency_packages.id", ondelete="CASCADE"),
         nullable=False,
@@ -1085,6 +1168,45 @@ class AuditLog(Base):
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
     referer: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class Notification(Base):
+    """Transactional e-mail outbox.
+
+    Senders queue a row inside their own transaction; the worker delivers it
+    with exponential backoff and records the outcome, so a broken SMTP
+    configuration is visible instead of silently swallowed. A sent message's
+    body is cleared (verification links are one-time secrets); bodies fail
+    after eight attempts like the KEEN outbox this model ships for parity.
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    recipient: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", nullable=False, server_default="pending"
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    __table_args__ = (Index("ix_notifications_pending", "status", "next_attempt_at"),)
 
 
 class EntityChangelog(Base):

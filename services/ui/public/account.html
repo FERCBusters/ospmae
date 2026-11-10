@@ -27,7 +27,8 @@
       </div>
     </div>
 
-    <ul class="nav nav-tabs mb-3" id="accountTabs" role="tablist">
+    <div class="admin-tab-layout d-flex flex-column flex-lg-row gap-3">
+      <ul class="nav nav-pills flex-column admin-tab-nav" id="accountTabs" role="tablist" aria-orientation="vertical">
       <li class="nav-item" role="presentation">
         <button class="nav-link active" id="tabBtnProfile" data-bs-toggle="tab" data-bs-target="#tabProfile" type="button" role="tab" aria-controls="tabProfile" aria-selected="true" data-hash="profile">
           Profile
@@ -50,12 +51,12 @@
       </li>
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="tabBtnPassword" data-bs-toggle="tab" data-bs-target="#tabPassword" type="button" role="tab" aria-controls="tabPassword" aria-selected="false" data-hash="password">
-          Password
+          Password &amp; security
         </button>
       </li>
-    </ul>
+      </ul>
 
-    <div class="tab-content" id="accountTabsContent">
+      <div class="tab-content flex-grow-1" id="accountTabsContent">
       <div class="tab-pane fade show active" id="tabProfile" role="tabpanel" aria-labelledby="tabBtnProfile" tabindex="0">
         <div class="card mb-3">
           <div class="card-header">
@@ -251,29 +252,41 @@
           </div>
         </div>
         <div class="text-secondary small" id="passwordUnavailableMsg"></div>
+
+        <div class="card d-none" id="mfaCard">
+          <div class="card-header">
+            <div class="fw-bold">Two-factor authentication</div>
+            <div class="small-muted">Protect local sign-in with an authenticator app, security key or passkey. Recovery codes let you sign in if you lose your authenticator.</div>
+          </div>
+          <div class="card-body">
+            <p id="securitySummary" role="status">Loading</p>
+            <form id="securityForm" class="row g-2 align-items-end">
+              <div class="col-12 col-lg-6">
+                <label class="form-label small-muted mb-1" for="securityPassword">Confirm your local password to manage authenticators</label>
+                <input id="securityPassword" class="form-control" type="password" autocomplete="current-password" required />
+              </div>
+              <div class="col-12 col-lg-3 d-flex justify-content-lg-end">
+                <button id="manageMfaBtn" class="btn btn-primary" type="submit">
+                  <i class="bi bi-shield-lock"></i> Manage account security
+                </button>
+              </div>
+            </form>
+            <div class="text-secondary small mt-2" id="mfaMsg"></div>
+          </div>
+        </div>
+
+        <div class="card d-none" id="mailCard">
+          <div class="card-header">
+            <div class="fw-bold">E-mail deliveries</div>
+            <div class="small-muted">Every mail this account asked for, with its delivery state. If something shows as pending or failed, the admin can check the shared outbox.</div>
+          </div>
+          <div class="card-body">
+            <div id="mailSummary" class="small text-secondary mb-2">Loading…</div>
+            <div id="mailList"></div>
+          </div>
+        </div>
       </div>
     </div>
-      <div class="card d-none" id="mfaCard">
-        <div class="card-header">
-          <div class="fw-bold">Two-factor authentication</div>
-          <div class="small-muted">Protect local sign-in with an authenticator app, security key or passkey. Recovery codes let you sign in if you lose your authenticator.</div>
-        </div>
-        <div class="card-body">
-          <p id="securitySummary" role="status">Loading</p>
-          <form id="securityForm" class="row g-2 align-items-end">
-            <div class="col-12 col-lg-6">
-              <label class="form-label small-muted mb-1" for="securityPassword">Confirm your local password to manage authenticators</label>
-              <input id="securityPassword" class="form-control" type="password" autocomplete="current-password" required />
-            </div>
-            <div class="col-12 col-lg-3 d-flex justify-content-lg-end">
-              <button id="manageMfaBtn" class="btn btn-primary" type="submit">
-                <i class="bi bi-shield-lock"></i> Manage account security
-              </button>
-            </div>
-          </form>
-          <div class="text-secondary small mt-2" id="mfaMsg"></div>
-        </div>
-      </div>
     </div>
 
   </main>

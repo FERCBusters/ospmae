@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -1035,9 +1036,68 @@ def _severity_rank(value: str | None) -> int:
     return int(order.get(v, 0))
 
 
+_PUBLIC_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def _resolve_dependency_version_id(db: Session, raw: str) -> int:
+    """Resolve a detail reference to a DependencyVersion id.
+
+    The reference is either an existing dependency-version id, a package id
+    (the browser's legacy numeric links) or a package UUID public id (the
+    browser's deep links). Package references resolve to the newest
+    recorded version of that package, so a package-level row always lands
+    on something concrete instead of a 404.
+    """
+
+    text = (raw or "").strip().lower()
+    if _PUBLIC_ID_RE.fullmatch(text):
+        package = (
+            db.query(DependencyPackage.id)
+            .filter(DependencyPackage.public_id == text)
+            .scalar()
+        )
+        if not package:
+            raise HTTPException(status_code=404, detail="Dependency not found")
+        version = (
+            db.query(DependencyVersion.id)
+            .filter(DependencyVersion.dependency_id == package)
+            .order_by(DependencyVersion.version.desc(), DependencyVersion.id.desc())
+            .first()
+        )
+        if not version:
+            raise HTTPException(
+                status_code=404, detail="Dependency has no recorded versions yet"
+            )
+        return int(version)
+    try:
+        number = int(text)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Dependency not found") from None
+    exists = (
+        db.query(DependencyVersion.id).filter(DependencyVersion.id == number).scalar()
+    )
+    if exists:
+        return int(exists)
+    version = (
+        db.query(DependencyVersion.id)
+        .join(
+            DependencyPackage,
+            DependencyPackage.id == DependencyVersion.dependency_id,
+        )
+        .filter(DependencyPackage.id == number)
+        .order_by(DependencyVersion.version.desc(), DependencyVersion.id.desc())
+        .first()
+    )
+    if not version:
+        raise HTTPException(status_code=404, detail="Dependency version not found")
+    return int(version)
+
+
 @router.get("/v1/dependencies/{dependency_version_id}")
 def dependency_version_detail(
-    dependency_version_id: int,
+    dependency_version_id: str,
     namespace_limit: int = Query(default=120, ge=1, le=500),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -1054,6 +1114,8 @@ def dependency_version_detail(
     # dependency metadata is global within the instance.
     attach_effective_role(db, user)
 
+    resolved_version_id = _resolve_dependency_version_id(db, dependency_version_id)
+
     dv = (
         db.query(
             DependencyVersion.id.label("dependency_version_id"),
@@ -1067,7 +1129,7 @@ def dependency_version_detail(
         .join(
             DependencyPackage, DependencyPackage.id == DependencyVersion.dependency_id
         )
-        .filter(DependencyVersion.id == int(dependency_version_id))
+        .filter(DependencyVersion.id == resolved_version_id)
         .first()
     )
     if not dv:
@@ -1093,9 +1155,7 @@ def dependency_version_detail(
             ProjectVersion.id == ProjectVersionDependency.project_version_id,
         )
         .join(Project, Project.id == ProjectVersion.project_id)
-        .filter(
-            ProjectVersionDependency.dependency_version_id == int(dependency_version_id)
-        )
+        .filter(ProjectVersionDependency.dependency_version_id == resolved_version_id)
         .order_by(
             func.coalesce(Project.display_name, Project.machine_name).asc(),
             ProjectVersion.version.asc(),
@@ -1121,9 +1181,7 @@ def dependency_version_detail(
     # Vulnerabilities
     vuln_rows = (
         db.query(DependencyVulnerability)
-        .filter(
-            DependencyVulnerability.dependency_version_id == int(dependency_version_id)
-        )
+        .filter(DependencyVulnerability.dependency_version_id == resolved_version_id)
         .all()
     )
     vulns: list[dict[str, Any]] = []
@@ -1329,4 +1387,230 @@ def capability_detail(
             "path": path,
         },
         "projects": projects,
+    }
+
+
+@router.get("/v1/dependencies")
+def dependency_index(
+    q: str | None = None,
+    ecosystem: str | None = None,
+    vulnerable: bool | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A searchable directory of every dependency the catalogue knows.
+
+    Name query, ecosystem filter and vuln-only flag; each row carries the
+    UUID public id the browser deep-links, plus usage counts so a web team
+    spots concentration at a glance.
+    """
+    attach_effective_role(db, user)
+
+    search = (q or "").strip().lower()
+    query = (
+        db.query(
+            DependencyPackage.id.label("package_id"),
+            DependencyPackage.public_id.label("public_id"),
+            DependencyPackage.ecosystem.label("ecosystem"),
+            DependencyPackage.name.label("name"),
+            DependencyPackage.normalized_name.label("normalized_name"),
+            func.count(DependencyVersion.id).label("version_count"),
+        )
+        .outerjoin(
+            DependencyVersion, DependencyVersion.dependency_id == DependencyPackage.id
+        )
+        .group_by(
+            DependencyPackage.id,
+            DependencyPackage.public_id,
+            DependencyPackage.ecosystem,
+            DependencyPackage.name,
+            DependencyPackage.normalized_name,
+        )
+    )
+    if search:
+        query = query.filter(
+            or_(
+                DependencyPackage.normalized_name.ilike(f"%{search}%"),
+                DependencyPackage.name.ilike(f"%{search}%"),
+            )
+        )
+    if ecosystem:
+        query = query.filter(DependencyPackage.ecosystem == ecosystem.strip())
+    if vulnerable:
+        query = query.outerjoin(
+            DependencyVulnerability,
+            DependencyVulnerability.dependency_version_id == DependencyVersion.id,
+        ).filter(DependencyVulnerability.id.isnot(None))
+
+    rows = (
+        query.order_by(DependencyPackage.normalized_name.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # Per-package usage counts and vulnerability tallies in one bounded pass
+    # over the page's packages, however the catalogue grows.
+    package_ids = [int(row.package_id) for row in rows]
+    usage: dict[int, int] = {}
+    vuln_counts: dict[int, int] = {}
+    if package_ids:
+        links = (
+            db.query(
+                DependencyVersion.id.label("dv_id"),
+                DependencyVersion.dependency_id.label("dep_id"),
+                ProjectVersionDependency.project_version_id.label("pv_link_id"),
+                DependencyVulnerability.vulnerability_id.label("vuln_id"),
+            )
+            .join(
+                ProjectVersionDependency,
+                ProjectVersionDependency.dependency_version_id == DependencyVersion.id,
+            )
+            .outerjoin(
+                DependencyVulnerability,
+                DependencyVulnerability.dependency_version_id == DependencyVersion.id,
+            )
+            .filter(DependencyVersion.dependency_id.in_(package_ids))
+            .all()
+        )
+        vuln_seen: set[tuple[int, int, str]] = set()
+        for link in links:
+            dep_id = int(link.dep_id)
+            usage[dep_id] = usage.get(dep_id, 0) + 1
+            if link.vuln_id:
+                key = (dep_id, int(link.dv_id), str(link.vuln_id))
+                if key not in vuln_seen:
+                    vuln_seen.add(key)
+                    vuln_counts[dep_id] = vuln_counts.get(dep_id, 0) + 1
+
+    if vulnerable:
+        rows = [row for row in rows if vuln_counts.get(int(row.package_id), 0) > 0]
+
+    return {
+        "dependencies": [
+            {
+                "id": int(row.package_id),
+                "public_id": row.public_id,
+                "ecosystem": row.ecosystem,
+                "name": row.name,
+                "normalized_name": row.normalized_name,
+                "version_count": int(row.version_count or 0),
+                "used_by_count": usage.get(int(row.package_id), 0),
+                "vulnerability_count": vuln_counts.get(int(row.package_id), 0),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/v1/dashboard")
+def global_dashboard(
+    organisation_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A dependency-first overview for the whole catalogue.
+
+    Per project: the latest known release, its dependency discovery state and
+    the unfixed vulnerability summary from the current Grype data, so a web
+    team answers which projects need attention without reading a graph.
+    """
+    from app.core.features import is_enabled
+
+    attach_effective_role(db, user)
+
+    projects_query = db.query(Project).order_by(
+        func.coalesce(Project.display_name, Project.machine_name).asc()
+    )
+    if organisation_id:
+        projects_query = projects_query.filter(
+            Project.organisation_id == int(organisation_id)
+        )
+    projects = projects_query.all()
+
+    def _project_row(project: Project) -> dict[str, Any]:
+        latest = (
+            db.query(ProjectVersion)
+            .filter(
+                ProjectVersion.project_id == project.id,
+                ProjectVersion.is_draft.is_(False),
+                ProjectVersion.is_latest.is_(True),
+            )
+            .one_or_none()
+        )
+        if latest is None:
+            alternatives = (
+                db.query(ProjectVersion)
+                .filter(
+                    ProjectVersion.project_id == project.id,
+                    ProjectVersion.is_draft.is_(False),
+                )
+                .order_by(ProjectVersion.version.desc())
+                .limit(1)
+                .all()
+            )
+            latest = alternatives[0] if alternatives else None
+        if latest is None:
+            return {
+                "id": project.id,
+                "name": project.display_name or project.machine_name,
+                "machine_name": project.machine_name,
+                "organisation": project.organisation,
+                "organisation_id": project.organisation_id,
+                "project_type": project.project_type,
+                "latest": None,
+                "dependencies": None,
+                "vulnerabilities": None,
+            }
+        severities: dict[str, int] = {}
+        rows = (
+            db.query(
+                DependencyVulnerability.severity,
+                func.count(DependencyVulnerability.id),
+            )
+            .join(
+                DependencyVersion,
+                DependencyVersion.id == DependencyVulnerability.dependency_version_id,
+            )
+            .join(
+                ProjectVersionDependency,
+                ProjectVersionDependency.dependency_version_id == DependencyVersion.id,
+            )
+            .filter(ProjectVersionDependency.project_version_id == latest.id)
+            .group_by(DependencyVulnerability.severity)
+            .all()
+        )
+        for severity, count in rows:
+            severities[(severity or "unknown").lower()] = int(count or 0)
+        return {
+            "id": project.id,
+            "name": project.display_name or project.machine_name,
+            "machine_name": project.machine_name,
+            "organisation": project.organisation,
+            "organisation_id": project.organisation_id,
+            "project_type": project.project_type,
+            "latest": {
+                "id": latest.id,
+                "version": latest.version,
+                "is_draft": bool(latest.is_draft),
+                "is_latest": bool(latest.is_latest),
+                "release_date": latest.release_date,
+            },
+            "dependencies": {
+                "discovery_status": latest.dependency_discovery_status,
+                "count": latest.dependency_count,
+                "last_commit": latest.dependency_last_commit,
+                "discovered_at": latest.dependency_discovery_finished_at,
+            },
+            "vulnerabilities": {
+                "total": sum(severities.values()),
+                "by_severity": severities,
+            },
+        }
+
+    return {
+        "dependency_scans_enabled": is_enabled("dependency_scans"),
+        "projects": [_project_row(p) for p in projects],
     }

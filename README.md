@@ -11,6 +11,8 @@ Applications in the same family share a design system and conventions: **KEEN** 
 - **Dependency scanning** - an operator-configured Grype/Syft pipeline clones policy-permitted repositories (host allowlist, command allowlists, fixed scrubbed environment), parses lockfiles/SBOMs and records dependencies, vulnerabilities and remediation status against each version.
 - **Comparisons** - side-by-side project/version diffs with capability matrices and dependency/vulnerability deltas, plus CSV/XLSX/PDF exports served as neutral attachments.
 - **Questions and notifications** - account-threaded questions on project versions with role-based answer permissions, e-mail notifications, and realtime browser notification over a bounded WebSocket channel.
+- **Organisations and dashboards** - organisations are first-class records that projects belong to (created from the free-text name on first use), with admin-managed user/group membership, a global dependency dashboard with per-project unfixed-finding summaries and organisation filters, and a searchable dependency browser keyed by UUID.
+- **E-mail delivery** - outgoing mail is a transactional outbox: senders queue inside their own transaction and a worker delivers with exponential backoff, recording each attempt so a broken SMTP configuration is visible in the admin's E-mail outbox view (and users can see their own delivery history under Account).
 - **Authentication** - local accounts (PBKDF2/260k) with a second factor (TOTP authenticator apps, WebAuthn security keys/passkeys and single-use recovery codes), OpenID Connect with per-provider configuration, optional trusted header identity from an authenticating proxy, database-backed sessions with rolling and absolute lifetimes, and CSRF-protected unsafe writes. The second factor applies to local sign-in under the `OSPMAE_MFA_POLICY` setting (`optional`, `admins`, or `all`); an account's enrolment change invalidates its existing local sessions, a five-minute browser ceremony runs outside the session cookie, and WebAuthn requires an HTTPS `OSPMAE_PUBLIC_BASE_URL`.
 
 ## Installation feature switches
@@ -80,6 +82,8 @@ PY
 | `OSPMAE_OIDC_*` (or `OSPMAE_GITHUB_*`) | SSO providers; each enabled provider requires explicit `CLIENT_ID`, `CLIENT_SECRET`, endpoints and `REDIRECT_URI`. |
 | `OSPMAE_TRUST_REMOTE_USER` + `OSPMAE_REMOTE_USER_HEADER_NAME` | Trusted header identity for deployments where the network path alone reaches the API through the authenticating proxy. |
 | `OSPMAE_TRUSTED_PROXY_CIDRS` | Networks whose hosts may form the trusted side of a forwarded client address chain (rate limits, audit records). |
+| Project `project_type` | Not a setting: it is a server-controlled vocabulary (ledger, identity, wallet, credentials, interoperability, privacy, cryptography, governance, tooling, library, application, service, other); free-text values are refused at intake. |
+| Framework-gated fields | The capability/profiles/protocols/keys/algorithms fields describe the Universal Wallet Reference Architecture. They are presented only in the framework-options wizard step; with `OSPMAE_FEATURE_FRAMEWORKS=false` the step is removed and blank values save, so nothing leaks into a framework-free deployment. |
 | `OSPMAE_DEPENDENCY_DISCOVERY_*`, `OSPMAE_SYFT_*`, `OSPMAE_GRYPE_*` | Scan pipeline policy (host allowlist, time/memory budgets, scanner paths). |
 | `OSPMAE_SMTP_*` | Outgoing mail. |
 

@@ -369,6 +369,47 @@ def registered(db, user):
     )
 
 
+factor_alerts = {
+    "enrolled": "An authenticator was added to your account",
+    "removed": "An authenticator was removed from your account",
+    "regenerated": "Your recovery codes were replaced",
+    "cleared": "An authenticator problem ended your verification",
+}
+
+
+def security_alert(db, user, event: str, title: str) -> None:
+    """Mail the account owner that their second factor changed.
+
+    Queueing goes through the shared outbox in the caller's transaction; a
+    missing SMTP configuration or recipient skips it the same way every
+    other queued e-mail does.
+    """
+    from app.services.mailer import queue_email
+    from app.services.notification_recipients import notification_email_for_user
+    from app.services.notifications import smtp_configured
+
+    recipient = (notification_email_for_user(db, user=user) or "").strip()
+    if not smtp_configured() or not recipient:
+        return
+    body = (
+        f"{title}.\n\n"
+        f"Account: {user.username}\n"
+        f"OSPMAE installation: {settings.public_base_url}\n"
+        f"Time (UTC): {_now().isoformat(timespec='seconds')}Z\n\n"
+        "If this was you, no action is needed. If you do not recognise this "
+        "activity, open your known OSPMAE address directly, review your "
+        "password and authenticators under Account, and contact your "
+        "administrator if anything looks wrong.\n"
+    )
+    queue_email(
+        db,
+        user_id=user.id,
+        recipient=recipient,
+        subject=f"OSPMAE security: {title}",
+        body=body,
+    )
+
+
 def activate(db, row, user):
     first = not user.mfa_enabled
     user.mfa_enabled = True
@@ -378,6 +419,9 @@ def activate(db, row, user):
         row.stage = "ready"
     row.data = {}
     db.commit()
+    if first:
+        security_alert(db, user, "enrolled", factor_alerts["enrolled"])
+        db.commit()
     return {"ok": True, "recovery_codes": codes}
 
 

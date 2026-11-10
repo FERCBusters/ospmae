@@ -751,14 +751,16 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                                 for email in recipients:
                                     try:
                                         send_project_version_draft_email(
+                                            db=db,
                                             to_email=email,
                                             project_name=project.display_name,
                                             version=pv.version,
                                             project_url=url_for_email,
                                             source="release feed",
                                         )
+                                        db.commit()
                                         log.info(
-                                            "Draft release notification sent to %s for project_id=%s version=%s",
+                                            "Draft release notification queued to %s for project_id=%s version=%s",
                                             email,
                                             project.id,
                                             pv.version,
@@ -770,6 +772,12 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                                             project.id,
                                             pv.version,
                                         )
+        try:
+            from app.tasks.notifications import kick_delivery
+
+            kick_delivery()
+        except Exception:
+            log.exception("Failed to kick notification delivery after feed poll")
 
         return {
             "enabled": True,
@@ -779,3 +787,247 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
         }
     finally:
         db.close()
+
+
+@celery_app.task(name="app.tasks.release_feed.discover_project_release_feed")
+def discover_project_release_feed(project_id: int) -> dict[str, Any]:
+    """Initial release discovery for a fresh or newly feed-enabled project.
+
+    A poll in steady state only examines the newest entry and stages it as a
+    draft for maintainer review. On first discovery the maintainer has told
+    the catalogue nothing yet: the task imports every entry the feed carries
+    as published (non-draft) versions, marks the newest one `is_latest`, and
+    enqueues dependency discovery for that latest release. This is what makes
+    a new project show its real, current state without manual version entry.
+    """
+
+    from app.core.features import is_enabled
+
+    if not is_enabled("release_feed"):
+        return {"enabled": False, "reason": "release_feed feature disabled"}
+
+    db = SessionLocal()
+    created = 0
+    skipped = 0
+    ignored = 0
+    try:
+        project = db.query(Project).filter(Project.id == int(project_id)).one_or_none()
+        if project is None or not str(project.release_rss_feed_url or "").strip():
+            return {"enabled": True, "checked": 0, "created": 0, "reason": "no feed"}
+
+        url = str(project.release_rss_feed_url or "").strip()
+        with httpx.Client(timeout=20, follow_redirects=False) as client:
+            resp, content, final_url = _safe_fetch_feed(client, url, {})
+
+        if resp.status_code != 200 or not content:
+            project.release_rss_last_checked_at = _utcnow_naive()
+            db.add(project)
+            db.commit()
+            return {
+                "enabled": True,
+                "checked": 1,
+                "created": 0,
+                "status_code": int(resp.status_code or 0),
+            }
+
+        etag = resp.headers.get("etag")
+        last_mod = resp.headers.get("last-modified")
+        if etag:
+            project.release_rss_last_etag = etag
+        if last_mod:
+            project.release_rss_last_modified = last_mod
+
+        try:
+            entries = _parse_feed_entries(content)
+        except Exception:
+            log.exception("Discovery feed parse failed for project_id=%s", project_id)
+            db.add(project)
+            db.commit()
+            return {"enabled": True, "checked": 1, "created": 0, "error": "parse"}
+
+        if not entries:
+            project.release_rss_last_checked_at = _utcnow_naive()
+            db.add(project)
+            db.commit()
+            return {"enabled": True, "checked": 1, "created": 0, "reason": "empty"}
+
+        one_layer = 10**9  # a discovery run must stay far away from this bound
+        if len(entries) >= one_layer:
+            entries = entries[:one_layer]
+
+        # Oldest first so the inheritance chain builds naturally; the newest
+        # entry ends as the versions list's last row and becomes is_latest.
+        entries = list(
+            sorted(
+                entries,
+                key=lambda e: (
+                    _to_naive_utc(e.get("published_dt"))
+                    or datetime.min.replace(tzinfo=None)
+                ),
+            )
+        )
+
+        inheritance_source = _best_version_for_capability_inheritance(db, project.id)
+        newest_id = str(entries[-1].get("id") or "").strip() or None
+        newest_version: ProjectVersion | None = None
+
+        for entry in entries:
+            title = str(entry.get("title") or "").strip()
+            link = entry.get("link")
+            version_name = _guess_version_from_entry(title, link)
+            if not version_name:
+                continue
+
+            if _release_feed_entry_is_ignored(project, entry, version_name):
+                ignored += 1
+                continue
+
+            exists = (
+                db.query(ProjectVersion.id)
+                .filter(ProjectVersion.project_id == project.id)
+                .filter(ProjectVersion.version == version_name)
+                .one_or_none()
+            )
+            if exists:
+                skipped += 1
+                continue
+
+            link_to_source = _guess_source_code_url_from_release_link(link)
+            if not link_to_source and (
+                inheritance_source
+                and str(inheritance_source.link_to_source_code or "").strip()
+            ):
+                link_to_source = str(inheritance_source.link_to_source_code).strip()
+
+            notes = None
+            if link:
+                notes = f"Auto-imported from release feed: {link}"
+
+            pv = ProjectVersion(
+                project_id=project.id,
+                version=version_name,
+                release_date=_to_naive_utc(entry.get("published_dt")),
+                status=None,
+                link_to_source_code=link_to_source,
+                notes=notes,
+                is_latest=False,
+                is_draft=False,
+            )
+            db.add(pv)
+            db.flush()
+
+            if inheritance_source:
+                inherited_capability_ids = (
+                    db.query(ProjectVersionFrameworkNode.framework_node_id)
+                    .filter(
+                        ProjectVersionFrameworkNode.project_version_id
+                        == inheritance_source.id
+                    )
+                    .all()
+                )
+                for (framework_node_id,) in inherited_capability_ids:
+                    db.add(
+                        ProjectVersionFrameworkNode(
+                            project_version_id=pv.id,
+                            framework_node_id=framework_node_id,
+                        )
+                    )
+
+            db.flush()
+            db.refresh(pv)
+            record_entity_changelog(
+                db,
+                entity_type="project_version",
+                entity_id=pv.id,
+                action="created",
+                before=None,
+                after=project_version_changelog_state(db, pv),
+                user=None,
+                request_method="TASK",
+                request_path="release_feed.discover_project_release_feed",
+            )
+            inheritance_source = pv
+            newest_version = pv
+            created += 1
+
+        if newest_id:
+            project.release_rss_last_entry_id = newest_id
+        project.release_rss_last_checked_at = _utcnow_naive()
+        db.add(project)
+        db.commit()
+
+        scanned_version_id = None
+        if newest_version is not None and is_enabled("dependency_scans"):
+            # Promote the newest discovered release to the project's latest
+            # and enqueue the scan it needs; earlier releases are archived
+            # history. It only applies when the entry carries a source link.
+            latest = _best_automatic_latest_version_db(db, project.id) or newest_version
+            _promote_latest(db, project.id, latest.id)
+            if latest and str(latest.link_to_source_code or "").strip():
+                db.commit()
+                from app.tasks.dependency_discovery import (
+                    discover_project_version_dependencies,
+                )
+
+                try:
+                    discover_project_version_dependencies.delay(latest.id)
+                    scanned_version_id = latest.id
+                except Exception:
+                    log.exception(
+                        "Failed to enqueue dependency discovery for project_id=%s",
+                        project.id,
+                    )
+        elif newest_version is not None:
+            latest = _best_automatic_latest_version_db(db, project.id) or newest_version
+            _promote_latest(db, project.id, latest.id)
+
+        return {
+            "enabled": True,
+            "checked": 1,
+            "created": created,
+            "skipped": skipped,
+            "ignored": ignored,
+            "latest_version_id": scanned_version_id,
+        }
+    finally:
+        db.close()
+
+
+def _best_automatic_latest_version_db(db, project_id: int) -> ProjectVersion | None:
+    """The published release the catalogue would call the project's latest.
+
+    Mirrors the route-level promotion order: a semantically greater version
+    wins over publication recency alone.
+    """
+    from app.services.versioning import parse_semanticish_version
+
+    versions = (
+        db.query(ProjectVersion)
+        .filter(ProjectVersion.project_id == project_id)
+        .filter(ProjectVersion.is_draft.is_(False))
+        .all()
+    )
+    if not versions:
+        return None
+
+    known: list[tuple[Any, ProjectVersion]] = []
+    for version in versions:
+        key = parse_semanticish_version(version.version)
+        if key is not None:
+            known.append((key, version))
+    if known:
+        return max(known, key=lambda pair: pair[0])[1]
+    return max(versions, key=lambda v: (v.release_date or v.created_at, v.id))
+
+
+def _promote_latest(db, project_id: int, latest_version_id: int) -> None:
+    db.query(ProjectVersion).filter(
+        ProjectVersion.project_id == project_id,
+        ProjectVersion.is_draft.is_(False),
+    ).update({ProjectVersion.is_latest: False}, synchronize_session=False)
+    db.query(ProjectVersion).filter(
+        ProjectVersion.id == latest_version_id,
+        ProjectVersion.project_id == project_id,
+        ProjectVersion.is_draft.is_(False),
+    ).update({ProjectVersion.is_latest: True}, synchronize_session=False)
+    db.commit()

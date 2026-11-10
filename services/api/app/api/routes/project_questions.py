@@ -128,6 +128,7 @@ def _notify_discussion_emails(
         try:
             if kind == "question":
                 send_project_question_created_email(
+                    db=db,
                     to_email=email,
                     project_name=project.display_name,
                     question_body=body,
@@ -135,6 +136,7 @@ def _notify_discussion_emails(
                 )
             else:
                 send_project_question_replied_email(
+                    db=db,
                     to_email=email,
                     project_name=project.display_name,
                     reply_body=body,
@@ -143,6 +145,9 @@ def _notify_discussion_emails(
         except Exception:
             # Email failures should never break the request.
             logger.exception("Failed to send project question notification email")
+    from app.tasks.notifications import kick_delivery
+
+    kick_delivery()
 
 
 def _get_user_group_ids(db: Session, user_id: int) -> set[int]:

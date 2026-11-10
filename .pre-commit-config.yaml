@@ -1,0 +1,20 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.0
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: frontend-format
+        name: Format first-party JavaScript and CSS
+        entry: bash format-ui.sh --write
+        language: system
+        files: '^services/ui/(public|scripts|tests)/.*\.(js|mjs|css)$'
+        exclude: '/(vendor|node_modules|dist)/|\.min\.(js|css)$'
+      - id: python-types
+        name: Check Python types
+        entry: bash -c 'cd services/api && poetry run mypy'
+        language: system
+        pass_filenames: false
+        files: '^services/api/(app/.*\.py|pyproject\.toml|poetry\.lock)$'

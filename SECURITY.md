@@ -67,6 +67,10 @@ OpenID Connect providers configure client id/secret, endpoints, issuer, JWKS, re
 
 `OSPMAE_TRUST_REMOTE_USER=true` hands authentication to the configured identity header, which is honoured only when the socket peer sits inside `OSPMAE_TRUSTED_PROXY_CIDRS`, and only for the single configured header name (default `REMOTE_USER`). The supplied nginx clears the client's copies of every identity header and lets deployments that use upstream authentication supply their own proxy configuration that sets the header from the authenticating layer's output. Auto-provisioned users land `pending`.
 
+### Mobile outbox and notifications
+
+Outgoing mail is a transactional outbox (`notifications`): senders queue inside their own transaction and the worker drains rows with exponential backoff, recording only the exception class on failure and clearing a sent message's body (verification links are one-time secrets). Bodies of spent rows are deleted after thirty days. An interactive kick sends promptly when the worker is reachable; the beat schedule retries everything, so a missed kick never loses mail.
+
 ### Client addresses
 
 `security/client_addr.py` resolves every client address (rate-limit keys, audit records, audit trails in the UI): it walks `X-Forwarded-For` right-to-left while each hop stays inside `OSPMAE_TRUSTED_PROXY_CIDRS` and keeps the socket peer otherwise. Allowance keys count one IPv4 address or one IPv6 /64 network per bucket, so a home or officeIPv6 subscriber stays inside its network's budget. Unset `OSPMAE_TRUSTED_PROXY_CIDRS` trusts loopback only; Compose deployments set their Compose network range explicitly. An untrusted client's forwarded headers cannot change its resolved address.

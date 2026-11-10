@@ -163,6 +163,7 @@ def _auto_provision_remote_user(db: Session, username: str) -> User | None:
 
         base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
         send_new_user_admin_notification_email(
+            db=db,
             username=u.username,
             email=getattr(u, "email", None),
             provider_label="trusted remote-user",

@@ -162,38 +162,50 @@ def _notify_subscribers_published(
         return
 
     from app.services.mailer import send_project_version_published_email
+    from app.tasks.notifications import kick_delivery
 
     url = _public_project_url(project.id)
-    for email in _subscriber_emails(db, project_id=project.id):
-        try:
-            send_project_version_published_email(
-                to_email=email,
-                project_name=project.display_name,
-                version=version.version,
-                project_url=url,
-            )
-        except Exception:
-            # Email failures should not break API flows.
-            pass
+    try:
+        for email in _subscriber_emails(db, project_id=project.id):
+            try:
+                send_project_version_published_email(
+                    db=db,
+                    to_email=email,
+                    project_name=project.display_name,
+                    version=version.version,
+                    project_url=url,
+                )
+            except Exception:
+                # Email failures should not break API flows.
+                pass
+    except Exception:
+        pass
+    kick_delivery()
 
 
 def _notify_owners_draft(
     db: Session, *, project: Project, version: ProjectVersion, source: str
 ) -> None:
     from app.services.mailer import send_project_version_draft_email
+    from app.tasks.notifications import kick_delivery
 
     url = _public_project_url(project.id)
-    for email in _owner_emails(db, project=project):
-        try:
-            send_project_version_draft_email(
-                to_email=email,
-                project_name=project.display_name,
-                version=version.version,
-                project_url=url,
-                source=source,
-            )
-        except Exception:
-            pass
+    try:
+        for email in _owner_emails(db, project=project):
+            try:
+                send_project_version_draft_email(
+                    db=db,
+                    to_email=email,
+                    project_name=project.display_name,
+                    version=version.version,
+                    project_url=url,
+                    source=source,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+    kick_delivery()
 
 
 def _normalize_csv_ints(value: str | None) -> list[int]:
@@ -485,6 +497,7 @@ def _serialize_project(
         "machine_name": project.machine_name,
         "display_name": project.display_name,
         "organisation": project.organisation,
+        "organisation_id": getattr(project, "organisation_id", None),
         "project_type": project.project_type,
         "license": project.license,
         "programming_languages": _clean_tag_list(
@@ -912,6 +925,39 @@ async def list_projects(
     }
 
 
+def _resolve_organisation(
+    db: Session, payload: ProjectCreatePayload
+) -> tuple[str | None, int | None]:
+    """Attach every project to an Organisation record.
+
+    A payload naming a known organisation reuses its row; a payload naming a
+    not-yet-recorded name creates that record on first use, so the catalogue
+    never keeps a project outside the FK relationship while legacy clients
+    that only send the plain-text name keep working.
+    """
+    from app.db.models import Organisation
+
+    if payload.organisation_id is not None:
+        row = (
+            db.query(Organisation)
+            .filter(Organisation.id == int(payload.organisation_id))
+            .one_or_none()
+        )
+        if row is None:
+            raise HTTPException(status_code=400, detail="Unknown organisation_id")
+        return row.name, int(row.id)
+
+    name = (payload.organisation or "").strip()
+    if not name:
+        return None, None
+    row = db.query(Organisation).filter(Organisation.name == name).one_or_none()
+    if row is None:
+        row = Organisation(name=name)
+        db.add(row)
+        db.flush()
+    return row.name, int(row.id)
+
+
 @router.post("/v1/projects")
 def create_project(
     request: Request,
@@ -929,10 +975,13 @@ def create_project(
     if exists:
         raise HTTPException(status_code=409, detail="machine_name already exists")
 
+    organisation_name, organisation_id = _resolve_organisation(db, payload)
+
     project = Project(
         machine_name=payload.machine_name.strip(),
         display_name=payload.display_name.strip(),
-        organisation=payload.organisation,
+        organisation=organisation_name,
+        organisation_id=organisation_id,
         project_type=payload.project_type,
         license=payload.license,
         programming_languages=_clean_tag_list(payload.programming_languages),
@@ -979,6 +1028,19 @@ def create_project(
         request_path=request.url.path,
     )
     db.commit()
+
+    if str(payload.release_rss_feed_url or "").strip():
+        from app.core.features import is_enabled
+        from app.tasks.release_feed import discover_project_release_feed
+
+        if is_enabled("release_feed"):
+            try:
+                discover_project_release_feed.delay(project.id)
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue initial release discovery for project_id=%s",
+                    project.id,
+                )
 
     return _serialize_project(project, latest_version=None, capability_paths=[])
 
@@ -1263,6 +1325,20 @@ def update_project(
 
     updates = payload.model_dump(exclude_unset=True)
     rss_changed = "release_rss_feed_url" in updates
+    before_feed_url = str(project.release_rss_feed_url or "").strip()
+
+    if "organisation" in updates or "organisation_id" in updates:
+        org_name, org_id = _resolve_organisation(db, payload)
+        if "organisation" in updates:
+            updates["organisation"] = org_name
+            updates["organisation_id"] = org_id
+        elif org_id is not None:
+            from app.db.models import Organisation
+
+            org = db.query(Organisation).filter(Organisation.id == org_id).one()
+            updates["organisation_id"] = org_id
+            updates["organisation"] = org.name
+
     for key, value in updates.items():
         if key in {
             "supported_profiles",
@@ -1300,6 +1376,27 @@ def update_project(
     )
     db.commit()
     db.refresh(project)
+
+    # A newly attached release feed starts full discovery (see
+    # discover_project_release_feed): the maintainer has told the catalogue
+    # nothing yet, so the whole feed is imported rather than only the newest
+    # staged draft entry.
+    if (
+        rss_changed
+        and str(project.release_rss_feed_url or "").strip()
+        and not before_feed_url
+    ):
+        from app.core.features import is_enabled
+        from app.tasks.release_feed import discover_project_release_feed
+
+        if is_enabled("release_feed"):
+            try:
+                discover_project_release_feed.delay(project.id)
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue initial release discovery for project_id=%s",
+                    project.id,
+                )
 
     latest = _latest_version(project)
     capability_paths = []
@@ -3463,6 +3560,8 @@ def _notify_group_manifest_shared(
             continue
         try:
             send_manifest_shared_email(
+                db=db,
+                user_id=u.id,
                 to_email=email,
                 manifest_name=manifest.name or f"manifest-{manifest.id}",
                 shared_by_username=shared_by.username,

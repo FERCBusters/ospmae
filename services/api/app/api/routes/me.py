@@ -99,20 +99,24 @@ def _normalize_email(value: str | None) -> str | None:
     return email
 
 
-def _maybe_send_email_verification(db: Session, user: User, row: UserEmail) -> None:
+def _maybe_send_email_verification(
+    db: Session, user: User, row: UserEmail
+) -> bool | None:
     """Email a one-time mailbox proof for a self-asserted address.
 
-    Fails closed: with no SMTP configured or no explicit public base URL, the
-    address simply stays unverified and SSO linking will never trust it.
+    Returns False with a reason for the caller to surface when the request
+    cannot be honoured: verification is fail-closed, so with no SMTP host,
+    no sender address or no explicit public base URL the address simply stays
+    unverified and SSO linking will never trust it.
     """
 
     if bool(row.is_verified):
-        return
+        return False
     smtp_host = (settings.smtp_host or "").strip()
     from_email = (settings.smtp_from_email or "").strip()
     base = (settings.public_base_url or "").strip().rstrip("/")
     if not smtp_host or not from_email or not base:
-        return
+        return False
 
     import hashlib
     import secrets as _secrets
@@ -122,7 +126,7 @@ def _maybe_send_email_verification(db: Session, user: User, row: UserEmail) -> N
         db, f"email_verify:{int(user.id)}", max_attempts=5, window_seconds=3600
     )
     if not allowed:
-        return
+        return False
     record_rate_limit_attempt(db, f"email_verify:{int(user.id)}")
 
     token = _secrets.token_urlsafe(32)
@@ -145,17 +149,21 @@ def _maybe_send_email_verification(db: Session, user: User, row: UserEmail) -> N
     )
     db.commit()
 
-    try:
-        from app.services.mailer import send_email_verification_email
+    from app.services.mailer import send_email_verification_email
+    from app.tasks.notifications import kick_delivery
 
-        send_email_verification_email(
-            to_email=row.email,
-            username=user.username,
-            verification_link=f"{base}/account.html?verify_email={token}",
-        )
-    except Exception:
-        # Mail failures must not block saving the account email.
-        pass
+    send_email_verification_email(
+        db=db,
+        user_id=user.id,
+        to_email=row.email,
+        username=user.username,
+        verification_link=f"{base}/account.html?verify_email={token}",
+    )
+    db.commit()
+    # Delivery is the worker's job, but the beat schedule can be minutes away,
+    # so a best-effort immediate dispatch keeps verification fast.
+    kick_delivery()
+    return True
 
 
 def _serialize_user_email(row: UserEmail) -> dict:
@@ -600,8 +608,25 @@ def request_email_verification(
         raise HTTPException(status_code=404, detail="Email address not found")
     if bool(row.is_verified):
         return {"queued": False, "reason": "already verified"}
-    _maybe_send_email_verification(db, user, row)
+    queued = _maybe_send_email_verification(db, user, row)
+    if not queued:
+        return {
+            "queued": False,
+            "reason": "Outgoing mail needs SMTP settings and OSPMAE_PUBLIC_BASE_URL",
+        }
     return {"queued": True}
+
+
+@router.get("/v1/me/notifications")
+def my_notifications(request: Request, db: Session = Depends(get_db), limit: int = 20):
+    """The account's e-mail outbox history: what was mailed and its state."""
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, User):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.services.notifications import notification_snapshot
+
+    limit = max(1, min(int(limit or 20), 100))
+    return notification_snapshot(db, user_id=user.id, limit=limit)
 
 
 @router.post("/v1/me/emails/verify")

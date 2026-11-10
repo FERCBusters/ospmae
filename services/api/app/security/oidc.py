@@ -707,6 +707,7 @@ def _get_or_create_user_for_identity(
 
         base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
         send_new_user_admin_notification_email(
+            db=db,
             username=user.username,
             email=_claim_email(claims),
             provider_label=provider.label,

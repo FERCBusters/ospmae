@@ -49,6 +49,14 @@
         </div>
       </div>
 
+      <div id="wizardSteps" class="d-flex gap-2 align-items-center mb-2 small">
+        <span id="wizardIndicator" class="badge text-bg-primary" aria-live="polite">Intro</span>
+        <button id="wizardPrev" class="btn btn-sm btn-outline-secondary" type="button" hidden>Back</button>
+        <button id="wizardNext" class="btn btn-sm btn-outline-primary" type="button">Next step</button>
+      </div>
+
+      <section id="projectWizardStep1">
+      <div class="small text-secondary mb-1">Who the project is: identity, organisation, type, license and languages.</div>
       <div class="grid cols-2" style="margin-bottom:10px;">
         <label>
           <span>Machine name *</span>
@@ -60,11 +68,28 @@
         </label>
         <label>
           <span>Organisation</span>
-          <input id="organisation" placeholder="OpenWallet Foundation" />
+          <input id="organisation" placeholder="OpenWallet Foundation" list="organisationOptions" />
+          <datalist id="organisationOptions"></datalist>
+          <span class="small muted">Pick an existing organisation or type a new one; it is created on first use and shown in filters.</span>
         </label>
         <label>
           <span>Project type</span>
-          <input id="project_type" placeholder="library / service / spec" />
+          <select id="project_type" class="form-select">
+            <option value="">— none —</option>
+            <option value="ledger">ledger</option>
+            <option value="identity">identity</option>
+            <option value="wallet">wallet</option>
+            <option value="credentials">credentials</option>
+            <option value="interoperability">interoperability</option>
+            <option value="privacy">privacy</option>
+            <option value="cryptography">cryptography</option>
+            <option value="governance">governance</option>
+            <option value="tooling">tooling</option>
+            <option value="library">library</option>
+            <option value="application">application</option>
+            <option value="service">service</option>
+            <option value="other">other</option>
+          </select>
         </label>
         <label>
           <span>Programming languages</span>
@@ -116,6 +141,11 @@
             <option value="BSL-1.0">BSL-1.0</option>
           </select>
         </label>
+      </section>
+
+      <section id="projectWizardStep2" hidden>
+      <div class="small text-secondary mb-1">Where to find it and how new releases arrive. The feed runs a full discovery when first attached.</div>
+      <div class="grid cols-2" style="margin-bottom:10px;">
         <label>
           <span>Homepage / app URL</span>
           <input id="link_to_app" placeholder="https://..." />
@@ -130,6 +160,11 @@
           <textarea id="release_rss_ignore_patterns" rows="4" placeholder="beta&#10;regex:^v?\\d+\\.\\d+\\.\\d+-rc"></textarea>
           <span class="small muted">Optional: one per line. Plain lines are case-insensitive substring matches; prefix with regex: for regular expressions.</span>
         </label>
+      </section>
+
+      <section id="projectWizardStep3" hidden>
+      <div class="small text-secondary mb-1">Capabilities for framework mapping (Universal Wallet Reference Architecture). Without a framework these fields can stay empty.</div>
+      <div class="grid cols-2" style="margin-bottom:10px;">
         <label>
           <span>Capability</span>
           <input id="capability" placeholder="issuer / verifier / wallet / library" />
@@ -185,6 +220,7 @@
           </select>
         </label>
       </div>
+      </section>
 
       <div class="d-flex flex-wrap" style="gap:8px; margin-bottom:12px; justify-content:flex-end;">
         <button id="saveProjectBtn" class="btn btn-primary" type="button"><i class="bi bi-check2"></i> Save project</button>
@@ -278,6 +314,7 @@
 
   <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
   <script defer src="/app.js"></script>
+  <script defer src="/pages/project-wizard.js"></script>
   <script defer src="/pages/project-manage.js"></script>
 </body>
 </html>

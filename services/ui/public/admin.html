@@ -34,7 +34,22 @@
         </li>
         <li class="nav-item" role="presentation">
           <button class="nav-link" id="tab-audit" data-bs-toggle="tab" data-bs-target="#pane-audit" type="button" role="tab" aria-controls="pane-audit" aria-selected="false">
-            Audit trail &amp; entity changelog
+            Audit &amp; changelog
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-organisations" data-bs-toggle="tab" data-bs-target="#pane-organisations" type="button" role="tab" aria-controls="pane-organisations" aria-selected="false">
+            Organisations
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-mail" data-bs-toggle="tab" data-bs-target="#pane-mail" type="button" role="tab" aria-controls="pane-mail" aria-selected="false">
+            E-mail outbox
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="tab-feeds" data-bs-toggle="tab" data-bs-target="#pane-feeds" type="button" role="tab" aria-controls="pane-feeds" aria-selected="false">
+            Release feeds
           </button>
         </li>
       </ul>
@@ -119,6 +134,15 @@
         </section>
 
         <section class="tab-pane fade" id="pane-audit" role="tabpanel" aria-labelledby="tab-audit" tabindex="0">
+          <ul class="nav nav-pills mb-3" id="auditSubTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="subtab-audit" data-bs-toggle="tab" data-bs-target="#auditView" type="button" role="tab" aria-controls="auditView" aria-selected="true">Audit trail</button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="subtab-changelog" data-bs-toggle="tab" data-bs-target="#changelogView" type="button" role="tab" aria-controls="changelogView" aria-selected="false">Changelog</button>
+            </li>
+          </ul>
+          <div id="auditView" role="tabpanel" aria-labelledby="subtab-audit">
           <div class="card mb-3">
             <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
               <div>
@@ -166,12 +190,14 @@
               <div id="auditTable"></div>
             </div>
           </div>
+          </div>
 
+          <div id="changelogView" role="tabpanel" aria-labelledby="subtab-changelog" hidden>
           <div class="card mb-3">
             <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
               <div>
                 <div class="fw-bold">Entity changelog</div>
-                <div class="text-muted small">Semantic before/after changes for projects and project versions.</div>
+                <div class="text-muted small">Semantic before/after changes for projects, project versions and organisations.</div>
               </div>
               <button type="button" id="refreshEntityChangelogBtn" class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
             </div>
@@ -183,6 +209,7 @@
                     <option value="">All</option>
                     <option value="project">Project</option>
                     <option value="project_version">Project version</option>
+                    <option value="organisation">Organisation</option>
                   </select>
                 </div>
                 <div class="col-md-2">
@@ -209,6 +236,63 @@
                 </div>
               </div>
               <div id="entityChangelogList"></div>
+            </div>
+          </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="pane-organisations" role="tabpanel" aria-labelledby="tab-organisations" tabindex="0">
+          <div class="card mb-3">
+            <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="fw-bold">Organisations</div>
+                <div class="text-muted small">First-class organisations that projects belong to; membership names users or groups.</div>
+              </div>
+              <button type="button" id="orgCreateBtn" class="btn btn-sm btn-outline-primary"><i class="bi bi-plus-lg"></i> New organisation</button>
+            </div>
+            <div class="card-body">
+              <form id="orgForm" class="row g-2 align-items-end mb-3 d-none" data-member-id="">
+                <div class="col-md-3"><label class="form-label" for="org-name">Name</label><input id="org-name" class="form-control form-control-sm"required /></div>
+                <div class="col-md-4"><label class="form-label" for="org-desc">Description</label><input id="org-desc" class="form-control form-control-sm" /></div>
+                <div class="col-md-3"><label class="form-label" for="org-site">Website</label><input id="org-site" class="form-control form-control-sm" /></div>
+                <div class="col-md-2 d-flex gap-2">
+                  <button type="submit" id="orgSubmitBtn" class="btn btn-sm btn-primary">Save</button>
+                  <button type="button" id="orgCancelBtn" class="btn btn-sm btn-outline-secondary">Cancel</button>
+                </div>
+              </form>
+              <div id="orgMsg" class="small text-muted mb-2">Loading…</div>
+              <div id="orgList"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="pane-mail" role="tabpanel" aria-labelledby="tab-mail" tabindex="0">
+          <div class="card mb-3">
+            <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="fw-bold">E-mail outbox</div>
+                <div class="text-muted small">Every queued mail's delivery state. Failures show the worker's exception class and retry backoff.</div>
+              </div>
+              <button type="button" id="refreshMailBtn" class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+            </div>
+            <div class="card-body">
+              <div id="mailSummary" class="mb-2 small text-muted">Loading…</div>
+              <div id="mailTable"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-pane fade" id="pane-feeds" role="tabpanel" aria-labelledby="tab-feeds" tabindex="0">
+          <div class="card mb-3">
+            <div class="card-header d-flex align-items-start justify-content-between gap-3 flex-wrap">
+              <div>
+                <div class="fw-bold">Release feeds</div>
+                <div class="text-muted small">One discovery task per configured feed: import every release, mark the newest one latest and enqueue its dependency scan.</div>
+              </div>
+              <button type="button" id="discoverAllBtn" class="btn btn-sm btn-primary"><i class="bi bi-cloud-download"></i> Ingest all release feeds</button>
+            </div>
+            <div class="card-body">
+              <div id="feedMsg" class="small text-muted">The regular poller also runs on the beat schedule; use this for an on-demand run.</div>
             </div>
           </div>
         </section>

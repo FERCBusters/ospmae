@@ -74,6 +74,9 @@
     passwordCard: document.getElementById("passwordCard"),
     passwordUnavailableMsg: document.getElementById("passwordUnavailableMsg"),
     mfaCard: document.getElementById("mfaCard"),
+    mailCard: document.getElementById("mailCard"),
+    mailSummary: document.getElementById("mailSummary"),
+    mailList: document.getElementById("mailList"),
     securitySummary: document.getElementById("securitySummary"),
     securityForm: document.getElementById("securityForm"),
     securityPassword: document.getElementById("securityPassword"),
@@ -261,9 +264,9 @@
         body: { token },
       });
       toast(`Email ${res?.verified || ""} verified.`, "success");
-    await loadLinkedEmails();
+      await loadLinkedEmails();
 
-    await loadMfaStatus();
+      await loadMfaStatus();
     } catch (err) {
       toast(err?.message || "Verification link invalid or expired", "error");
     }
@@ -775,6 +778,33 @@
       "small mt-2 " + (kind === "error" ? "text-danger" : "text-secondary");
   }
 
+  async function loadMyMail() {
+    if (!el.mailList) return;
+    try {
+      const body = await api("/v1/me/notifications");
+      if (!body.length) {
+        el.mailSummary.textContent =
+          "Nothing has been emailed to this account from the current configuration yet.";
+        return;
+      }
+      const escapeHtml = window.escapeHtml ? window.escapeHtml : (s) => s;
+      el.mailSummary.textContent = `${body.length} queued e-mail(s)`;
+      el.mailList.innerHTML = body
+        .map(
+          (
+            n,
+          ) => `<div class="d-flex justify-content-between border-bottom py-2 small">
+          <div>${escapeHtml(n.subject)} <span class="text-secondary">→ ${escapeHtml(n.recipient)}</span></div>
+          <div><span class="badge ${n.status === "sent" ? "text-bg-success" : n.status === "failed" ? "text-bg-danger" : "text-bg-secondary"}">${n.status}</span></div>
+          </div>`,
+        )
+        .join("");
+    } catch (err) {
+      el.mailSummary.textContent =
+        err?.message || "Could not load e-mail history.";
+    }
+  }
+
   async function loadMfaStatus() {
     if (!el.securitySummary) return;
     try {
@@ -789,11 +819,13 @@
         ? `Two-factor authentication is enabled. ${state2.totp ? "Authenticator app; " : ""}${state2.credentials.length} security keys/passkeys; ${state2.recovery_codes_remaining} recovery codes remaining.`
         : "Two-factor authentication is not configured for password sign-in.";
       if (state2.required) {
-        el.securitySummary.textContent += " Your administrator requires a second factor.";
+        el.securitySummary.textContent +=
+          " Your administrator requires a second factor.";
       }
       setMfaMsg("");
     } catch (err) {
-      el.securitySummary.textContent = err?.message || "Could not load security settings.";
+      el.securitySummary.textContent =
+        err?.message || "Could not load security settings.";
     }
   }
 
@@ -805,7 +837,10 @@
     }
     if (el.manageMfaBtn) el.manageMfaBtn.disabled = true;
     try {
-      await api("/v1/auth/mfa/manage/start", { method: "POST", body: { password } });
+      await api("/v1/auth/mfa/manage/start", {
+        method: "POST",
+        body: { password },
+      });
       if (el.securityPassword) el.securityPassword.value = "";
       window.location.assign("/mfa.html");
     } catch (err) {
@@ -880,7 +915,10 @@
       e.preventDefault();
       submitMfaManage().catch((err) => {
         console.error(err);
-        setMfaMsg(err?.message || "Failed to start account security management", "error");
+        setMfaMsg(
+          err?.message || "Failed to start account security management",
+          "error",
+        );
       });
     });
 
@@ -1036,6 +1074,14 @@
         el.mfaCard.classList.remove("d-none");
       } else {
         el.mfaCard.classList.add("d-none");
+      }
+    }
+    if (el.mailCard) {
+      if (canChangePassword) {
+        el.mailCard.classList.remove("d-none");
+        await loadMyMail();
+      } else {
+        el.mailCard.classList.add("d-none");
       }
     }
 

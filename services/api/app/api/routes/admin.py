@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_request_user, require_admin
@@ -9,12 +11,16 @@ from app.api.payloads import (
     AdminProjectOwnershipPayload,
     AdminUserCreatePayload,
     AdminUserUpdatePayload,
+    OrganisationMemberPayload,
+    OrganisationPayload,
 )
 from app.core.config import settings
 from app.db.models import (
     AuditLog,
     Group,
     GroupPermission,
+    Organisation,
+    OrganisationMember,
     Permission,
     Project,
     ProjectOwnerGroup,
@@ -34,6 +40,8 @@ from app.services.entity_changelog import (
 )
 from app.services.mailer import send_account_approved_email
 from app.services.notification_recipients import notification_email_for_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -62,6 +70,8 @@ def _notify_if_pending_user_approved(
 
     try:
         send_account_approved_email(
+            db=db,
+            user_id=user.id,
             to_email=recipient,
             username=user.username,
             login_url=_login_url(),
@@ -783,3 +793,319 @@ def admin_entity_changelog(
         limit=limit,
         offset=offset,
     )
+
+
+def _pending_notification_count(db: Session) -> int:
+    from app.db.models import Notification
+
+    return db.query(Notification).filter(Notification.status == "pending").count()
+
+
+@router.post("/v1/admin/release-feeds/discover-all", status_code=202)
+def admin_discover_all_release_feeds(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Fan out initial/steady discovery for every configured release feed.
+
+    Each feed import runs as its own task, so one noisy feed cannot slow the
+    rest; discovery marks the newest entry `is_latest` and enqueues a
+    dependency scan for it when the scans feature is on.
+    """
+    from app.core.features import is_enabled
+    from app.db.models import Project
+
+    if not is_enabled("release_feed"):
+        raise HTTPException(status_code=404, detail="Feature not available")
+
+    projects = (
+        db.query(Project)
+        .filter(Project.release_rss_feed_url.isnot(None))
+        .filter(Project.release_rss_feed_url != "")
+        .order_by(Project.id)
+        .all()
+    )
+    enqueued = 0
+    if projects:
+        from app.tasks.release_feed import discover_project_release_feed
+
+        for project in projects:
+            try:
+                discover_project_release_feed.delay(project.id)
+                enqueued += 1
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue discovery for project_id=%s", project.id
+                )
+    return {
+        "enqueued": enqueued,
+        "pending_notifications": _pending_notification_count(db),
+    }
+
+
+@router.get("/v1/admin/notifications")
+def admin_notifications(
+    limit: int = 50,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """The e-mail outbox: every queued mail's delivery state and failure."""
+    from app.db.models import Notification
+
+    limit = max(1, min(int(limit or 50), 200))
+    rows = (
+        db.query(Notification)
+        .order_by(Notification.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    pending = db.query(Notification).filter(Notification.status == "pending").count()
+    failed = db.query(Notification).filter(Notification.status == "failed").count()
+    return {
+        "pending": pending,
+        "failed": failed,
+        "notifications": [
+            {
+                "id": str(row.id),
+                "user_id": row.user_id,
+                "recipient": row.recipient,
+                "subject": row.subject,
+                "status": row.status,
+                "attempts": row.attempts,
+                "last_error": row.last_error,
+                "created_at": row.created_at,
+                "sent_at": row.sent_at,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get("/v1/organisations")
+def list_organisations(
+    _: User = Depends(get_request_user),
+    db: Session = Depends(get_db),
+):
+    """The organisation list the project form and filters offer."""
+    from app.db.models import Project
+
+    rows = db.query(Organisation).order_by(Organisation.name).all()
+    counts = {
+        int(organisation_id): int(total)
+        for organisation_id, total in db.query(
+            Project.organisation_id, func.count(Project.id)
+        )
+        .filter(Project.organisation_id.isnot(None))
+        .group_by(Project.organisation_id)
+        .all()
+    }
+    return [
+        {
+            "id": int(row.id),
+            "name": row.name,
+            "description": row.description,
+            "website": row.website,
+            "project_count": int(counts.get(row.id, 0)),
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+@router.post("/v1/admin/organisations")
+def create_organisation(
+    payload: OrganisationPayload,
+    me: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    from app.services.entity_changelog import record_entity_changelog
+
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if db.query(Organisation).filter(Organisation.name == name).one_or_none():
+        raise HTTPException(status_code=409, detail="Organisation already exists")
+    row = Organisation(
+        name=name,
+        description=payload.description,
+        website=payload.website,
+        created_by_user_id=me.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    record_entity_changelog(
+        db,
+        entity_type="organisation",
+        entity_id=row.id,
+        action="created",
+        before=None,
+        after={"id": row.id, "name": row.name},
+        user=me,
+        request_method="POST",
+        request_path="/v1/admin/organisations",
+    )
+    db.commit()
+    return {"id": row.id, "name": row.name}
+
+
+@router.patch("/v1/admin/organisations/{organisation_id}")
+def update_organisation(
+    organisation_id: int,
+    payload: OrganisationPayload,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(Organisation).filter(Organisation.id == organisation_id).one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    if payload.name is not None:
+        name = payload.name.strip()
+        if name and name != row.name:
+            clash = (
+                db.query(Organisation).filter(Organisation.name == name).one_or_none()
+            )
+            if clash:
+                raise HTTPException(
+                    status_code=409, detail="Organisation already exists"
+                )
+    if payload.name is not None and (payload.name or "").strip():
+        row.name = payload.name.strip()
+    if payload.description is not None:
+        row.description = payload.description or None
+    if payload.website is not None:
+        row.website = payload.website or None
+    db.add(row)
+    db.commit()
+    return {"id": row.id, "name": row.name}
+
+
+@router.post("/v1/admin/organisations/{organisation_id}/members")
+def add_organisation_member(
+    organisation_id: int,
+    payload: OrganisationMemberPayload,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Put a user or group on an organisation's view; exactly one of the two."""
+    from app.db.models import Group
+
+    row = (
+        db.query(Organisation).filter(Organisation.id == organisation_id).one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+    if bool(payload.user_id) == bool(payload.group_id):
+        raise HTTPException(
+            status_code=400, detail="Provide exactly one of user_id or group_id"
+        )
+    if (
+        payload.user_id
+        and not db.query(User).filter(User.id == payload.user_id).one_or_none()
+    ):
+        raise HTTPException(status_code=404, detail="User not found")
+    if (
+        payload.group_id
+        and not db.query(Group).filter(Group.id == payload.group_id).one_or_none()
+    ):
+        raise HTTPException(status_code=404, detail="Group not found")
+    member = OrganisationMember(
+        organisation_id=row.id,
+        user_id=payload.user_id,
+        group_id=payload.group_id,
+        role=payload.role,
+    )
+    exists = (
+        db.query(OrganisationMember)
+        .filter(
+            OrganisationMember.organisation_id == row.id,
+            OrganisationMember.user_id == payload.user_id,
+            OrganisationMember.group_id == payload.group_id,
+        )
+        .one_or_none()
+    )
+    if exists:
+        raise HTTPException(status_code=409, detail="Member already present")
+    db.add(member)
+    db.commit()
+    return {"id": member.id}
+
+
+@router.delete("/v1/admin/organisations/{organisation_id}/members/{member_id}")
+def remove_organisation_member(
+    organisation_id: int,
+    member_id: int,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    member = (
+        db.query(OrganisationMember)
+        .filter(
+            OrganisationMember.id == member_id,
+            OrganisationMember.organisation_id == organisation_id,
+        )
+        .one_or_none()
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="Member not found")
+    db.delete(member)
+    db.commit()
+    return {"deleted": True}
+
+
+@router.get("/v1/admin/organisations/{organisation_id}")
+def organisation_detail(
+    organisation_id: int,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    from app.db.models import Group, User
+
+    row = (
+        db.query(Organisation).filter(Organisation.id == organisation_id).one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+
+    def _subject(member: OrganisationMember):
+        if member.user_id:
+            name = (
+                db.query(User.username).filter(User.id == member.user_id).scalar()
+                or f"user-{member.user_id}"
+            )
+            kind = "user"
+        else:
+            name = (
+                db.query(Group.name).filter(Group.id == member.group_id).scalar()
+                or f"group-{member.group_id}"
+            )
+            kind = "group"
+        return kind, name
+
+    members = []
+    for member in (
+        db.query(OrganisationMember)
+        .filter(OrganisationMember.organisation_id == row.id)
+        .order_by(OrganisationMember.created_at.desc())
+        .all()
+    ):
+        kind, name = _subject(member)
+        members.append(
+            {
+                "id": member.id,
+                "kind": kind,
+                "name": name,
+                "user_id": member.user_id,
+                "group_id": member.group_id,
+                "role": member.role,
+            }
+        )
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description,
+        "website": row.website,
+        "members": members,
+    }

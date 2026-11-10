@@ -29,7 +29,139 @@
     ),
     entityChangelogPrevBtn: document.getElementById("entityChangelogPrevBtn"),
     entityChangelogNextBtn: document.getElementById("entityChangelogNextBtn"),
+    orgForm: document.getElementById("orgForm"),
+    orgSubmitBtn: document.getElementById("orgSubmitBtn"),
+    orgCancelBtn: document.getElementById("orgCancelBtn"),
+    orgCreateBtn: document.getElementById("orgCreateBtn"),
+    orgList: document.getElementById("orgList"),
+    orgMsg: document.getElementById("orgMsg"),
+    mailTable: document.getElementById("mailTable"),
+    mailSummary: document.getElementById("mailSummary"),
+    refreshMailBtn: document.getElementById("refreshMailBtn"),
+    discoverAllBtn: document.getElementById("discoverAllBtn"),
+    feedMsg: document.getElementById("feedMsg"),
   };
+
+  // ---- Organisations, outbox and release-feed ingestion -----------------
+
+  async function loadOrganisations() {
+    if (!el.orgList) return;
+    try {
+      const rows = await OSPMAE.api("/v1/organisations");
+      if (!rows.length) {
+        el.orgList.innerHTML =
+          '<div class="small text-muted">No organisations yet. Projects created with an organisation name create one automatically.</div>';
+        return;
+      }
+      el.orgList.innerHTML = rows
+        .map(
+          (
+            o,
+          ) => `<div class="d-flex align-items-center justify-content-between border-bottom py-2">
+          <div><span class="fw-bold">${OSPMAE.escapeHtml(o.name)}</span>
+          <span class="text-muted small">· ${o.project_count} project(s)</span>
+          ${o.website ? `<a href="${OSPMAE.escapeHtml(o.website)}" target="_blank" rel="noopener noreferrer" class="small ms-2">${OSPMAE.escapeHtml(o.website)}</a>` : ""}</div>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-sm btn-outline-primary" data-org-edit="${o.id}" data-org-name="${OSPMAE.escapeHtml(o.name)}" data-org-desc="${OSPMAE.escapeHtml(o.description || "")}" data-org-site="${OSPMAE.escapeHtml(o.website || "")}">Edit</button>
+          </div></div>`,
+        )
+        .join("");
+      el.orgList.querySelectorAll("[data-org-edit]").forEach((button) => {
+        button.addEventListener("click", () => {
+          el.orgForm.dataset.memberId = button.getAttribute("data-org-edit");
+          document.getElementById("org-name").value =
+            button.getAttribute("data-org-name") || "";
+          document.getElementById("org-desc").value =
+            button.getAttribute("data-org-desc") || "";
+          document.getElementById("org-site").value =
+            button.getAttribute("data-org-site") || "";
+          el.orgForm.classList.remove("d-none");
+        });
+      });
+      el.orgMsg.textContent = "";
+    } catch (err) {
+      el.orgMsg.textContent = err.message || "Failed to load organisations.";
+    }
+  }
+
+  async function submitOrg(event) {
+    event.preventDefault();
+    const editing = el.orgForm?.dataset.memberId || "";
+    const payload = {
+      name: document.getElementById("org-name").value.trim(),
+      description: document.getElementById("org-desc").value.trim() || null,
+      website: document.getElementById("org-site").value.trim() || null,
+    };
+    if (!payload.name) {
+      el.orgMsg.textContent = "Name is required.";
+      return;
+    }
+    try {
+      if (editing) {
+        await OSPMAE.api(`/v1/admin/organisations/${editing}`, {
+          method: "PATCH",
+          body: payload,
+        });
+      } else {
+        await OSPMAE.api("/v1/admin/organisations", {
+          method: "POST",
+          body: payload,
+        });
+      }
+      setMessage("Organisation saved.", "success");
+      el.orgForm.classList.add("d-none");
+      el.orgForm.dataset.memberId = "";
+      await loadOrganisations();
+    } catch (err) {
+      el.orgMsg.textContent = err.message || "Failed to save organisation.";
+    }
+  }
+
+  async function loadOutbox() {
+    if (!el.mailTable) return;
+    try {
+      const body = await OSPMAE.api("/v1/admin/notifications");
+      el.mailSummary.textContent = `${body.pending} pending · ${body.failed} failed · ${body.notifications.length} rows shown`;
+      if (!body.notifications.length) {
+        el.mailTable.innerHTML =
+          '<div class="small text-muted">Nothing queued. Outgoing mail appears here with its delivery state.</div>';
+        return;
+      }
+      el.mailTable.innerHTML = `<div class="table-responsive"><table class="table table-sm align-middle mb-0">
+      <thead class="table-light"><tr><th>When</th><th>To</th><th>Subject</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead>
+      <tbody>${body.notifications
+        .map(
+          (
+            n,
+          ) => `<tr><td class="text-wrap">${OSPMAE.escapeHtml(n.created_at || "")}</td>
+          <td>${OSPMAE.escapeHtml(n.recipient)}</td>
+          <td>${OSPMAE.escapeHtml(n.subject)}</td>
+          <td><span class="badge ${n.status === "sent" ? "text-bg-success" : n.status === "failed" ? "text-bg-danger" : "text-bg-secondary"}">${n.status}</span></td>
+          <td>${n.attempts}</td>
+          <td class="small">${OSPMAE.escapeHtml(n.last_error || "")}</td></tr>`,
+        )
+        .join("")}</tbody></table></div>`;
+    } catch (err) {
+      el.mailSummary.textContent = err.message || "Failed to load outbox.";
+    }
+  }
+
+  async function discoverAll() {
+    if (!el.discoverAllBtn) return;
+    el.discoverAllBtn.disabled = true;
+    try {
+      const body = await OSPMAE.api("/v1/admin/release-feeds/discover-all", {
+        method: "POST",
+      });
+      if (el.feedMsg)
+        el.feedMsg.textContent = `Queued ${body.enqueued} release feed discovery task(s); pending outbox rows: ${body.pending_notifications}.`;
+      OSPMAE.toast(`Ingested ${body.enqueued} feed(s).`, "success");
+    } catch (err) {
+      OSPMAE.toast(err.message || "Discovery failed.", "error");
+    } finally {
+      el.discoverAllBtn.disabled = false;
+    }
+  }
 
   function setMessage(message, level = "info") {
     if (!el.msg) return;
@@ -74,9 +206,15 @@
     "#entity-changelog": "tab-audit",
   });
 
+  const AUDIT_SUBTAB_HASH = Object.freeze({
+    "#audit": "subtab-audit",
+    "#changelog": "subtab-changelog",
+    "#entity-changelog": "subtab-changelog",
+  });
+
   function activateAdminTabFromHash() {
-    const tabId =
-      ADMIN_TAB_HASH_TO_ID[(window.location.hash || "").toLowerCase()];
+    const hash = (window.location.hash || "").toLowerCase();
+    const tabId = ADMIN_TAB_HASH_TO_ID[hash];
     if (!tabId) return;
     const tab = document.getElementById(tabId);
     if (!tab || !window.bootstrap?.Tab) return;
@@ -84,6 +222,18 @@
       window.bootstrap.Tab.getOrCreateInstance(tab).show();
     } catch (_) {
       // ignore tab activation failures
+    }
+    // The combined page keeps audit trail and changelog as inner tabs.
+    const subTabId = AUDIT_SUBTAB_HASH[hash];
+    if (subTabId) {
+      const subTab = document.getElementById(subTabId);
+      if (subTab) {
+        try {
+          window.bootstrap.Tab.getOrCreateInstance(subTab).show();
+        } catch (_) {
+          // ignore tab activation failures
+        }
+      }
     }
   }
 
@@ -814,6 +964,26 @@
       }
     });
 
+    el.orgCreateBtn?.addEventListener("click", () => {
+      if (!el.orgForm) return;
+      el.orgForm.dataset.memberId = "";
+      document.getElementById("org-name").value = "";
+      document.getElementById("org-desc").value = "";
+      document.getElementById("org-site").value = "";
+      el.orgForm.classList.remove("d-none");
+    });
+
+    el.orgCancelBtn?.addEventListener("click", () => {
+      if (!el.orgForm) return;
+      el.orgForm.classList.add("d-none");
+      el.orgForm.dataset.memberId = "";
+    });
+
+    el.orgForm?.addEventListener("submit", submitOrg);
+
+    el.refreshMailBtn?.addEventListener("click", loadOutbox);
+    el.discoverAllBtn?.addEventListener("click", discoverAll);
+
     el.entityChangelogNextBtn?.addEventListener("click", async () => {
       try {
         await pageEntityChangelog(1);
@@ -831,11 +1001,15 @@
     }
 
     try {
-      await Promise.all([loadAuditTrail(), loadAdminEntityChangelog()]);
+      await Promise.all([
+        loadAuditTrail(),
+        loadAdminEntityChangelog(),
+        loadOrganisations(),
+        loadOutbox(),
+      ]);
     } catch (err) {
       if (el.auditMsg)
-        el.auditMsg.textContent =
-          err.message || "Failed to load audit or changelog data.";
+        el.auditMsg.textContent = err.message || "Failed to load admin data.";
     }
   }
 

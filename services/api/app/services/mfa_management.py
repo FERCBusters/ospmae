@@ -3,7 +3,7 @@
 Ceremony state lives in the pending challenge row the caller holds; every
 step re-checks which stage the row is in, and the account's user row is
 locked so concurrent guesses are counted in turn. Failures answer with the
- ceremonies' own codes: HTTP 400/401/403 with the browser-facing message.
+browser-facing codes: HTTP 400/401/403 with a short message.
 """
 
 from __future__ import annotations
@@ -34,6 +34,15 @@ from webauthn.helpers.structs import (
 from app.core.config import settings
 from app.db.models import MfaCredential, MfaRecoveryCode
 from app.security import mfa
+
+# Factor changes mail the account owner through the shared outbox; the
+# messages mirror Keen's security events so the two apps feel the same.
+factor_alerts = {
+    "enrolled": "An authenticator was added to your account",
+    "removed": "An authenticator was removed from your account",
+    "regenerated": "Your recovery codes were replaced",
+    "cleared": "An authenticator problem ended your verification",
+}
 
 
 class Password(BaseModel):
@@ -97,15 +106,19 @@ CODES_REFUSED = (
 def verify_code(db: Session, row, user, payload: Code):
     if row.stage != "verify":
         raise HTTPException(400, "Start a second-factor verification first")
-    # The account's row is locked, so concurrent guesses are counted in turn,
-    # and the count survives a new sign-in.
+    # The user row is locked for the ceremony, so concurrent guesses are
+    # counted in turn, and the count survives a new sign-in.
     if mfa.codes_refused(user):
         db.delete(row)
+        db.commit()
+        mfa.security_alert(db, user, "cleared", factor_alerts["cleared"])
         db.commit()
         raise HTTPException(401, CODES_REFUSED)
     if not mfa.verify_code(db, user, payload.code.strip(), payload.kind):
         if mfa.record_wrong_code(user):
             db.delete(row)
+            db.commit()
+            mfa.security_alert(db, user, "cleared", factor_alerts["cleared"])
             db.commit()
             raise HTTPException(401, CODES_REFUSED)
         db.commit()
@@ -144,7 +157,7 @@ def confirm_totp(db: Session, row, user, payload: Code):
     secret = row.data.get("totp_secret")
     if not secret or user.mfa_totp_secret:
         raise HTTPException(400, "Start authenticator setup first")
-    # Assignment is rolled back on invalid proof; enabling happens only after proof.
+    # Assignment is rolled back on invalid proof; enabling happens after proof.
     user.mfa_totp_secret = secret
     user.mfa_totp_last_step = -1
     if not mfa.verify_code(db, user, payload.code.strip(), "totp"):
@@ -266,10 +279,9 @@ def registration_verify(db: Session, row, user, payload: Credential):
     except Exception:
         db.commit()
         raise HTTPException(400, "Registration failed; request another challenge")
-    if (
-        db.query(MfaCredential)
-        .filter(MfaCredential.credential_id == mfa.b64(result.credential_id))
-        .first()
+    if any(
+        str(payload.credential.get("id")) == c.credential_id
+        for c in mfa.registered(db, user)
     ):
         db.commit()
         raise HTTPException(409, "This credential is already registered")
@@ -297,10 +309,10 @@ def remove(db: Session, row, user, payload: Remove):
         user.mfa_totp_secret = None
         user.mfa_totp_last_step = -1
     else:
-        credential = next((c for c in credentials if str(c.id) == payload.id), None)
-        if not credential:
+        to_remove = next((c for c in credentials if str(c.id) == payload.id), None)
+        if not to_remove:
             raise HTTPException(404, "Authenticator not found")
-        db.delete(credential)
+        db.delete(to_remove)
     user.mfa_enabled = total > 1
     if not user.mfa_enabled:
         db.query(MfaRecoveryCode).filter(MfaRecoveryCode.user_id == user.id).delete(
@@ -308,6 +320,8 @@ def remove(db: Session, row, user, payload: Remove):
         )
     mfa.bump(db, user, row)
     row.data = {}
+    db.commit()
+    mfa.security_alert(db, user, "removed", factor_alerts["removed"])
     db.commit()
     return {"ok": True}
 
@@ -318,6 +332,8 @@ def regenerate(db: Session, row, user):
         raise HTTPException(400, "Enrol an authenticator first")
     codes = mfa.recovery_codes(db, user)
     mfa.bump(db, user, row)
+    db.commit()
+    mfa.security_alert(db, user, "regenerated", factor_alerts["regenerated"])
     db.commit()
     return {"recovery_codes": codes}
 

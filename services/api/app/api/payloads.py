@@ -217,6 +217,7 @@ class ProjectCreatePayload(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
 
     organisation: str | None = Field(default=None, max_length=200)
+    organisation_id: int | None = None
     project_type: str | None = Field(default=None, max_length=120)
     license: str | None = Field(default=None, max_length=120)
 
@@ -245,6 +246,18 @@ class ProjectCreatePayload(BaseModel):
             data = dict(data)
             data["organisation"] = data.get("company")
         return data
+
+    @field_validator("project_type", mode="before")
+    @classmethod
+    def _validate_project_type(cls, v):
+        from app.services.catalog import PROJECT_TYPES
+
+        candidate = (str(v or "") or "").strip().lower()
+        if not candidate:
+            return None
+        if candidate not in PROJECT_TYPES:
+            raise ValueError("project_type must be one of: " + ", ".join(PROJECT_TYPES))
+        return candidate
 
     @field_validator("link_to_app", mode="before")
     @classmethod
@@ -446,3 +459,15 @@ class ProjectQuestionReplyPayload(BaseModel):
 class AdminProjectOwnershipPayload(BaseModel):
     owner_user_id: int | None = Field(default=None, ge=1)
     owner_group_ids: list[int] | None = None
+
+
+class OrganisationPayload(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = None
+    website: str | None = None
+
+
+class OrganisationMemberPayload(BaseModel):
+    user_id: int | None = None
+    group_id: int | None = None
+    role: str | None = Field(default=None, max_length=50)
