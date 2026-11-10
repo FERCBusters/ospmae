@@ -47,6 +47,13 @@ function buildBrowser() {
       </tr></thead>
       <tbody id="depRows"><tr><td colspan="6" class="text-secondary">Loading…</td></tr></tbody>
     </table></div></div>
+    <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mt-2">
+      <div id="depPagerInfo" class="small text-secondary"></div>
+      <div class="d-flex gap-2">
+        <button id="depPrevBtn" class="btn btn-sm btn-outline-primary" type="button">Prev</button>
+        <button id="depNextBtn" class="btn btn-sm btn-outline-primary" type="button">Next</button>
+      </div>
+    </div>
   `;
   document.body.prepend(section);
 
@@ -64,28 +71,65 @@ function buildBrowser() {
     ecosystem: document.getElementById("depEcosystem"),
     vulnerable: document.getElementById("depVulnerable"),
     rows: document.getElementById("depRows"),
+    pagerInfo: document.getElementById("depPagerInfo"),
+    prevBtn: document.getElementById("depPrevBtn"),
+    nextBtn: document.getElementById("depNextBtn"),
   };
 }
 
-async function load(rows) {
-  rows.innerHTML =
+const browserPage = { limit: 50, offset: 0, total: 0 };
+
+function updatePager(controls) {
+  const info = `${browserPage.total} package(s) matching; showing ${browserPage.total ? browserPage.offset + 1 : 0}–${Math.min(browserPage.offset + browserPage.limit, browserPage.total)}`;
+  if (controls.pagerInfo) controls.pagerInfo.textContent = info;
+  if (controls.prevBtn) controls.prevBtn.disabled = browserPage.offset <= 0;
+  if (controls.nextBtn) {
+    controls.nextBtn.disabled =
+      browserPage.offset + browserPage.limit >= browserPage.total;
+  }
+}
+
+async function changePage(controls, direction) {
+  const next = browserPage.offset + direction * browserPage.limit;
+  if (next < 0 || next >= browserPage.total) return;
+  browserPage.offset = next;
+  await load(controls);
+}
+
+async function load(controls) {
+  controls.rows.innerHTML =
     '<tr><td colspan="6" class="text-secondary">Loading…</td></tr>';
   try {
     const params = new URLSearchParams();
-    const search = document.getElementById("depSearch").value.trim();
-    const ecosystem = document.getElementById("depEcosystem").value;
+    const search = controls.search.value.trim();
+    const ecosystem = controls.ecosystem.value;
     if (search) params.set("q", search);
     if (ecosystem) params.set("ecosystem", ecosystem);
-    if (document.getElementById("depVulnerable").checked)
-      params.set("vulnerable", "true");
-    params.set("limit", "200");
+    if (controls.vulnerable.checked) params.set("vulnerable", "true");
+    params.set("limit", String(browserPage.limit));
+    params.set("offset", String(browserPage.offset));
     const body = await apiFetch("/v1/dependencies?" + params.toString());
+    // The ecosystem filter offers whatever the server says exists; fill it
+    // once on the first page so a user's selection survives pagination.
+    if (
+      Array.isArray(body.ecosystems) &&
+      controls.ecosystem.options.length <= 1
+    ) {
+      for (const eco of body.ecosystems) {
+        const option = document.createElement("option");
+        option.value = eco;
+        option.textContent = eco;
+        controls.ecosystem.append(option);
+      }
+    }
+    browserPage.total = Number(body.total ?? body.dependencies.length);
     if (!body.dependencies.length) {
-      rows.innerHTML =
+      controls.rows.innerHTML =
         '<tr><td colspan="6" class="text-secondary">Nothing matched. Dependency discovery populates this list as scans run.</td></tr>';
+      updatePager(controls);
       return;
     }
-    rows.innerHTML = body.dependencies
+    controls.rows.innerHTML = body.dependencies
       .map(
         (d) => `<tr>
         <td><a class="text-decoration-none" href="/dependencies.html?id=${encodeURIComponent(d.public_id)}">${escapeHtml(d.name)}</a></td>
@@ -98,10 +142,12 @@ async function load(rows) {
       )
       .join("");
   } catch (err) {
-    rows.innerHTML =
+    controls.rows.innerHTML =
       '<tr><td colspan="6" class="text-secondary">Failed to load.</td></tr>';
+    updatePager(controls);
     toast(err?.message || "Dependency index failed", "error");
   }
+  updatePager(controls);
 }
 
 (async () => {
@@ -119,9 +165,17 @@ async function load(rows) {
   let timer = null;
   controls.search.addEventListener("input", () => {
     clearTimeout(timer);
-    timer = setTimeout(() => load(controls.rows), 300);
+    browserPage.offset = 0;
+    timer = setTimeout(() => load(controls), 300);
   });
-  controls.ecosystem.addEventListener("change", () => load(controls.rows));
-  controls.vulnerable.addEventListener("change", () => load(controls.rows));
-  await load(controls.rows);
+  const resetAndLoad = () => {
+    browserPage.offset = 0;
+    load(controls);
+  };
+  controls.ecosystem.addEventListener("change", resetAndLoad);
+  controls.vulnerable.addEventListener("change", resetAndLoad);
+  controls.prevBtn?.addEventListener("click", () => changePage(controls, -1));
+  controls.nextBtn?.addEventListener("click", () => changePage(controls, 1));
+  await load(controls);
+  updatePager(controls);
 })();

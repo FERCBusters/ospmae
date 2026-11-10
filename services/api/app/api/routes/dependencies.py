@@ -1438,11 +1438,28 @@ def dependency_index(
         )
     if ecosystem:
         query = query.filter(DependencyPackage.ecosystem == ecosystem.strip())
+
+    # Vulnerability filtering has to happen in SQL across the whole result
+    # set, not within the page slice, or pages would only short-change
+    # themselves: a package with any vulnerable version still counts once.
     if vulnerable:
-        query = query.outerjoin(
-            DependencyVulnerability,
-            DependencyVulnerability.dependency_version_id == DependencyVersion.id,
-        ).filter(DependencyVulnerability.id.isnot(None))
+        vulnerable_packages = (
+            db.query(DependencyVersion.dependency_id)
+            .join(
+                DependencyVulnerability,
+                DependencyVulnerability.dependency_version_id == DependencyVersion.id,
+            )
+            .distinct()
+        )
+        # A scalar subquery nests as IN (SELECT ...), so membership is
+        # resolved by the planner instead of materialising the catalogue.
+        query = query.filter(
+            DependencyPackage.id.in_(vulnerable_packages.scalar_subquery())
+        )
+
+    # One bounded aggregate for the pager: a count over the same filtered
+    # query, before pagination, wherever the web team pages through it.
+    total = int(query.order_by(None).count() or 0)
 
     rows = (
         query.order_by(DependencyPackage.normalized_name.asc())
@@ -1485,8 +1502,19 @@ def dependency_index(
                     vuln_seen.add(key)
                     vuln_counts[dep_id] = vuln_counts.get(dep_id, 0) + 1
 
-    if vulnerable:
-        rows = [row for row in rows if vuln_counts.get(int(row.package_id), 0) > 0]
+    # The ecosystem dropdown is built from what exists; distinct names are
+    # few by design (scanner ecosystems), but stay capped for safety.
+    ecosystems = [
+        str(row[0] or "")
+        for row in (
+            db.query(DependencyPackage.ecosystem)
+            .distinct()
+            .order_by(DependencyPackage.ecosystem.asc())
+            .limit(64)
+            .all()
+        )
+        if row[0]
+    ]
 
     return {
         "dependencies": [
@@ -1501,7 +1529,11 @@ def dependency_index(
                 "vulnerability_count": vuln_counts.get(int(row.package_id), 0),
             }
             for row in rows
-        ]
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "ecosystems": ecosystems,
     }
 
 

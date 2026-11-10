@@ -206,6 +206,85 @@ def test_dependency_index_returns_public_ids_and_filters(client, db):
     assert data["dependencies"] == []
 
 
+def test_dependency_index_pagination_ecosystems_and_vuln_filter(client, db):
+    from app.db.models import (
+        DependencyPackage,
+        DependencyVersion,
+        DependencyVulnerability,
+    )
+
+    with SessionLocal() as s:
+        pkg_vuln = DependencyPackage(
+            ecosystem="cargo",
+            name="vulnerable-crate",
+            normalized_name="vulnerable-crate",
+        )
+        pkg_plain = DependencyPackage(
+            ecosystem="npm", name="plain-dep", normalized_name="plain-dep"
+        )
+        pkg_third = DependencyPackage(
+            ecosystem="pypi", name="third-dep", normalized_name="third-dep"
+        )
+        s.add(pkg_vuln)
+        s.add(pkg_plain)
+        s.add(pkg_third)
+        s.flush()
+        version_vulnerable = DependencyVersion(
+            dependency_id=pkg_vuln.id, version="1.0.0"
+        )
+        version_plain = DependencyVersion(dependency_id=pkg_plain.id, version="2.0.0")
+        s.add(version_vulnerable)
+        s.add(version_plain)
+        s.flush()
+        s.add(
+            DependencyVulnerability(
+                dependency_version_id=version_vulnerable.id,
+                vulnerability_id="RUSTSEC-2026-0001",
+                severity="high",
+                title="fixture advisory",
+                fixed_version="1.0.1",
+            )
+        )
+        s.commit()
+
+    c, _admin = auth_client(username="deps-admin", password=PASSWORD, role="admin")
+    del _admin
+
+    def _read(**params):
+        response = c.get("/v1/dependencies", params=params)
+        assert response.status_code == 200
+        return response.json()
+
+    # Shapes the UI relies on: pager totals plus the ecosystem catalogue.
+    empty = _read(q="definitely-not-there")
+    assert empty["dependencies"] == []
+    assert empty["total"] == 0
+    assert isinstance(empty["ecosystems"], list)
+
+    page = _read(limit=1, offset=0)
+    assert page["limit"] == 1
+    assert page["total"] >= 3
+    assert len(page["dependencies"]) == 1
+    names = {row["name"] for row in _read(limit=100)["dependencies"]}
+    assert {"vulnerable-crate", "plain-dep", "third-dep"} <= names
+    assert set(_read()["ecosystems"]) >= {"cargo", "npm", "pypi"}
+
+    # Pagination actually advances: page 2 differs from page 1.
+    second = _read(limit=1, offset=1)
+    assert [r["id"] for r in second["dependencies"]] != [
+        r["id"] for r in page["dependencies"]
+    ]
+
+    # Vulnerability filtering lives in SQL across the whole result set.
+    vulnerable = _read(vulnerable="true", limit=100)
+    assert vulnerable["total"] >= 1
+    assert {row["name"] for row in vulnerable["dependencies"]} == {"vulnerable-crate"}
+
+    # Ecosystem filter matches whatever the dropdown would send.
+    by_eco = _read(ecosystem="npm", limit=100)
+    assert {row["name"] for row in by_eco["dependencies"]} == {"plain-dep"}
+
+
 def test_verification_queue_reports_why_it_refused(client, db):
     from app.db.models import UserEmail
 

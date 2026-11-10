@@ -64,12 +64,16 @@ function severityChips(v) {
 
 function renderSummary(projects) {
   const total = projects.length;
+  // Same vocabulary the rows use: dependency_discovery_status is
+  // not_run, queued, running, complete or error. Queued and running work
+  // count as scanned neither — they are in flight, and the rows show it.
   const scanned = projects.filter(
-    (p) => p.dependencies?.discovery_status === "done",
+    (p) => p.dependencies?.discovery_status === "complete",
   ).length;
-  const stale = projects.filter(
-    (p) => p.latest && p.dependencies?.discovery_status !== "done",
-  ).length;
+  const stale = projects.filter((p) => {
+    const status = p.dependencies?.discovery_status || "not_run";
+    return p.latest && (status === "not_run" || status === "error");
+  }).length;
   const critical = projects.reduce((acc, p) => {
     const by = p.vulnerabilities?.by_severity || {};
     return acc + (by.critical || 0) + (by.high || 0);
@@ -111,7 +115,7 @@ function renderRows(projects) {
             })[c],
         );
       const latest = row.latest
-        ? `${escape(row.latest.version)}<span class="text-secondary small"> · ${escape(scanLabel(row))}</span>`
+        ? `${escape(row.latest.version)}`
         : '<span class="text-secondary">no release</span>';
       // The column is a single number: how many direct dependencies the
       // latest release recorded. The status vocabulary is not_run, queued,
