@@ -22,10 +22,16 @@
       <div class="d-flex flex-wrap" style="justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
         <h2 id="formTitle" style="margin:0;">Create project</h2>
         <div class="d-flex flex-wrap" style="gap:8px;">
-          <a id="btnBack" class="btn btn-outline-secondary" href="/index.html">← Back</a>
+          <a id="btnBack" class="btn btn-outline-secondary" href="/index.html">← Return to projects</a>
         </div>
       </div>
 
+      <section id="editorTabs" class="tabs" role="tablist" aria-label="Project editor tabs" hidden>
+        <button id="tabProjectBtn" class="tab-btn active" role="tab" aria-selected="true" aria-controls="projectTab" type="button">Project</button>
+        <button id="tabVersionsBtn" class="tab-btn" role="tab" aria-selected="false" aria-controls="versionsTab" type="button">Versions</button>
+      </section>
+
+      <section id="projectTab" class="tab-panel active" role="tabpanel" aria-labelledby="tabProjectBtn">
       <div id="wizardSteps" class="d-flex gap-2 align-items-center mb-2 small">
         <span id="wizardIndicator" class="badge text-bg-primary" aria-live="polite">Step 1: Identity</span>
         <button id="wizardPrev" class="btn btn-sm btn-outline-secondary" type="button" hidden>Back</button>
@@ -141,7 +147,7 @@
         <label>
           <span>Release RSS feed</span>
           <input id="release_rss_feed_url" placeholder="https://..." />
-          <span class="small muted">Optional: RSS/Atom feed to auto-detect new releases (creates drafts). The feed runs a full discovery when first attached.</span>
+          <span class="small muted">Optional: RSS/Atom feed to auto-detect new releases. They arrive as drafts unless the project publishes new releases automatically (Versions tab). The feed runs a full discovery when first attached.</span>
         </label>
         <label>
           <span>Release feed ignore patterns</span>
@@ -257,11 +263,20 @@
         <button id="saveProjectBtn" class="btn btn-primary" type="button" hidden><i class="bi bi-check2"></i> Save project</button>
         <button id="deleteProjectBtn" class="btn btn-outline-danger" type="button" style="display:none;"><i class="bi bi-trash"></i> Delete project</button>
       </div>
+      </section>
 
+      <section id="versionsTab" class="tab-panel" role="tabpanel" aria-labelledby="tabVersionsBtn">
       <div class="card p-3" style="margin-bottom:10px;">
         <div class="d-flex flex-wrap" style="justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
           <h3 style="margin:0;">Versions</h3>
           <button id="newVersionBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-plus"></i> New version</button>
+        </div>
+        <div id="autoPublishField" class="mb-3" hidden>
+          <div class="form-check form-switch mb-0">
+            <input id="release_auto_publish" class="form-check-input" type="checkbox" />
+            <label class="form-check-label" for="release_auto_publish">Publish new releases automatically</label>
+          </div>
+          <div id="autoPublishHint" class="form-text"></div>
         </div>
         <div id="versionsBranchNotice" class="small text-secondary mb-2" hidden></div>
         <div id="versionsList" class="small"></div>
@@ -341,6 +356,7 @@
           <button id="cancelVersionBtn" class="btn btn-outline-secondary" type="button">Cancel</button>
         </div>
       </div>
+      </section>
       </div>
     </section>
   </main>

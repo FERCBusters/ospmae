@@ -39,16 +39,9 @@ from app.services.notification_recipients import (
     notification_email_for_user,
     notification_emails_for_users,
 )
+from app.services.project_notifications import public_project_url
 
 router = APIRouter(tags=["project-questions"])
-
-
-def _public_project_url(project_id: int) -> str | None:
-    base = str(getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    if not base:
-        return None
-    # Link to the project page; users can switch to the Questions tab.
-    return f"{base}/project.html?id={int(project_id)}"
 
 
 def _subscriber_emails_questions(db: Session, *, project_id: int) -> list[str]:
@@ -107,7 +100,7 @@ def _notify_discussion_emails(
     ):
         return
 
-    url = _public_project_url(project.id)
+    url = public_project_url(project.id)
 
     recipients: set[str] = set(_subscriber_emails_questions(db, project_id=project.id))
     recipients.update(_owner_emails(db, project=project))

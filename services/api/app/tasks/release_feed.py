@@ -34,8 +34,21 @@ from app.services.entity_changelog import (
 )
 from app.services.mailer import send_project_version_draft_email
 from app.services.notification_recipients import notification_emails_for_users
-from app.services.scan_queue import launch_dependency_scan, mark_scan_queued
-from app.services.versioning import is_semantically_lower
+from app.services.project_notifications import (
+    notify_subscribers_published,
+    public_project_url,
+)
+from app.services.scan_queue import (
+    launch_dependency_scan,
+    mark_scan_queued,
+    queue_latest_version_scan,
+)
+from app.services.versioning import (
+    is_semantically_lower,
+    is_semantically_newer,
+    parse_semanticish_version,
+    set_latest_version,
+)
 
 log = get_task_logger(__name__)
 
@@ -401,13 +414,6 @@ def _owner_emails(db, project: Project) -> list[str]:
     return notification_emails_for_users(db, users=list(users.values()))
 
 
-def _public_project_url(project_id: int) -> str | None:
-    base = str(getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    if not base:
-        return None
-    return f"{base}/project.html?id={int(project_id)}"
-
-
 def _latest_published_version(db, project_id: int) -> ProjectVersion | None:
     return (
         db.query(ProjectVersion)
@@ -432,6 +438,33 @@ def _is_semantically_lower_than_current_latest(
 
     lower = is_semantically_lower(candidate_version, getattr(latest, "version", None))
     return lower is True
+
+
+def _newest_release_to_promote(
+    created: list[ProjectVersion], current_latest: ProjectVersion | None
+) -> ProjectVersion | None:
+    """The release an automatically publishing project makes its Latest.
+
+    The greatest semantic version among those just published, or the feed's
+    newest entry when none of them parses. It takes the marker from the
+    current Latest only when it is semantically newer, the rule a maintainer's
+    own publication follows: a label that cannot be compared stays published
+    and leaves the marker where it is.
+    """
+
+    parseable = [
+        (key, version)
+        for version in created
+        if (key := parse_semanticish_version(version.version)) is not None
+    ]
+    candidate = (
+        max(parseable, key=lambda pair: pair[0])[1] if parseable else created[-1]
+    )
+    if current_latest is None:
+        return candidate
+    if is_semantically_newer(candidate.version, current_latest.version) is True:
+        return candidate
+    return None
 
 
 def _best_version_for_capability_inheritance(
@@ -478,7 +511,13 @@ def _best_version_for_capability_inheritance(
 
 @celery_app.task(name="app.tasks.release_feed.poll_release_feeds")
 def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
-    """Poll configured release feeds and create draft versions for new releases."""
+    """Poll configured release feeds and add the new releases they announce.
+
+    A new release is staged as a draft for a maintainer to publish. A project
+    that publishes automatically (release_auto_publish) has it published at
+    once: the newest becomes Latest when it is newer than the current one,
+    gets its dependency scan, and subscribers hear of it.
+    """
 
     if not bool(getattr(settings, "release_feed_poll_enabled", True)):
         return {"enabled": False, "checked": 0, "created": 0, "ignored": 0}
@@ -605,7 +644,12 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                 if newest_id:
                     project.release_rss_last_entry_id = newest_id
 
-                # Create draft versions for new entries.
+                # New entries become drafts, or published versions for a
+                # project that publishes automatically.
+                auto_publish = project.release_auto_publish
+                latest_before = (
+                    _latest_published_version(db, project.id) if auto_publish else None
+                )
                 created_versions: list[ProjectVersion] = []
 
                 # Find a sensible inheritance source for capability mappings (and optionally
@@ -676,7 +720,7 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                         link_to_source_code=link_to_source,
                         notes=notes,
                         is_latest=False,
-                        is_draft=True,
+                        is_draft=not auto_publish,
                     )
 
                     db.add(pv)
@@ -727,6 +771,16 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                     created_versions.append(pv)
                     created += 1
 
+                scan_id = None
+                if auto_publish and created_versions:
+                    promoted = _newest_release_to_promote(
+                        created_versions, latest_before
+                    )
+                    if promoted is not None:
+                        set_latest_version(db, project.id, promoted.id)
+                        db.flush()
+                    scan_id = queue_latest_version_scan(db, project.id)
+
                 try:
                     db.add(project)
                     db.commit()
@@ -737,7 +791,26 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                     )
                     continue
 
-                if created_versions:
+                if scan_id is not None:
+                    launch_dependency_scan(scan_id)
+
+                if auto_publish:
+                    # Published releases go to subscribers, the way a
+                    # maintainer's publication does; there is no draft for
+                    # the owners to review.
+                    for pv in created_versions:
+                        try:
+                            notify_subscribers_published(
+                                db, project=project, version=pv
+                            )
+                        except Exception:
+                            db.rollback()
+                            log.exception(
+                                "Release notification failed for project_id=%s version=%s",
+                                project.id,
+                                pv.version,
+                            )
+                elif created_versions:
                     # NOTE: email sending is intentionally best-effort, but we log when
                     # it is skipped or fails so operators can diagnose issues.
                     if not (
@@ -756,7 +829,7 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                                 project.id,
                             )
                         else:
-                            url_for_email = _public_project_url(project.id)
+                            url_for_email = public_project_url(project.id)
                             for pv in created_versions:
                                 for email in recipients:
                                     try:

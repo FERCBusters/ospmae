@@ -36,6 +36,7 @@ _CHANGE_FIELD_LABELS = {
     "release_date": "Release date",
     "release_rss_feed_url": "Release RSS feed",
     "release_rss_ignore_patterns": "Release feed ignore patterns",
+    "release_auto_publish": "Publishes new releases automatically",
     "track_branch": "Tracks a branch",
     "tracked_repo_url": "Tracked repository",
     "tracked_branch": "Tracked branch",
@@ -259,6 +260,7 @@ def project_changelog_state(
         "release_rss_ignore_patterns": list(
             getattr(project, "release_rss_ignore_patterns", None) or []
         ),
+        "release_auto_publish": project.release_auto_publish,
         "track_branch": project.track_branch,
         "tracked_repo_url": project.tracked_repo_url,
         "tracked_branch": project.tracked_branch,

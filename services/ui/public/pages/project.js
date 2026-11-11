@@ -124,6 +124,7 @@ const el = {
   projectTitle: document.getElementById("projectTitle"),
   projectSubTitle: document.getElementById("projectSubTitle"),
   editProjectLink: document.getElementById("editProjectLink"),
+  editVersionsLink: document.getElementById("editVersionsLink"),
   subscribeBtn: document.getElementById("subscribeBtn"),
   subscriptionModal: document.getElementById("subscriptionModal"),
   subNotifyNewVersions: document.getElementById("subNotifyNewVersions"),
@@ -2428,6 +2429,9 @@ async function loadProject() {
     el.editProjectLink.style.display = "";
     el.editProjectLink.href = `/project-edit.html?id=${id}`;
     el.editProjectLink.textContent = "Edit project";
+    // Straight to the editor's Versions tab.
+    el.editVersionsLink.style.display = "";
+    el.editVersionsLink.href = `/project-edit.html?id=${id}#versions`;
   }
 
   renderSubscribeBtn();

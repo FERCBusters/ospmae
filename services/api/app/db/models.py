@@ -570,6 +570,13 @@ class Project(Base):
         JSONB, nullable=False, default=list
     )
 
+    # New releases the feed poll finds are staged as drafts for a maintainer to
+    # publish; with this on they are published as they arrive and the newest
+    # becomes Latest (app/tasks/release_feed.py).
+    release_auto_publish: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
     # State for release feed polling (to avoid re-processing old entries).
     release_rss_last_entry_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     release_rss_last_checked_at: Mapped[datetime | None] = mapped_column(

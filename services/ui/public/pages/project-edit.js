@@ -37,6 +37,11 @@
   const el = {
     formTitle: document.getElementById("formTitle"),
     btnBack: document.getElementById("btnBack"),
+    editorTabs: document.getElementById("editorTabs"),
+    tabProjectBtn: document.getElementById("tabProjectBtn"),
+    tabVersionsBtn: document.getElementById("tabVersionsBtn"),
+    projectTab: document.getElementById("projectTab"),
+    versionsTab: document.getElementById("versionsTab"),
 
     machine_name: document.getElementById("machine_name"),
     display_name: document.getElementById("display_name"),
@@ -88,6 +93,9 @@
     newVersionBtn: document.getElementById("newVersionBtn"),
     versionsList: document.getElementById("versionsList"),
     versionsBranchNotice: document.getElementById("versionsBranchNotice"),
+    autoPublishField: document.getElementById("autoPublishField"),
+    release_auto_publish: document.getElementById("release_auto_publish"),
+    autoPublishHint: document.getElementById("autoPublishHint"),
 
     versionEditor: document.getElementById("versionEditor"),
     versionFormTitle: document.getElementById("versionFormTitle"),
@@ -322,6 +330,76 @@
   function backHref() {
     const id = state.editingProject?.id;
     return id ? `/project.html?id=${encodeURIComponent(id)}` : "/index.html";
+  }
+
+  // The header link names where it leads, so it never reads as the wizard's
+  // own Back button.
+  function syncBackLink() {
+    if (!el.btnBack) return;
+    el.btnBack.href = backHref();
+    el.btnBack.textContent = state.editingProject?.id
+      ? "← Return to project"
+      : "← Return to projects";
+  }
+
+  // The editor's two tabs: the project's own settings, and its versions.
+  // #versions opens the Versions tab directly, so a version is edited
+  // without stepping through the project form. A project being created has
+  // no versions yet and shows the form alone.
+  function tabFromLocation() {
+    return window.location.hash.toLowerCase() === "#versions"
+      ? "versions"
+      : "project";
+  }
+
+  function showTab(name, { remember = true } = {}) {
+    const versions = name === "versions" && !!state.editingProject?.id;
+    el.projectTab.classList.toggle("active", !versions);
+    el.versionsTab.classList.toggle("active", versions);
+    el.tabProjectBtn.classList.toggle("active", !versions);
+    el.tabVersionsBtn.classList.toggle("active", versions);
+    el.tabProjectBtn.setAttribute("aria-selected", String(!versions));
+    el.tabVersionsBtn.setAttribute("aria-selected", String(versions));
+    if (!remember) return;
+    const url = `${window.location.pathname}${window.location.search}${versions ? "#versions" : ""}`;
+    window.history.replaceState(null, "", url);
+  }
+
+  // Publishing new releases automatically belongs to a project that follows
+  // a release feed; the switch saves on its own, apart from the project form.
+  function syncAutoPublish() {
+    const project = state.editingProject;
+    if (!el.autoPublishField) return;
+    const follows =
+      !!project?.id && !project.track_branch && featureOn("release_feed");
+    el.autoPublishField.hidden = !follows;
+    if (!follows) return;
+    const hasFeed = !!String(project.release_rss_feed_url || "").trim();
+    el.release_auto_publish.checked = !!project.release_auto_publish;
+    el.release_auto_publish.disabled = !hasFeed;
+    el.autoPublishHint.textContent = hasFeed
+      ? "Releases found by the release feed are published as they arrive instead of waiting as drafts. The newest becomes Latest when it is newer than the current Latest, and its dependencies are scanned."
+      : "Add a release RSS feed on the Project tab to use this.";
+  }
+
+  async function saveAutoPublish() {
+    const project = state.editingProject;
+    const wanted = !!el.release_auto_publish.checked;
+    el.release_auto_publish.disabled = true;
+    try {
+      const updated = await apiFetch(`/v1/projects/${project.id}`, {
+        method: "PUT",
+        body: { release_auto_publish: wanted },
+      });
+      project.release_auto_publish = !!updated.release_auto_publish;
+      OSPMAE.toast(
+        project.release_auto_publish
+          ? "New releases are published automatically."
+          : "New releases wait as drafts.",
+      );
+    } finally {
+      syncAutoPublish();
+    }
   }
 
   function parseTags(value) {
@@ -931,8 +1009,10 @@
     state.creatingProject = false;
 
     el.formTitle.textContent = `Edit project: ${full.display_name || full.machine_name}`;
-    if (el.btnBack) el.btnBack.href = backHref();
+    syncBackLink();
+    el.editorTabs.hidden = false;
     fillProjectForm(full);
+    syncAutoPublish();
 
     el.deleteProjectBtn.style.display = "";
 
@@ -959,8 +1039,11 @@
     state.creatingProject = true;
 
     el.formTitle.textContent = "Create project";
-    if (el.btnBack) el.btnBack.href = backHref();
+    syncBackLink();
+    el.editorTabs.hidden = true;
+    showTab("project", { remember: false });
     fillProjectForm({});
+    syncAutoPublish();
 
     el.deleteProjectBtn.style.display = "none";
     el.newVersionBtn.hidden = true;
@@ -1016,7 +1099,9 @@
         "",
         `/project-edit.html?id=${encodeURIComponent(projectId)}`,
       );
-      OSPMAE.toast("Project created. Versions can be added below.");
+      OSPMAE.toast(
+        "Project created. Versions can be added on the Versions tab.",
+      );
     }
 
     // Saving can add the tracked branch's version, so reload the whole view.
@@ -1182,6 +1267,14 @@
         e.preventDefault();
     });
 
+    el.tabProjectBtn.addEventListener("click", () => showTab("project"));
+    el.tabVersionsBtn.addEventListener("click", () => showTab("versions"));
+    el.release_auto_publish?.addEventListener("change", () => {
+      saveAutoPublish().catch((err) =>
+        OSPMAE.toast(err.message || "Failed to save the setting", "error"),
+      );
+    });
+
     el.track_branch?.addEventListener("change", syncTrackingFields);
     el.repo_private?.addEventListener("change", syncRepoAccessFields);
     el.repo_token_host?.addEventListener("input", syncRepoAccessFields);
@@ -1261,6 +1354,7 @@
     const id = Number(new URLSearchParams(window.location.search).get("id"));
     if (Number.isInteger(id) && id > 0) {
       await openProject(id);
+      showTab(tabFromLocation(), { remember: false });
     } else {
       startCreateProject();
     }

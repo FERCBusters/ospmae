@@ -74,18 +74,17 @@ from app.services.entity_changelog import (
     project_version_changelog_state,
     record_entity_changelog,
 )
-from app.services.mailer import (
-    send_manifest_shared_email,
-    send_project_version_published_email,
-)
+from app.services.mailer import send_manifest_shared_email
 from app.services.notification_recipients import (
     notification_email_for_user,
     notification_emails_for_users,
 )
+from app.services.project_notifications import notify_subscribers_published
 from app.services.scan_queue import (
     launch_dependency_scan,
     launch_release_discovery,
     mark_scan_queued,
+    queue_latest_version_scan,
 )
 from app.services.versioning import (
     is_semantically_newer,
@@ -124,26 +123,6 @@ def _is_subscribed(db: Session, *, user_id: int, project_id: int) -> bool:
     )
 
 
-def _subscriber_emails(
-    db: Session, *, project_id: int, kind: str = "new_versions"
-) -> list[str]:
-    """Return subscriber primary email addresses for a notification kind."""
-
-    q = (
-        db.query(User)
-        .join(ProjectSubscription, ProjectSubscription.user_id == User.id)
-        .filter(ProjectSubscription.project_id == project_id)
-        .filter(User.is_active.is_(True))
-    )
-
-    if kind == "questions":
-        q = q.filter(ProjectSubscription.notify_questions.is_(True))
-    else:
-        q = q.filter(ProjectSubscription.notify_new_versions.is_(True))
-
-    return notification_emails_for_users(db, users=q.all())
-
-
 def _owner_emails(db: Session, *, project: Project) -> list[str]:
     users: dict[int, User] = {}
 
@@ -169,33 +148,6 @@ def _owner_emails(db: Session, *, project: Project) -> list[str]:
         users.update({user.id: user for user in group_users})
 
     return notification_emails_for_users(db, users=list(users.values()))
-
-
-def _public_project_url(project_id: int) -> str | None:
-    base = str(getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    if not base:
-        return None
-    return f"{base}/project.html?id={int(project_id)}"
-
-
-def _notify_subscribers_published(
-    db: Session, *, project: Project, version: ProjectVersion
-) -> None:
-    # Drafts never notify subscribers.
-    if bool(getattr(version, "is_draft", False)):
-        return
-
-    url = _public_project_url(project.id)
-    for email in _subscriber_emails(db, project_id=project.id):
-        send_project_version_published_email(
-            db=db,
-            to_email=email,
-            project_name=project.display_name,
-            version=version.version,
-            project_url=url,
-        )
-    # The version was committed before this mail was queued.
-    commit_and_kick(db)
 
 
 def _normalize_csv_ints(value: str | None) -> list[int]:
@@ -456,6 +408,29 @@ def _should_auto_promote_latest(
     return newer is True
 
 
+def _scans_to_launch(
+    db: Session,
+    user: User,
+    project: Project,
+    version: ProjectVersion | None,
+    version_queued: bool,
+) -> list[int]:
+    """The scans a version change calls for, launched after its commit.
+
+    The changed version when its source was set or changed, and the project's
+    Latest version when the change left the marker on one never scanned:
+    publishing a draft or marking a version Latest scans it the way a newly
+    discovered release is scanned.
+    """
+
+    scan_ids = [version.id] if version is not None and version_queued else []
+    if _can_run_dependency_discovery(db, user, project):
+        latest_id = queue_latest_version_scan(db, project.id)
+        if latest_id is not None:
+            scan_ids.append(latest_id)
+    return scan_ids
+
+
 def _serialize_project(
     project: Project,
     *,
@@ -484,6 +459,7 @@ def _serialize_project(
         "release_rss_ignore_patterns": clean_release_feed_ignore_patterns(
             getattr(project, "release_rss_ignore_patterns", []) or []
         ),
+        "release_auto_publish": project.release_auto_publish,
         "track_branch": project.track_branch,
         "tracked_repo_url": project.tracked_repo_url,
         "tracked_branch": project.tracked_branch,
@@ -1100,6 +1076,7 @@ def create_project(
         supported_signing_algorithms=_clean_tag_list(
             payload.supported_signing_algorithms
         ),
+        release_auto_publish=bool(payload.release_auto_publish),
         track_branch=bool(payload.track_branch),
         tracked_repo_url=payload.tracked_repo_url,
         tracked_branch=payload.tracked_branch,
@@ -1445,8 +1422,9 @@ def update_project(
     if updates.get("branch_poll_interval_hours", 0) is None:
         # The interval always has a value; an explicit null keeps the stored one.
         updates.pop("branch_poll_interval_hours")
-    if "track_branch" in updates:
-        updates["track_branch"] = bool(updates["track_branch"])
+    for switch in ("track_branch", "release_auto_publish"):
+        if switch in updates:
+            updates[switch] = bool(updates[switch])
     repo_access = {
         key: updates.pop(key) for key in _REPO_ACCESS_FIELDS if key in updates
     }
@@ -1776,6 +1754,7 @@ def create_project_version(
 
     db.flush()
     db.refresh(version)
+    scan_ids = _scans_to_launch(db, user, project, version, auto_discovery)
     record_entity_changelog(
         db,
         entity_type="project_version",
@@ -1792,10 +1771,10 @@ def create_project_version(
 
     # Notify subscribers for published releases only.
     if not is_draft:
-        _notify_subscribers_published(db, project=project, version=version)
+        notify_subscribers_published(db, project=project, version=version)
 
-    if auto_discovery:
-        launch_dependency_scan(version.id)
+    for scan_id in scan_ids:
+        launch_dependency_scan(scan_id)
 
     return _serialize_version(version)
 
@@ -1889,6 +1868,7 @@ def update_project_version(
 
     db.flush()
     db.refresh(version)
+    scan_ids = _scans_to_launch(db, user, project, version, auto_discovery)
     record_entity_changelog(
         db,
         entity_type="project_version",
@@ -1906,10 +1886,10 @@ def update_project_version(
     # If we just published a draft, notify subscribers.
     if old_is_draft and not bool(getattr(version, "is_draft", False)):
         project = _ensure_project(db, version.project_id)
-        _notify_subscribers_published(db, project=project, version=version)
+        notify_subscribers_published(db, project=project, version=version)
 
-    if auto_discovery:
-        launch_dependency_scan(version.id)
+    for scan_id in scan_ids:
+        launch_dependency_scan(scan_id)
 
     return _serialize_version(version)
 
@@ -1930,6 +1910,8 @@ def delete_project_version(
     db.delete(version)
     db.flush()
     _ensure_project_has_latest(db, project_id)
+    # Deleting the Latest version hands the marker to another one.
+    scan_ids = _scans_to_launch(db, user, project, None, False)
     record_entity_changelog(
         db,
         entity_type="project_version",
@@ -1942,6 +1924,8 @@ def delete_project_version(
         request_path=request.url.path,
     )
     db.commit()
+    for scan_id in scan_ids:
+        launch_dependency_scan(scan_id)
     return Response(status_code=204)
 
 

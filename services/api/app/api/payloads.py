@@ -251,6 +251,9 @@ class ProjectCreatePayload(BaseModel):
     # Optional RSS/Atom feed for releases (e.g. GitHub releases feed).
     release_rss_feed_url: str | None = None
     release_rss_ignore_patterns: list[ReleaseFeedIgnorePatternPayload] | None = None
+    # Publish releases the feed poll finds straight away instead of staging
+    # them as drafts.
+    release_auto_publish: bool | None = None
 
     # Branch tracking: follow one branch head, re-scanned on an interval of
     # at least an hour, instead of following releases.

@@ -123,10 +123,12 @@ function renderRows(projects) {
             })[c],
         );
       // A tracked branch stands in for releases: its version is the branch.
+      // The icon alone tells the two apart: a branch, or a release tag.
+      const [icon, kind] = row.tracked_branch
+        ? ["bi-git", "Tracked branch"]
+        : ["bi-tag", "Release"];
       const latest = row.latest
-        ? row.tracked_branch
-          ? `<i class="bi bi-git" aria-hidden="true"></i> ${escape(row.latest.version)} <span class="badge text-bg-secondary">branch</span>`
-          : `${escape(row.latest.version)}`
+        ? `<span title="${kind}"><i class="bi ${icon} text-secondary" aria-hidden="true"></i><span class="visually-hidden">${kind}: </span> ${escape(row.latest.version)}</span>`
         : '<span class="text-secondary">no release</span>';
       // The column is a single number: how many direct dependencies the
       // latest release recorded. The status vocabulary is not_run, queued,
