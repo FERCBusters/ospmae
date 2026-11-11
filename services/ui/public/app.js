@@ -56,9 +56,13 @@
           });
       }
     }
-    // The navbar's framework picker belongs to the frameworks feature.
+    // The navbar's framework picker belongs to the frameworks feature, and
+    // any element marked data-feature="<key>" to the named feature.
     document.querySelectorAll(".mosp-nav-framework").forEach((el) => {
       el.hidden = !featureOn("frameworks");
+    });
+    document.querySelectorAll("[data-feature]").forEach((el) => {
+      if (!featureOn(el.dataset.feature)) el.hidden = true;
     });
   }
 
@@ -1127,6 +1131,16 @@
     if (!state.me) {
       state.frameworks = [];
       state.frameworksLoaded = false;
+      state.frameworksPromise = null;
+      state.activeFramework = null;
+      return [];
+    }
+
+    // With the frameworks feature off the API answers 404 for frameworks:
+    // pages see an empty list and carry on without framework mapping.
+    if (!featureOn("frameworks")) {
+      state.frameworks = [];
+      state.frameworksLoaded = true;
       state.frameworksPromise = null;
       state.activeFramework = null;
       return [];

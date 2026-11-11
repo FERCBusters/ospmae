@@ -1041,7 +1041,9 @@
       OSPMAE.toast("Save the project first.", "warn");
       return;
     }
-    if (!state.activeFramework?.id) {
+    // Capability mappings exist only while the frameworks feature is on.
+    const mapsCapabilities = featureOn("frameworks");
+    if (mapsCapabilities && !state.activeFramework?.id) {
       OSPMAE.toast("Pick a framework first.", "warn");
       return;
     }
@@ -1093,14 +1095,15 @@
     }
 
     // Persist node mappings for the current framework.
-    const nodePayload = {
-      framework_id: state.activeFramework.id,
-      node_ids: Array.from(state.selectedNodeIds).sort((a, b) => a - b),
-    };
-    await apiFetch(`/v1/project-versions/${versionId}/framework-nodes`, {
-      method: "PUT",
-      body: nodePayload,
-    });
+    if (mapsCapabilities) {
+      await apiFetch(`/v1/project-versions/${versionId}/framework-nodes`, {
+        method: "PUT",
+        body: {
+          framework_id: state.activeFramework.id,
+          node_ids: Array.from(state.selectedNodeIds).sort((a, b) => a - b),
+        },
+      });
+    }
     state.dirtyNodeSelection = false;
 
     // Refresh the project and its versions.
