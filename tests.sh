@@ -2,7 +2,11 @@
 # Run OSPMAE backend and frontend contracts against a disposable test database.
 set -euo pipefail
 ospmae_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-: "${OSPMAE_TEST_DATABASE_URL:?Set OSPMAE_TEST_DATABASE_URL to a disposable database (never production)}"
+: "${OSPMAE_TEST_DATABASE_URL:?Set OSPMAE_TEST_DATABASE_URL to a disposable PostgreSQL database (never production)}"
+case "$OSPMAE_TEST_DATABASE_URL" in
+  postgresql*) ;;
+  *) echo 'OSPMAE_TEST_DATABASE_URL must name a PostgreSQL database: the suite runs on PostgreSQL only.' >&2; exit 1 ;;
+esac
 command -v node >/dev/null
 export OSPMAE_DATABASE_URL="$OSPMAE_TEST_DATABASE_URL"
 export AWS_EC2_METADATA_DISABLED=true
@@ -33,20 +37,18 @@ fi
 "$PY" - <<'PY'
 import os, time
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
 url = os.environ['OSPMAE_TEST_DATABASE_URL']
-if make_url(url).get_backend_name() == 'postgresql':
-    engine = create_engine(url, connect_args={'connect_timeout': 3})
-    for attempt in range(10):
-        try:
-            with engine.connect() as connection:
-                connection.execute(text('SELECT 1'))
-            break
-        except Exception:
-            if attempt == 9:
-                raise SystemExit('Test PostgreSQL did not become ready.') from None
-            time.sleep(1)
-    engine.dispose()
+engine = create_engine(url, connect_args={'connect_timeout': 3})
+for attempt in range(10):
+    try:
+        with engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
+        break
+    except Exception:
+        if attempt == 9:
+            raise SystemExit('Test PostgreSQL did not become ready.') from None
+        time.sleep(1)
+engine.dispose()
 PY
 
 result=0

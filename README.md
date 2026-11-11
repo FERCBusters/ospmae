@@ -109,7 +109,7 @@ bash tests-ui.sh
 bash format-ui.sh --check
 ```
 
-`tests.sh` runs the whole CI surface locally: backend pytest with branch coverage against the configured disposable database (SQLite works; CI uses PostgreSQL), the no-skips guard, UI tests under c8, and syntax checks across first-party JavaScript. `.github/workflows/tests.yml` runs the same steps on every push. Documentation for development conventions lives in `AGENTS.md`; the deployment security model lives in `SECURITY.md`.
+`tests.sh` runs the whole CI surface locally: backend pytest with branch coverage against a disposable PostgreSQL database named by `OSPMAE_TEST_DATABASE_URL` (the suite runs on PostgreSQL only, and empties the database it is given), the no-skips guard, UI tests under c8, and syntax checks across first-party JavaScript. `.github/workflows/tests.yml` runs the same steps on every push. Documentation for development conventions lives in `AGENTS.md`; the deployment security model lives in `SECURITY.md`.
 
 ## Repository layout
 

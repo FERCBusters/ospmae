@@ -4,18 +4,27 @@ import ipaddress
 import os
 import secrets
 import sys
-import tempfile
 from pathlib import Path
 
 # The test database must be chosen before the application imports: settings
-# read OSPMAE_DATABASE_URL once at import time. A disposable SQLite file is
-# the default; CI passes OSPMAE_TEST_DATABASE_URL (tests.sh exports it).
-_TEST_DB = os.environ.get("OSPMAE_TEST_DATABASE_URL")
-if not _TEST_DB:
-    _TMP_DIR = Path(tempfile.gettempdir()) / "ospmae-tests"
-    _TMP_DIR.mkdir(parents=True, exist_ok=True)
-    _TEST_DB = f"sqlite:///{_TMP_DIR / 'ospmae-tests.db'}"
+# read OSPMAE_DATABASE_URL once at import time. The suite runs on PostgreSQL
+# only, the database the application is deployed on, so every test exercises
+# the real types, constraints, locks and migrations. OSPMAE_TEST_DATABASE_URL
+# names a disposable database (tests.sh and CI export it); the suite empties
+# it.
+_TEST_DB = os.environ.get("OSPMAE_TEST_DATABASE_URL", "")
+if not _TEST_DB.startswith("postgresql"):
+    raise RuntimeError(
+        "Set OSPMAE_TEST_DATABASE_URL to a disposable PostgreSQL database, "
+        "for example postgresql+psycopg://ospmae_test:ospmae_test@localhost:5432/"
+        "ospmae_test. The tests empty it: never name an operational database."
+    )
 os.environ["OSPMAE_DATABASE_URL"] = _TEST_DB
+# No broker runs beside the tests. Hand-offs go to Celery's in-memory
+# transport, where nothing consumes them: a request under test returns at
+# once, and each test that cares about a task runs or records it itself.
+os.environ["OSPMAE_CELERY_BROKER_URL"] = "memory://"
+os.environ["OSPMAE_CELERY_RESULT_BACKEND"] = "cache+memory://"
 # Test clients authenticate over https so Secure cookies round-trip.
 os.environ.setdefault("OSPMAE_COOKIE_SECURE", "true")
 os.environ.setdefault("OSPMAE_TRUST_PROXY_CIDRS", "127.0.0.1,::1")
@@ -34,8 +43,6 @@ from app.db.session import Base, SessionLocal, engine  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-_IS_SQLITE = engine.url.get_backend_name().startswith("sqlite")
-
 
 def create_all() -> None:
     Base.metadata.create_all(engine)
@@ -52,36 +59,25 @@ def _schema():
 
 def truncate_all() -> None:
     with engine.begin() as conn:
-        if _IS_SQLITE:
-            names = [r[0] for r in conn.execute(text(_TABLES_SQL()))]
-            for name in names:
-                if name.startswith("sqlite_"):
-                    continue
-                conn.execute(text(f'DELETE FROM "{name}"'))
-        else:
-            names = [
-                r[0]
-                for r in conn.execute(
-                    text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-                )
-            ]
-            # A leaked idle-in-transaction connection would block this exclusive
-            # lock forever; a bounded wait turns the hang into a loud failure.
-            conn.execute(text("SET LOCAL lock_timeout = '30s'"))
-            # Identity columns restart with the tables: tests assume fresh
-            # sequences, like SQLite gives, and a shared Postgres database must
-            # not leak counters between tests or runs.
-            conn.execute(
-                text(
-                    "TRUNCATE TABLE "
-                    + ", ".join(f'"{n}"' for n in names)
-                    + " RESTART IDENTITY CASCADE"
-                )
+        names = [
+            r[0]
+            for r in conn.execute(
+                text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
             )
-
-
-def _TABLES_SQL() -> str:
-    return "SELECT name FROM sqlite_master WHERE type='table'"
+        ]
+        # A leaked idle-in-transaction connection would block this exclusive
+        # lock forever; a bounded wait turns the hang into a loud failure.
+        conn.execute(text("SET LOCAL lock_timeout = '30s'"))
+        # Identity columns restart with the tables: tests assume fresh
+        # sequences, and a shared database must not leak counters between
+        # tests or runs.
+        conn.execute(
+            text(
+                "TRUNCATE TABLE "
+                + ", ".join(f'"{n}"' for n in names)
+                + " RESTART IDENTITY CASCADE"
+            )
+        )
 
 
 @pytest.fixture(autouse=True)

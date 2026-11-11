@@ -143,6 +143,10 @@ def _apply_dependencies(
         )
         db.add(link)
         count += 1
+    # The session does not flush on its own: the findings step that follows
+    # reads these links back to know which dependency versions this project
+    # version uses.
+    db.flush()
     return count
 
 
@@ -238,6 +242,8 @@ def _apply_vulns(db: Session, *, findings: list, project_version_id: int) -> int
                 )
             )
 
+    # Written before they are counted, for the same reason.
+    db.flush()
     return _count_project_version_vulns(db, project_version_id=project_version_id)
 
 

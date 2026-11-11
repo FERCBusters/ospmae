@@ -8,12 +8,10 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from app.core.config import settings
 
 if not settings.database_url:
-    # Fall back for docs/testing; runtime requires env var.
-    DATABASE_URL = "sqlite+pysqlite:///:memory:"
-else:
-    DATABASE_URL = settings.database_url
+    # PostgreSQL is the only supported database, for running and for tests.
+    raise RuntimeError("OSPMAE_DATABASE_URL is required (a PostgreSQL database)")
 
-engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True)
+engine = create_engine(settings.database_url, future=True, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 
 

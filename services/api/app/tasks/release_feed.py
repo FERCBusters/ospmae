@@ -355,26 +355,82 @@ def _release_feed_entry_is_ignored(
     return False
 
 
+# The path segment that separates a repository from its releases on the forges
+# the scanner clones from: /owner/repo/releases/tag/v1 (GitHub, Forgejo, Gitea,
+# Codeberg), /group/sub/project/-/releases/v1 and /-/tags (GitLab), and the
+# feed addresses themselves (/owner/repo/releases.rss, .atom).
+_RELEASE_PATH_MARKERS = frozenset(
+    {
+        "releases",
+        "releases.rss",
+        "releases.atom",
+        "tags",
+        "tags.rss",
+        "tags.atom",
+    }
+)
+
+
 def _guess_source_code_url_from_release_link(link: str | None) -> str | None:
+    """The repository a release link belongs to, when its host may be cloned.
+
+    The repository is the part of the path before the releases segment. A
+    feed entry drives later git clones, so the derived link passes the same
+    repo-URL validation as operator-supplied ones: no embedded credentials
+    and a host on OSPMAE_DEPENDENCY_DISCOVERY_ALLOWED_HOSTS. Anything else
+    yields None.
+    """
+
     if not link:
         return None
     try:
-        p = urlparse(link)
-        host = (p.netloc or "").lower()
-        parts = [x for x in p.path.split("/") if x]
+        parsed = urlparse(link)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return None
+        parts = [x for x in parsed.path.split("/") if x]
+        marker = next(
+            (i for i, part in enumerate(parts) if part in _RELEASE_PATH_MARKERS),
+            None,
+        )
+        if marker is not None:
+            repo_parts = parts[:marker]
+            if repo_parts and repo_parts[-1] == "-":
+                repo_parts = repo_parts[:-1]
+        elif parsed.hostname.lower() == "github.com":
+            # A bare GitHub repository link.
+            repo_parts = parts[:2]
+        else:
+            return None
+        if len(repo_parts) < 2:
+            return None
+        # netloc keeps a port, and any credentials for validation to refuse.
+        candidate = f"https://{parsed.netloc.lower()}/{'/'.join(repo_parts)}"
+        from app.depscan.scan import validate_repo_url
 
-        # GitHub: https://github.com/<owner>/<repo>/releases/tag/<tag>
-        if host == "github.com" and len(parts) >= 2:
-            candidate = f"https://github.com/{parts[0]}/{parts[1]}"
-            # A feed entry drives later git clones, so the derived link passes
-            # the same repo-URL validation as operator-supplied ones: no other
-            # scheme, no embedded credentials, allowlisted host.
-            from app.depscan.scan import validate_repo_url
-
-            validate_repo_url(candidate)
-            return candidate
-    except Exception:
+        validate_repo_url(candidate)
+        return candidate
+    except ValueError:
         return None
+
+
+def _source_code_url_for_entry(
+    project: Project, link: str | None, inheritance_source: ProjectVersion | None
+) -> str | None:
+    """Where a feed entry's source lives.
+
+    The entry's own release link names the repository; failing that the
+    feed's address does; failing that the version the entry inherits from.
+    An inherited link is the last resort so an older tag's address is never
+    preferred over the release's own.
+    """
+
+    derived = _guess_source_code_url_from_release_link(
+        link
+    ) or _guess_source_code_url_from_release_link(project.release_rss_feed_url)
+    if derived:
+        return derived
+    if inheritance_source is not None:
+        return (inheritance_source.link_to_source_code or "").strip() or None
     return None
 
 
@@ -696,17 +752,9 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
 
                     release_dt = _to_naive_utc(entry.get("published_dt"))
 
-                    # Prefer deriving the repository from the current release link.
-                    # Falling back to the inheritance source is fine, but we must avoid
-                    # copying an older tag/release URL onto a newer version.
-                    link_to_source = _guess_source_code_url_from_release_link(link)
-                    if not link_to_source and (
-                        inheritance_source
-                        and str(inheritance_source.link_to_source_code or "").strip()
-                    ):
-                        link_to_source = str(
-                            inheritance_source.link_to_source_code
-                        ).strip()
+                    link_to_source = _source_code_url_for_entry(
+                        project, link, inheritance_source
+                    )
 
                     notes = None
                     if link:
@@ -941,10 +989,6 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             db.commit()
             return {"enabled": True, "checked": 1, "created": 0, "reason": "empty"}
 
-        one_layer = 10**9  # a discovery run must stay far away from this bound
-        if len(entries) >= one_layer:
-            entries = entries[:one_layer]
-
         # Oldest first so the inheritance chain builds naturally; the newest
         # entry ends as the versions list's last row and becomes is_latest.
         entries = list(
@@ -972,22 +1016,24 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
                 ignored += 1
                 continue
 
-            exists = (
-                db.query(ProjectVersion.id)
+            link_to_source = _source_code_url_for_entry(
+                project, link, inheritance_source
+            )
+
+            existing = (
+                db.query(ProjectVersion)
                 .filter(ProjectVersion.project_id == project.id)
                 .filter(ProjectVersion.version == version_name)
                 .one_or_none()
             )
-            if exists:
+            if existing is not None:
+                # A release imported before its repository could be derived
+                # (its host was not yet allowed, say) gains its source here,
+                # so running discovery again repairs it.
+                if link_to_source and not (existing.link_to_source_code or "").strip():
+                    existing.link_to_source_code = link_to_source
                 skipped += 1
                 continue
-
-            link_to_source = _guess_source_code_url_from_release_link(link)
-            if not link_to_source and (
-                inheritance_source
-                and str(inheritance_source.link_to_source_code or "").strip()
-            ):
-                link_to_source = str(inheritance_source.link_to_source_code).strip()
 
             notes = None
             if link:
@@ -1063,6 +1109,13 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
         elif newest_version is not None:
             latest = _best_automatic_latest_version_db(db, project.id) or newest_version
             _promote_latest(db, project.id, latest.id)
+        else:
+            # Nothing new, but a release that has just gained its source link
+            # may be the Latest one, still waiting for its first scan.
+            scanned_version_id = queue_latest_version_scan(db, project.id)
+            if scanned_version_id is not None:
+                db.commit()
+                launch_dependency_scan(scanned_version_id)
 
         return {
             "enabled": True,

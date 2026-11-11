@@ -509,16 +509,6 @@ def dependencies_bipartite(
 
     _require_admin(db, user)
 
-    base = db.query(
-        ProjectVersionDependency.project_version_id,
-        ProjectVersionDependency.dependency_version_id,
-    )
-    if latest_only:
-        base = base.join(
-            ProjectVersion,
-            ProjectVersion.id == ProjectVersionDependency.project_version_id,
-        ).filter(ProjectVersion.is_latest.is_(True))
-
     # Top dependencies by usage across (distinct) project versions.
     usage_rows = (
         db.query(
@@ -1696,7 +1686,9 @@ def global_dashboard(
             .all()
         )
         for severity, count in rows:
-            severities[(severity or "unknown").lower()] = int(count or 0)
+            # Scanners differ in letter case; one severity is one tally.
+            key = (severity or "unknown").lower()
+            severities[key] = severities.get(key, 0) + int(count)
         return {
             "id": project.id,
             "name": project.display_name or project.machine_name,

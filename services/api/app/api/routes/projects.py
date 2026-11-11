@@ -77,7 +77,6 @@ from app.services.entity_changelog import (
 from app.services.mailer import send_manifest_shared_email
 from app.services.notification_recipients import (
     notification_email_for_user,
-    notification_emails_for_users,
 )
 from app.services.project_notifications import notify_subscribers_published
 from app.services.scan_queue import (
@@ -121,33 +120,6 @@ def _is_subscribed(db: Session, *, user_id: int, project_id: int) -> bool:
         .one_or_none()
         is not None
     )
-
-
-def _owner_emails(db: Session, *, project: Project) -> list[str]:
-    users: dict[int, User] = {}
-
-    if project.created_by_user_id:
-        owner = (
-            db.query(User)
-            .filter(User.id == project.created_by_user_id)
-            .filter(User.is_active.is_(True))
-            .one_or_none()
-        )
-        if owner:
-            users[owner.id] = owner
-
-    owner_group_ids = _project_owner_group_ids(db, project.id)
-    if owner_group_ids:
-        group_users = (
-            db.query(User)
-            .join(UserGroup, UserGroup.user_id == User.id)
-            .filter(UserGroup.group_id.in_(sorted(owner_group_ids)))
-            .filter(User.is_active.is_(True))
-            .all()
-        )
-        users.update({user.id: user for user in group_users})
-
-    return notification_emails_for_users(db, users=list(users.values()))
 
 
 def _normalize_csv_ints(value: str | None) -> list[int]:
@@ -538,15 +510,8 @@ def _ensure_framework(db: Session, framework_id: int | None) -> Framework:
             raise HTTPException(status_code=404, detail="Framework not found")
         return fw
 
-    # Default: UWRA (or first available).
-    fw = db.query(Framework).filter(Framework.machine_name == "uwra").one_or_none()
-    if fw:
-        return fw
-
-    fw = db.query(Framework).order_by(Framework.id.asc()).first()
-    if not fw:
-        raise HTTPException(status_code=500, detail="No frameworks are configured")
-    return fw
+    # Default: UWRA, which the seeding above guarantees.
+    return db.query(Framework).filter(Framework.machine_name == "uwra").one()
 
 
 def _fetch_capabilities(db: Session, framework_id: int) -> list[FrameworkNode]:
@@ -3765,16 +3730,11 @@ def clone_manifest(
     src = _ensure_manifest_access(db, user, manifest_id)
 
     # Clone to private manifest owned by the current user.
-    name_override = (payload.name if payload else None) if payload else None
+    # A blank name counts as none given, so the copy is named after its source.
+    name_override = ((payload.name or "").strip() or None) if payload else None
     desc_override = payload.description if payload else None
 
-    base_name = (name_override or src.name or f"manifest-{src.id}").strip()
-    if not base_name:
-        base_name = f"manifest-{src.id}"
-
-    new_name = base_name
-    if not name_override:
-        new_name = f"{base_name} (copy)"
+    new_name = name_override or f"{src.name} (copy)"
     new_name = new_name[:200]
 
     new_manifest = Manifest(

@@ -30,7 +30,6 @@ from app.db.session import Base, engine
 from sqlalchemy import inspect, text
 
 _API_ROOT = Path(__file__).resolve().parents[1]
-_IS_POSTGRES = engine.url.get_backend_name() == "postgresql"
 
 
 def _alembic_config() -> Config:
@@ -435,11 +434,7 @@ def _chain_schema_matches_models() -> None:
 
     with engine.begin() as conn:
         present = set(inspect(conn).get_table_names()) - {"alembic_version"}
-        expected = {
-            name
-            for name in Base.metadata.tables
-            if not name.startswith("sqlite_") and not name.startswith("pg_")
-        }
+        expected = {name for name in Base.metadata.tables if not name.startswith("pg_")}
         missing = expected - present
         extra = present - expected
         assert not missing, f"the chain does not build {sorted(missing)}"
@@ -468,11 +463,7 @@ def test_upgrade_chain_has_no_redefinitions() -> None:
 
 def test_migration_chain_rebuilds_the_declared_schema() -> None:
     """The chain, replayed by alembic itself, ends in the schema the models
-    declare (PostgreSQL test database); elsewhere the source-level replay is
-    the dialect-independent equivalent."""
-    if not _IS_POSTGRES:
-        assert _replay_upgrades(_ordered_versions()) == []
-        return
+    declare."""
     try:
         _upgrade_to_head()
         _chain_schema_matches_models()
@@ -510,8 +501,6 @@ def test_page_moves_rewrite_saved_start_pages_and_shortcuts() -> None:
     """0033 sends stored links to the pages that now own them: builder
     filters to Manifests, the old dashboard to the entry page, and project
     edits to the editor; the bare entry page stays the entry page."""
-    if not _IS_POSTGRES:
-        return
     cfg = _alembic_config()
     moves = {
         "/index.html": "/index.html",
@@ -590,8 +579,6 @@ def test_keen_account_model_retires_pending_sign_up_and_old_addresses() -> None:
     """0038 deactivates every account that was never approved, directly or
     through a pending group, and keeps only verified addresses as SSO
     linking addresses."""
-    if not _IS_POSTGRES:
-        return
     cfg = _alembic_config()
     try:
         with engine.begin() as conn:
