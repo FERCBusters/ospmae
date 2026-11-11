@@ -15,14 +15,7 @@ const el = {
 };
 
 function formatDateTime(iso) {
-  if (!iso) return "—";
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return String(iso);
-    return d.toISOString().replace("T", " ").slice(0, 16);
-  } catch {
-    return String(iso);
-  }
+  return window.OSPMAE.formatTimestamp(iso);
 }
 
 function render(items) {

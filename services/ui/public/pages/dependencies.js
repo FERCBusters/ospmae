@@ -269,7 +269,9 @@
       if (dv.normalized_name && dv.normalized_name !== dv.name)
         parts.push(`normalized: ${dv.normalized_name}`);
       if (dv.created_at)
-        parts.push(`first seen: ${new Date(dv.created_at).toLocaleString()}`);
+        parts.push(
+          `first seen: ${window.OSPMAE.formatTimestamp(dv.created_at)}`,
+        );
       el.depMeta.textContent = parts.join(" • ");
     }
 

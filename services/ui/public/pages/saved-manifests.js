@@ -326,7 +326,13 @@
                 const latest = c.latest_version || "—";
                 return `
                   <tr>
-                    <td><a href="/project.html?id=${c.project_id}">${escapeHtml(c.display_name || c.machine_name)}</a></td>
+                    <td>${
+                      // A snapshot outlives its projects: one deleted since
+                      // has no page to link to.
+                      c.project_id
+                        ? `<a href="/project.html?id=${encodeURIComponent(String(c.project_id))}">${escapeHtml(c.display_name || c.machine_name)}</a>`
+                        : escapeHtml(c.display_name || c.machine_name)
+                    }</td>
                     <td>${escapeHtml(c.organisation || "—")}</td>
                     <td>${escapeHtml(c.project_type || "—")}</td>
                     <td>${escapeHtml(latest)}</td>
@@ -339,22 +345,40 @@
       `;
     }
 
-    // Buttons
+    // Buttons. Each action reports its own failure: a refused export,
+    // copy or deletion would otherwise end without a word.
+    const run = (action, fallback) => () =>
+      action().catch((err) => OSPMAE.toast(err.message || fallback, "error"));
     if (el.exportJsonBtn)
-      el.exportJsonBtn.onclick = () => exportManifest("json");
+      el.exportJsonBtn.onclick = run(
+        () => exportManifest("json"),
+        "Failed to export manifest",
+      );
     if (el.exportXlsxBtn)
-      el.exportXlsxBtn.onclick = () => exportManifest("xlsx");
+      el.exportXlsxBtn.onclick = run(
+        () => exportManifest("xlsx"),
+        "Failed to export manifest",
+      );
     if (el.exportMdBtn)
-      el.exportMdBtn.onclick = () => exportManifest("markdown");
+      el.exportMdBtn.onclick = run(
+        () => exportManifest("markdown"),
+        "Failed to export manifest",
+      );
 
     if (el.cloneManifestBtn) {
       el.cloneManifestBtn.style.display = m.can_clone ? "" : "none";
-      el.cloneManifestBtn.onclick = () => cloneCurrentManifest();
+      el.cloneManifestBtn.onclick = run(
+        cloneCurrentManifest,
+        "Failed to clone manifest",
+      );
     }
 
     if (el.deleteManifestBtn) {
       el.deleteManifestBtn.style.display = m.can_delete ? "" : "none";
-      el.deleteManifestBtn.onclick = () => deleteManifest();
+      el.deleteManifestBtn.onclick = run(
+        deleteManifest,
+        "Failed to delete manifest",
+      );
     }
 
     renderSharingControls();

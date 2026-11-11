@@ -11,7 +11,7 @@ const publicRoot = new URL("../../public/", import.meta.url);
 export async function loadPage(
   htmlPath,
   scriptPath,
-  { url, ospmae = {}, setup, withApp = false, api } = {},
+  { url, ospmae = {}, setup, withApp = false, api, libraries = [] } = {},
 ) {
   const html = await readFile(new URL(htmlPath, publicRoot), "utf8");
   const errors = [];
@@ -30,6 +30,13 @@ export async function loadPage(
     const source = await readFile(fileUrl, "utf8");
     new vm.Script(source, { filename: fileUrl.href }).runInContext(context);
   }
+  // Third-party libraries a page loads from /vendor (d3, say), run from the
+  // test dependencies before any first-party script.
+  for (const library of libraries) {
+    new vm.Script(await readFile(library, "utf8"), {
+      filename: library.href,
+    }).runInContext(context);
+  }
   if (withApp) {
     // The real app.js, with only the network replaced: `api(method, path,
     // body)` answers each request as [status, body].
@@ -42,13 +49,24 @@ export async function loadPage(
         200,
         {},
       ];
-      const text = payload === undefined ? "" : JSON.stringify(payload);
+      // A string answer is a download body; anything else is JSON.
+      const raw = typeof payload === "string";
+      const text =
+        payload === undefined ? "" : raw ? payload : JSON.stringify(payload);
       const response = {
         ok: status >= 200 && status < 300,
         status,
-        headers: { get: () => "application/json" },
+        headers: {
+          get: (name) =>
+            String(name).toLowerCase() === "content-type"
+              ? raw
+                ? "application/octet-stream"
+                : "application/json"
+              : null,
+        },
         text: async () => text,
         json: async () => JSON.parse(text),
+        blob: async () => new window.Blob([text]),
         clone: () => response,
       };
       return response;
@@ -63,7 +81,16 @@ export async function loadPage(
     };
   }
   setup?.(window);
-  await run(scriptPath);
+  // A page may load several first-party scripts. A browser runs deferred
+  // scripts one after another with no network answer arriving in between, so
+  // the sources are read first and then run back to back.
+  const pageScripts = [];
+  for (const path of [scriptPath].flat()) {
+    const fileUrl = new URL(path, publicRoot);
+    pageScripts.push([fileUrl, await readFile(fileUrl, "utf8")]);
+  }
+  for (const [fileUrl, source] of pageScripts)
+    new vm.Script(source, { filename: fileUrl.href }).runInContext(context);
   if (withApp)
     window.document.dispatchEvent(new window.Event("DOMContentLoaded"));
   return {

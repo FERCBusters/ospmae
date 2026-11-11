@@ -1407,9 +1407,7 @@
           ? `<div class="table-responsive mt-2"><table class="table table-sm align-middle mb-0 changelog-diff-table"><thead><tr><th style="width:180px;">Field</th><th>Before</th><th>After</th></tr></thead><tbody>${changes.map((c) => `<tr><td class="fw-semibold">${escapeHtml(c?.label || c?.field || "")}</td><td>${_changelogValueHtml(c?.before)}</td><td>${_changelogValueHtml(c?.after)}</td></tr>`).join("")}</tbody></table></div>`
           : "";
         const actor = item.changed_by_username || "system";
-        const when = item.changed_at
-          ? new Date(item.changed_at).toLocaleString()
-          : "—";
+        const when = formatTimestamp(item.changed_at);
         const title =
           item.entity_title ||
           item.entity_ref ||
@@ -1466,6 +1464,29 @@
   window.parseError = parseError;
   window.apiRequest = apiRequest;
 
+  // The API sends timestamps in UTC without an offset ("2026-03-04T10:00:00").
+  // A browser reads such text as local time, which shows every time wrong by
+  // the reader's UTC offset; these read it as the UTC instant it is.
+  function parseTimestamp(value) {
+    if (!value) return null;
+    let text = String(value).trim();
+    if (
+      /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(text) &&
+      !/(Z|[+-]\d{2}:?\d{2})$/i.test(text)
+    ) {
+      text = `${text.replace(" ", "T")}Z`;
+    }
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  // A timestamp in the reader's own time zone and format.
+  function formatTimestamp(value, empty = "—") {
+    if (!value) return empty;
+    const parsed = parseTimestamp(value);
+    return parsed ? parsed.toLocaleString() : String(value);
+  }
+
   window.OSPMAE = {
     state,
     api: apiRequest,
@@ -1480,6 +1501,8 @@
     startNotifications,
     stopNotifications,
     toast,
+    parseTimestamp,
+    formatTimestamp,
     escapeHtml,
     csvCell,
     isAdmin,

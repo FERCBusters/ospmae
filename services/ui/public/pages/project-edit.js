@@ -410,14 +410,11 @@
       .filter(Boolean);
   }
 
+  // A release date is a calendar date: the one written in the API's text,
+  // whatever time zone the page is read in.
   function fmtDateInput(value) {
-    if (!value) return "";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return "";
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
+    const written = /^\d{4}-\d{2}-\d{2}/.exec(String(value || ""));
+    return written ? written[0] : "";
   }
 
   function safeJsonParse(text) {

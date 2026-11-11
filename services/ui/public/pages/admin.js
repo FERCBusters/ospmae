@@ -189,10 +189,7 @@
   }
 
   function fmtDate(value) {
-    if (!value) return "—";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return String(value);
-    return d.toLocaleString();
+    return window.OSPMAE.formatTimestamp(value);
   }
 
   const ADMIN_TAB_HASH_TO_ID = Object.freeze({

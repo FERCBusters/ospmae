@@ -620,13 +620,14 @@ async function loadProjectChangelog() {
 
 function formatDate(iso) {
   if (!iso) return "—";
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return String(iso);
-    return d.toISOString().slice(0, 10);
-  } catch {
-    return String(iso);
-  }
+  // The API sends release dates as UTC timestamps without an offset. The
+  // calendar date is the one written in the text: reading it as local time
+  // and converting back shows the day before to anyone east of UTC.
+  const written = /^\d{4}-\d{2}-\d{2}/.exec(String(iso));
+  if (written) return written[0];
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toISOString().slice(0, 10);
 }
 
 function listCapabilityPathsForVersion(versionId) {
@@ -634,24 +635,16 @@ function listCapabilityPathsForVersion(versionId) {
   const version = state.project.versions.find((v) => v.id === versionId);
   if (!version) return [];
 
-  // Preferred: per-version capability paths (relational payload).
-  const versionPaths = Array.isArray(version.capability_paths)
-    ? version.capability_paths.filter(Boolean)
-    : [];
-  if (versionPaths.length) return versionPaths;
+  // The API lists each version's own capability paths; an empty list means
+  // the version maps none, and is never filled in from another version.
+  if (Array.isArray(version.capability_paths))
+    return version.capability_paths.filter(Boolean);
 
-  const paths = Array.isArray(state.project.capability_paths)
+  // A payload without per-version paths only describes the latest version.
+  if (versionId !== state.project.latest_version?.id) return [];
+  return Array.isArray(state.project.capability_paths)
     ? state.project.capability_paths.filter(Boolean)
     : [];
-
-  if (!paths.length) return [];
-
-  if (versionId === state.project.latest_version?.id) {
-    return paths;
-  }
-
-  // For non-latest version we do not always have paths in payload; fallback to latest paths.
-  return paths;
 }
 
 function slugifyCapabilityPart(value) {
@@ -2459,13 +2452,7 @@ function canAskQuestions() {
 }
 
 function fmtDateTime(iso) {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString();
-  } catch (_) {
-    return iso;
-  }
+  return window.OSPMAE.formatTimestamp(iso, "");
 }
 
 async function loadQuestionsIfNeeded() {

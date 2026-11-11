@@ -919,9 +919,7 @@
     el.myQuestionsTableWrap.hidden = items.length === 0;
     el.myQuestionsBody.innerHTML = items
       .map((thread) => {
-        const updated = thread?.updated_at
-          ? new Date(thread.updated_at).toLocaleString()
-          : "—";
+        const updated = window.OSPMAE.formatTimestamp(thread?.updated_at);
         const project =
           thread?.project_display_name ||
           `Project #${thread?.project_id || ""}`;
