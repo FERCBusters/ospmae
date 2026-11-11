@@ -14,6 +14,7 @@ from app.api.payloads import (
     UserShortcutCreatePayload,
 )
 from app.core.config import settings
+from app.core.features import public_dict
 from app.db.models import (
     EmailVerificationToken,
     Group,
@@ -458,6 +459,8 @@ def me(request: Request, db: Session = Depends(get_db)):
         "available_themes": [{"id": t[0], "name": t[1]} for t in ALLOWED_THEMES],
         "logout_url": logout_url,
         "logout_redirect": "/login.html",
+        # The navbar renders only the links of features that are on.
+        "features": public_dict(db),
     }
 
 

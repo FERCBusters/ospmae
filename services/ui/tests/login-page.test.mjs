@@ -63,6 +63,18 @@ test("the page starts with no message and asks for the sign-in methods", async (
   assert.ok(document.getElementById("forgotWrap").classList.contains("d-none"));
 });
 
+test("the fields open, and take focus, once the page can submit them", async (t) => {
+  const { document } = await signIn(t);
+  assert.equal(document.getElementById("loginFields").disabled, false);
+  assert.equal(document.getElementById("loginLoading").hidden, true);
+  assert.equal(document.activeElement?.id, "username");
+  // A native submission could only post, never put a password in an address.
+  assert.equal(
+    document.getElementById("loginForm").getAttribute("method"),
+    "post",
+  );
+});
+
 test("providers become buttons whose labels are text, never markup", async (t) => {
   const { document } = await signIn(t, {
     methods: {

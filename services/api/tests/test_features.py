@@ -269,3 +269,12 @@ def test_beat_keeps_schedules_the_deployment_allows():
 def test_unknown_feature_names_are_programming_errors():
     with pytest.raises(ValueError):
         is_enabled("nonsense")
+
+
+def test_the_navbar_learns_the_features_with_the_account(client):
+    c, _ = auth_client("FeatNavbar", role="admin")
+    assert c.get("/v1/me").json()["features"] == {key: True for key in FEATURE_KEYS}
+    assert _admin_put(c, 0, {"manifests": False}).status_code == 200
+    features = c.get("/v1/me").json()["features"]
+    assert features["manifests"] is False
+    assert features["frameworks"] is True

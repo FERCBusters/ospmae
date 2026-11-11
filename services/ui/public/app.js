@@ -44,11 +44,33 @@
     for (const [feature, pages] of Object.entries(FEATURE_PAGES)) {
       const on = featureOn(feature);
       for (const href of pages) {
-        document.querySelectorAll(`a[href="${href}"]`).forEach((el) => {
-          el.style.display = on ? el.dataset.featureBaseDisplay || "" : "none";
-        });
+        // The navbar adds the selected framework to its links' addresses.
+        document
+          .querySelectorAll(
+            `a[href="${href}"], a[href^="${href}?"], a[href^="${href}#"]`,
+          )
+          .forEach((el) => {
+            el.style.display = on
+              ? el.dataset.featureBaseDisplay || ""
+              : "none";
+          });
       }
     }
+    // The navbar's framework picker belongs to the frameworks feature.
+    document.querySelectorAll(".mosp-nav-framework").forEach((el) => {
+      el.hidden = !featureOn("frameworks");
+    });
+  }
+
+  // The shared navbar renders on its own schedule, and again when it is
+  // redrawn, so its links are hidden whenever it changes, not only once.
+  function watchNavbarForFeatures() {
+    const navbar = document.getElementById("navbar");
+    if (!navbar || typeof MutationObserver === "undefined") return;
+    new MutationObserver(() => applyFeatureVisibility()).observe(navbar, {
+      childList: true,
+      subtree: true,
+    });
   }
 
   // The Features administration tab applies a saved change to this page.
@@ -1261,6 +1283,7 @@
         updateWhoAmI();
         applyNavPermissions();
         applyFeatureVisibility();
+        watchNavbarForFeatures();
         applyBrandHomeLink();
 
         initShortcutsNav();

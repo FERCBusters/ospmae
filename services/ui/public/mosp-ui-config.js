@@ -21,8 +21,17 @@
       role === "product_owner" ||
       role === "architect";
 
+    // Installation features from /v1/me decide which links the navbar
+    // renders; an unknown or missing switch counts as on.
+    const features = me?.features || {};
+    const featureOn = (key) => features[key] !== false;
+
     return {
       ...me,
+      feature_frameworks: featureOn("frameworks"),
+      feature_manifests: featureOn("manifests"),
+      feature_dependency_scans: featureOn("dependency_scans"),
+      feature_comparisons: featureOn("comparisons"),
       user: String(me?.user || me?.username || "").trim(),
       role,
       is_pending: isPending,
@@ -67,24 +76,28 @@
         label: "Manifests",
         href: "/manifests.html",
         requireAny: ["can_view_catalogue"],
+        requireAll: ["feature_manifests"],
       },
       {
         key: "dependencies",
         label: "Dependencies",
         href: "/dependencies.html",
         requireAny: ["can_view_catalogue"],
+        requireAll: ["feature_dependency_scans"],
       },
       {
         key: "comparisons",
         label: "Project Comparisons",
         href: "/comparisons.html",
         requireAny: ["can_view_catalogue"],
+        requireAll: ["feature_comparisons"],
       },
       {
         key: "frameworks",
         label: "Frameworks",
         href: "/framework-manage.html",
         requireAny: ["is_framework_admin", "is_admin"],
+        requireAll: ["feature_frameworks"],
       },
       {
         key: "admin",

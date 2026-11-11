@@ -59,5 +59,15 @@
     }
   });
 
+  // Fields start disabled, so nothing can be submitted natively (which would
+  // put what was typed in the page's own request) until this handler exists.
+  // An autofocus attribute is lost while they are disabled, so focus the
+  // first field here and typing can start straight away; as on KEEN's page.
+  if (form) {
+    document.getElementById("formFields").disabled = false;
+    document.getElementById("formLoading").hidden = true;
+    document.getElementById("identifier")?.focus();
+  }
+
   ensureEnabled();
 })();
