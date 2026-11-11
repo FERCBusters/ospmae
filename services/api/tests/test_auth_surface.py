@@ -111,6 +111,8 @@ def test_auth_methods_lists_enabled_providers(client, monkeypatch):
         settings.oidc_sso_enabled = saved["sso"]
 
 
-def test_password_reset_advertised_only_when_configurable(client):
+def test_no_password_reset_is_advertised(client):
+    # As in KEEN, an administrator resets passwords: sign-in offers no reset.
     r = client.get("/v1/auth/methods")
-    assert r.json()["password_reset_enabled"] is False
+    assert "password_reset_enabled" not in r.json()
+    assert "password_reset" not in r.json()

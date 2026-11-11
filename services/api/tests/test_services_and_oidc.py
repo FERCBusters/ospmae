@@ -1,4 +1,4 @@
-"""Entity changelog, versioning, recipients and the OIDC callback path."""
+"""Entity changelog, versioning and the OIDC callback path."""
 
 from __future__ import annotations
 
@@ -54,30 +54,8 @@ def test_version_serialisation():
     assert is_semantically_newer("1.2.4", "1.2.3") is True
 
 
-def test_notification_recipients_resolution(client, db):
-    from app.db.models import UserEmail
-    from app.security.auth import create_user
-    from app.services.notification_recipients import notification_email_for_user
-
-    s = db
-    u = create_user(s, username="RecipU", password="Password1!", role="viewer")
-    s.add(
-        UserEmail(
-            user_id=int(u.id),
-            email="recipu@example.com",
-            email_lower="recipu@example.com",
-            source="user",
-            is_primary=True,
-            is_verified=True,
-        )
-    )
-    s.commit()
-    resolved = notification_email_for_user(s, user=u)
-    assert resolved == "recipu@example.com"
-
-
 def test_oidc_callback_full_path_with_fake_provider(client, monkeypatch):
-    """State consumption, claims handling and account issuance, end to end."""
+    """State consumption and claims handling, end to end."""
     import app.security.oidc as oidc_mod
 
     saved = dict(
@@ -89,7 +67,6 @@ def test_oidc_callback_full_path_with_fake_provider(client, monkeypatch):
         token=settings.oidc_token_endpoint,
         redirect=settings.oidc_redirect_uri,
         jwks=settings.oidc_jwks_uri,
-        provision=settings.oidc_auto_provision,
     )
     settings.oidc_sso_enabled = True
     settings.oidc_client_id = "client"
@@ -99,7 +76,6 @@ def test_oidc_callback_full_path_with_fake_provider(client, monkeypatch):
     settings.oidc_redirect_uri = "https://ospmae.example.com/v1/auth/sso/oidc/callback"
     settings.oidc_jwks_uri = "https://idp.example.com/.well-known/jwks.json"
     settings.oidc_issuer = "https://idp.example.com"
-    settings.oidc_auto_provision = True
 
     async def fake_fetch_token(self, token_endpoint, **kw):
         return {"access_token": "at", "id_token": "raw.jwt.value"}
@@ -136,7 +112,6 @@ def test_oidc_callback_full_path_with_fake_provider(client, monkeypatch):
     settings.oidc_redirect_uri = saved["redirect"]
     settings.oidc_jwks_uri = saved["jwks"]
     settings.oidc_issuer = saved["issuer"]
-    settings.oidc_auto_provision = saved["provision"]
 
 
 def test_oidc_authorize_redirect_builds_url(client, monkeypatch):

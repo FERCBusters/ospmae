@@ -6,8 +6,6 @@
     // OSPMAE returns: { username, role, effective_role, ... }
     const role =
       String(me?.effective_role || me?.role || "").toLowerCase() || "viewer";
-    const isPending = role === "pending";
-    const canViewCatalogue = !isPending;
     const isAdmin = role === "admin";
     const isFrameworkAdmin = isAdmin || role === "framework_admin";
     const canManageProjects = isAdmin || role === "maintainer";
@@ -35,8 +33,7 @@
       feature_questions: featureOn("questions"),
       user: String(me?.user || me?.username || "").trim(),
       role,
-      is_pending: isPending,
-      can_view_catalogue: canViewCatalogue,
+      can_view_catalogue: true,
       is_admin: isAdmin,
       is_framework_admin: isFrameworkAdmin,
       can_manage_projects: canManageProjects,

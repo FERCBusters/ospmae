@@ -38,12 +38,14 @@ def test_last_admin_cannot_be_demoted_or_deactivated(client):
         headers={"X-CSRF-Token": csrf or ""},
     )
     assert r.status_code == 409, "the last active admin cannot be demoted"
+    # As in KEEN, no administrator deactivates their own account.
     r = c.patch(
         f"/v1/admin/users/{int(me.id)}",
         json={"is_active": False},
         headers={"X-CSRF-Token": csrf or ""},
     )
-    assert r.status_code == 409
+    assert r.status_code == 400
+    assert r.json()["detail"] == "You cannot deactivate your own account"
     r = c.delete(
         f"/v1/admin/users/{int(me.id)}",
         headers={"X-CSRF-Token": csrf or ""},

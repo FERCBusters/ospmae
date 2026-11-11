@@ -342,70 +342,8 @@ def test_dependency_detail_resolves_every_reference_shape(client, db):
     assert c.get("/v1/dependencies/not-a-reference").status_code == 404
 
 
-def test_verification_queue_reports_why_it_refused(client, db):
-    from app.db.models import UserEmail
-
-    saved = (
-        settings.public_base_url,
-        settings.smtp_host,
-        settings.smtp_from_email,
-        settings.mfa_encryption_key,
-    )
-    settings.mfa_encryption_key = "kw0nbN6bJuWBIBG2F91GoVvw1bLXCT7Fz8i9CSaj-e0="
-    settings.public_base_url = ""
-    settings.smtp_host = "smtp.example.com"
-    settings.smtp_from_email = "noreply@example.com"
-    try:
-        c, user = auth_client(username="verify-user", password=PASSWORD, role="viewer")
-        with SessionLocal() as s:
-            s.add(
-                UserEmail(
-                    user_id=user.id,
-                    email="verify-user@example.com",
-                    email_lower="verify-user@example.com",
-                    source="user",
-                    is_primary=True,
-                    is_verified=False,
-                )
-            )
-            s.commit()
-        me = c.get("/v1/me/emails").json()
-        assert me and me["items"] and me["items"][0]["id"]
-        csrf = _csrf(c)
-        response = c.post(
-            f"/v1/me/emails/{me['items'][0]['id']}/verify-request", headers=csrf
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["queued"] is False
-        assert "PUBLIC_BASE_URL" in body["reason"]
-
-        # Once configured, the verification e-mail lands in the shared
-        # outbox (the worker sends it), observable under /v1/me/notifications.
-        settings.public_base_url = "https://testserver"
-        response = c.post(
-            f"/v1/me/emails/{me['items'][0]['id']}/verify-request", headers=csrf
-        )
-        assert response.status_code == 200, response.text
-        with SessionLocal() as s:
-            assert (
-                s.query(Notification)
-                .filter(Notification.user_id == user.id)
-                .filter(Notification.subject.ilike("%Verify%"))
-                .count()
-                >= 1
-            )
-    finally:
-        (
-            settings.public_base_url,
-            settings.smtp_host,
-            settings.smtp_from_email,
-            settings.mfa_encryption_key,
-        ) = saved
-
-
 def test_factor_change_mails_the_account_owner(client, db):
-    from app.db.models import User, UserEmail
+    from app.db.models import User
 
     def _start_manage():
         return c.post(
@@ -447,16 +385,7 @@ def test_factor_change_mails_the_account_owner(client, db):
         )
         s0.commit()
     with SessionLocal() as s:
-        s.add(
-            UserEmail(
-                user_id=user.id,
-                email="alert-owner@example.com",
-                email_lower="alert-owner@example.com",
-                source="user",
-                is_primary=True,
-                is_verified=True,
-            )
-        )
+        s.get(User, user.id).email = "alert-owner@example.com"
         s.commit()
 
     with SessionLocal() as s0:

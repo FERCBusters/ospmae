@@ -30,8 +30,6 @@ _CREDENTIAL_FORMS = frozenset(
     {
         "/v1/auth/login",
         "/v1/auth/change-password",
-        "/v1/auth/request-password-reset",
-        "/v1/auth/reset-password",
     }
 )
 _ENCODED_SEPARATOR = re.compile(rb"%(?:2f|5c)", re.IGNORECASE)

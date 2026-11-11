@@ -18,12 +18,14 @@ from app.db.models import User, UserLoginIP
 from app.services.mailer import queue_email, smtp_configured
 from app.services.notification_recipients import notification_email_for_user
 
-# KEEN's events, worded for OSPMAE. KEEN's MCP connection and administrator
-# password reset have no OSPMAE counterpart; OSPMAE adds the change of the
-# address that receives these notices, which its users can change themselves.
+# KEEN's events and wording, naming OSPMAE. KEEN's MCP connection has no
+# OSPMAE counterpart.
 TITLES = {
+    "sso-email-added": "An SSO email address was verified for your OSPMAE account",
+    "sso-email-removed": "An SSO email address was removed from your OSPMAE account",
     "login-ip": "Sign-in from an unfamiliar IP address",
     "password-changed": "Your OSPMAE password was changed",
+    "password-reset": "Your OSPMAE password was reset by an administrator",
     "factor-enrolled": "An authenticator was added to your OSPMAE account",
     "factor-removed": "An authenticator was removed from your OSPMAE account",
     "recovery-codes-regenerated": "Your OSPMAE recovery codes were replaced",
@@ -32,17 +34,12 @@ TITLES = {
     "verification-ended": (
         "OSPMAE ended a two-factor verification after repeated incorrect codes"
     ),
-    "email-verified": "An email address was verified for your OSPMAE account",
-    "email-removed": "An email address was removed from your OSPMAE account",
-    "notice-address-changed": (
-        "Notices for your OSPMAE account now go to a different email address"
-    ),
 }
 
 UNFAMILIAR_ADDRESS = TITLES["login-ip"]
 
 
-def _event_detail(event: str, *, email: str | None) -> str:
+def _event_detail(event: str) -> str:
     """The paragraph a notice adds about its own event, if any."""
     from app.security.mfa import CODE_ATTEMPTS
 
@@ -65,45 +62,15 @@ def _event_detail(event: str, *, email: str | None) -> str:
             "Each recovery code works once. Replace your recovery codes under "
             "Account when few remain."
         )
-    if event == "operator-reset":
-        return (
-            "An operator removed this account's authenticators and recovery "
-            "codes, and its signed-in sessions ended. Enrol an authenticator "
-            "again under Account."
-        )
-    if event == "email-verified":
-        return (
-            f"Address: {email}\n\nA verified address can link a single sign-on "
-            "identity that reports it to this account."
-        )
-    if event == "email-removed":
-        return f"Address: {email}"
-    if event == "notice-address-changed":
-        return (
-            f"New address: {email}\n\nThis notice goes to the address that "
-            "received this account's notices until now."
-        )
     return ""
 
 
-def enqueue(
-    db: Session,
-    user: User,
-    event: str,
-    *,
-    ip: str | None,
-    email: str | None = None,
-    recipient: str | None = None,
-) -> bool:
-    """Queue a security notice in the caller's transaction.
-
-    ``email`` names the address an address event concerns; ``recipient``
-    overrides the account's notification address, for a notice that must
-    reach the address being replaced. Returns True when a notice was queued.
-    """
+def enqueue(db: Session, user: User, event: str, *, ip: str | None) -> bool:
+    """Queue a security notice to the account's e-mail, in the caller's
+    transaction. Returns True when a notice was queued."""
 
     title = TITLES[event]
-    to = (recipient or notification_email_for_user(db, user=user) or "").strip()
+    to = notification_email_for_user(db, user=user)
     if not smtp_configured() or not to:
         return False
     from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
@@ -116,7 +83,7 @@ def enqueue(
         f"IP address: {ip or 'Unavailable (operator action or unknown address)'}",
         "",
     ]
-    detail = _event_detail(event, email=email)
+    detail = _event_detail(event)
     if detail:
         lines += [detail, ""]
     lines.append(

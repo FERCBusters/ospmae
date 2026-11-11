@@ -1,7 +1,7 @@
 """Housekeeping: expired/done rows must not accumulate without bound.
 
-Expired login states, sessions, second-factor challenges, reset and
-email-verification tokens, recognised browsers, forgotten sign-in throttles,
+Expired login states, sessions, second-factor challenges, SSO email
+address proofs, recognised browsers, forgotten sign-in throttles,
 stale rate-limit ledger rows and audit rows past their retention are swept on
 a beat schedule so an attacker's floods or normal traffic cannot grow those
 tables forever.
@@ -17,13 +17,12 @@ from app.celery_app import celery_app
 from app.core.config import settings
 from app.db.models import (
     AuditLog,
-    EmailVerificationToken,
     LoginDevice,
     LoginThrottle,
     MfaChallenge,
     OidcLoginState,
-    PasswordResetToken,
     RateLimitEntry,
+    SsoEmailChallenge,
 )
 from app.db.models import Session as SessionRow
 from app.db.session import SessionLocal
@@ -42,14 +41,9 @@ def sweep_expired_rows() -> dict:
             .filter(OidcLoginState.expires_at <= now)
             .delete(synchronize_session=False)
         )
-        resets_watched = (
-            db.query(PasswordResetToken)
-            .filter(PasswordResetToken.expires_at <= now)
-            .delete(synchronize_session=False)
-        )
         verifications = (
-            db.query(EmailVerificationToken)
-            .filter(EmailVerificationToken.expires_at <= now)
+            db.query(SsoEmailChallenge)
+            .filter(SsoEmailChallenge.expires_at <= now)
             .delete(synchronize_session=False)
         )
         ledger = (
@@ -91,8 +85,7 @@ def sweep_expired_rows() -> dict:
         return {
             "ok": True,
             "login_states": states,
-            "password_resets": resets_watched,
-            "email_verifications": verifications,
+            "sso_email_challenges": verifications,
             "rate_limit_entries": ledger,
             "sessions": sessions,
             "mfa_challenges": challenges,

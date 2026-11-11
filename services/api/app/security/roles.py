@@ -13,13 +13,11 @@ ROLE_ENGINEER = "engineer"
 ROLE_PRODUCT_OWNER = "product_owner"
 ROLE_ARCHITECT = "architect"
 ROLE_VIEWER = "viewer"
-ROLE_PENDING = "pending"
 ROLE_INHERIT = "inherit"
 
 # Used when resolving a role from multiple group memberships (when user.role == inherit).
 # Higher number wins.
 _ROLE_PRECEDENCE = {
-    ROLE_PENDING: 0,
     ROLE_VIEWER: 1,
     ROLE_ENGINEER: 2,
     ROLE_PRODUCT_OWNER: 3,
@@ -46,7 +44,6 @@ def canonicalize_role(role: str | None) -> str | None:
         ROLE_PRODUCT_OWNER,
         ROLE_ARCHITECT,
         ROLE_VIEWER,
-        ROLE_PENDING,
         ROLE_INHERIT,
     }:
         return v
@@ -68,7 +65,6 @@ def _group_role_priority_expr():
         (col == ROLE_PRODUCT_OWNER, _ROLE_PRECEDENCE[ROLE_PRODUCT_OWNER]),
         (col == ROLE_ARCHITECT, _ROLE_PRECEDENCE[ROLE_ARCHITECT]),
         (col == ROLE_VIEWER, _ROLE_PRECEDENCE[ROLE_VIEWER]),
-        (col == ROLE_PENDING, _ROLE_PRECEDENCE[ROLE_PENDING]),
         else_=-1,
     )
 

@@ -10,12 +10,9 @@ from app.security.oidc import (
     _allowed_by_domain,
     _canonical_issuer,
     _claim_email,
-    _clean_username,
-    _derive_username,
     _email_is_verified,
     _normalize_next,
     _split_csv,
-    _unique_username,
     create_login_state,
     get_sso_provider,
     pop_login_state,
@@ -54,40 +51,31 @@ def test_canonical_issuer_picks_first_of_csv():
     assert _canonical_issuer(p) == "https://a.example"
 
 
-def test_clean_username_strips_shapes():
-    assert _clean_username("###Hello_World--") == "Hello_World"
-    assert _clean_username("a@b.example") == "a"
-    assert _clean_username("!!!") is None
-
-
-def test_derive_username_prefers_claim_order():
-    provider = type("P", (), {"username_claims": "preferred_username,email"})()
-    assert (
-        _derive_username(provider, {"email": "e@x", "preferred_username": "u"}) == "u"
-    )
-    assert _derive_username(provider, {"email": "e@x"}) == "e"
-    assert _derive_username(provider, {"sub": "obj-123"}) == "obj-123"
-
-
 def test_claim_email_and_verified_flags():
-    assert _claim_email({"email": " a@b.example "}) == "a@b.example"
-    assert _email_is_verified(
-        type("P", (), {"key": "oidc"})(), {"email_verified": True}
-    )
-    assert not _email_is_verified(
-        type("P", (), {"key": "oidc"})(), {"email_verified": False}
-    )
-    # GitHub: the callback sets email_verified=True only after picking a
-    # verified primary address, so a github claim without the flag is trusted
-    # by the synthetic-claims path.
-    assert _email_is_verified(type("P", (), {"key": "github"})(), {"email": "a@b"})
+    assert _claim_email({"email": " A@b.example "}) == "a@b.example"
+    # A claimed address is one mailbox or nothing.
+    assert _claim_email({"email": "a@b.example, c@d.example"}) is None
+    oidc = type("P", (), {"key": "oidc"})()
+    assert _email_is_verified(oidc, {"email_verified": True})
+    assert not _email_is_verified(oidc, {"email_verified": False})
+    # As in KEEN, only a JSON true verifies; GitHub's callback synthesises
+    # one from /user/emails, so a bare email or a string never does.
+    assert not _email_is_verified(oidc, {"email_verified": "true"})
+    github = type("P", (), {"key": "github"})()
+    assert not _email_is_verified(github, {"email": "a@b.example"})
 
 
-def test_allowed_by_domain_exact_match_only():
+def test_allowed_by_domain_needs_a_verified_address_in_the_list():
     provider = type("P", (), {"allowed_email_domains": "corp.example"})()
-    assert _allowed_by_domain(provider, "u@corp.example")
-    assert not _allowed_by_domain(provider, "u@evil-corp.example")
-    assert not _allowed_by_domain(provider, None)
+    verified = {"email_verified": True}
+    assert _allowed_by_domain(provider, {"email": "u@corp.example", **verified})
+    assert not _allowed_by_domain(
+        provider, {"email": "u@evil-corp.example", **verified}
+    )
+    assert not _allowed_by_domain(provider, {"email": "u@corp.example"})
+    assert not _allowed_by_domain(provider, {})
+    anyone = type("P", (), {"allowed_email_domains": ""})()
+    assert _allowed_by_domain(anyone, {})
 
 
 def test_normalize_next_helper():
@@ -125,18 +113,6 @@ def test_expired_login_state_refused(db):
         s.commit()
         assert pop_login_state(s, state="stale-state") is None
         assert s.query(OidcLoginState).count() == 0
-    finally:
-        s.close()
-
-
-def test_unique_username_skips_taken(db):
-    from app.security.auth import create_user
-
-    s = SessionLocal()
-    try:
-        create_user(s, username="taken", password="Password1!", role="viewer")
-        name = _unique_username(s, "taken")
-        assert name != "taken"
     finally:
         s.close()
 

@@ -42,21 +42,17 @@
     prefs: {},
     shortcuts: [],
     subscriptions: [],
-    emails: [],
   };
 
   const el = {
     profileUser: document.getElementById("profileUser"),
     profileUsername: document.getElementById("profileUsername"),
     profileRole: document.getElementById("profileRole"),
-    profileEmailInput: document.getElementById("profileEmailInput"),
-    saveEmailBtn: document.getElementById("saveEmailBtn"),
-    profileEmailMsg: document.getElementById("profileEmailMsg"),
-    linkedEmailInput: document.getElementById("linkedEmailInput"),
-    linkedEmailPrimary: document.getElementById("linkedEmailPrimary"),
-    addLinkedEmailBtn: document.getElementById("addLinkedEmailBtn"),
-    linkedEmailsList: document.getElementById("linkedEmailsList"),
-    linkedEmailMsg: document.getElementById("linkedEmailMsg"),
+    profileEmail: document.getElementById("profileEmail"),
+    ssoEmailStatus: document.getElementById("ssoEmailStatus"),
+    ssoEmailList: document.getElementById("ssoEmailList"),
+    ssoEmailForm: document.getElementById("ssoEmailForm"),
+    ssoEmail: document.getElementById("ssoEmail"),
     prefTheme: document.getElementById("prefTheme"),
     prefSticky: document.getElementById("prefSticky"),
     prefAutoApply: document.getElementById("prefAutoApply"),
@@ -130,37 +126,6 @@
       });
   }
 
-  async function saveEmail() {
-    const raw = String(el.profileEmailInput?.value || "").trim();
-    const email = raw || null;
-    const emailEditable = state?.me?.email_editable !== false;
-    if (!emailEditable) {
-      toast(
-        "Email is managed by single sign-on and cannot be changed here.",
-        "error",
-      );
-      return;
-    }
-    try {
-      const res = await api("/v1/me/profile", {
-        method: "PUT",
-        body: { email },
-      });
-      state.me.email = res?.email ?? email;
-      if (el.profileEmailMsg) {
-        el.profileEmailMsg.textContent = "Saved.";
-      }
-      toast("Email saved", "success");
-    } catch (err) {
-      console.error(err);
-      if (el.profileEmailMsg) {
-        el.profileEmailMsg.textContent =
-          err?.message || "Failed to save email.";
-      }
-      toast(err?.message || "Failed to save email", "error");
-    }
-  }
-
   function esc(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -169,125 +134,75 @@
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;");
   }
-  function renderLinkedEmails() {
-    if (!el.linkedEmailsList) return;
-    const items = Array.isArray(state.emails) ? state.emails : [];
-    if (!items.length) {
-      el.linkedEmailsList.innerHTML =
-        '<div class="small text-muted">No linked emails yet.</div>';
-      return;
-    }
-    el.linkedEmailsList.innerHTML = `
-      <div class="table-responsive">
-        <table class="table table-sm align-middle mb-0">
-          <thead><tr><th>Email</th><th>Source</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
-          <tbody>
-            ${items
-              .map((item) => {
-                const id = Number(item.id || 0);
-                const primary = item.is_primary
-                  ? '<span class="badge text-bg-primary ms-1">Primary</span>'
-                  : "";
-                const verified = item.is_verified
-                  ? '<span class="badge text-bg-success">Trusted</span>'
-                  : '<span class="badge text-bg-secondary">Unverified</span>';
-                const source = String(item.source || "user").replace(
-                  /^sso:/,
-                  "SSO: ",
-                );
-                return `
-                <tr data-email-id="${id}">
-                  <td class="font-monospace">${esc(item.email || "")}${primary}</td>
-                  <td>${esc(source)}</td>
-                  <td>${verified}</td>
-                  <td class="text-end">
-                    <div class="btn-group btn-group-sm">
-                      <button class="btn btn-outline-secondary" type="button" data-action="primary" ${item.is_primary ? "disabled" : ""}>Make primary</button>
-                      ${
-                        item.is_verified
-                          ? '<button class="btn btn-outline-secondary" type="button" data-verified="true" disabled title="This address is already trusted; verification mail is only sent for unverified addresses.">Send verification</button>'
-                          : '<button class="btn btn-outline-secondary" type="button" data-action="verify">Send verification</button>'
-                      }
-                      <button class="btn btn-outline-danger" type="button" data-action="delete"><i class="bi bi-trash"></i></button>
-                    </div>
-                  </td>
-                </tr>`;
-              })
-              .join("")}
-          </tbody>
-        </table>
-      </div>`;
-  }
-
-  async function loadLinkedEmails() {
-    const data = await api("/v1/me/emails");
-    state.emails = Array.isArray(data?.items) ? data.items : [];
-    renderLinkedEmails();
-  }
-
-  async function addLinkedEmail() {
-    const email = String(el.linkedEmailInput?.value || "").trim();
-    if (!email) {
-      toast("Enter an email address to add.", "error");
-      return;
-    }
-    const item = await api("/v1/me/emails", {
-      method: "POST",
-      body: { email, is_primary: Boolean(el.linkedEmailPrimary?.checked) },
-    });
-    if (el.linkedEmailInput) el.linkedEmailInput.value = "";
-    if (el.linkedEmailPrimary) el.linkedEmailPrimary.checked = false;
-    await loadLinkedEmails();
-    if (item?.is_primary && el.profileEmailInput)
-      el.profileEmailInput.value = item.email || "";
-    toast("Email linked.", "success");
-  }
-
-  async function makeLinkedEmailPrimary(id) {
-    const item = await api(`/v1/me/emails/${encodeURIComponent(id)}/primary`, {
-      method: "POST",
-    });
-    await loadLinkedEmails();
-    if (item?.email && el.profileEmailInput)
-      el.profileEmailInput.value = item.email;
-    toast("Primary email updated.", "success");
-  }
-
-  async function deleteLinkedEmail(id) {
-    await api(`/v1/me/emails/${encodeURIComponent(id)}`, { method: "DELETE" });
-    await loadLinkedEmails();
-    toast("Email removed.", "success");
-  }
-
-  async function requestEmailVerification(id) {
-    await api(`/v1/me/emails/${encodeURIComponent(id)}/verify-request`, {
-      method: "POST",
-    });
-    await loadLinkedEmails();
-    toast("Verification email sent.", "success");
-  }
-
-  async function completePendingEmailVerification() {
-    const token = new URLSearchParams(window.location.search).get(
-      "verify_email",
-    );
-    if (!token) return;
-    try {
-      const res = await api("/v1/me/emails/verify", {
-        method: "POST",
-        body: { token },
+  // SSO email addresses, as KEEN's account security page manages them.
+  async function loadSsoEmails() {
+    if (!el.ssoEmailList) return;
+    const data = await api("/v1/me/sso-emails");
+    if (el.ssoEmailForm) el.ssoEmailForm.hidden = !data.smtp_configured;
+    if (el.ssoEmailStatus)
+      el.ssoEmailStatus.textContent = data.smtp_configured
+        ? "Verify each address you want to use for SSO. Adding or removing an address requires a sign-in within the last five minutes."
+        : "Your administrator must configure SMTP before you can verify an SSO email address.";
+    el.ssoEmailList.replaceChildren();
+    for (const address of data.addresses || []) {
+      const item = document.createElement("li");
+      item.className =
+        "d-flex align-items-center justify-content-between gap-3 py-2";
+      const label = document.createElement("span");
+      label.textContent = address.email + " - verified";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-sm btn-outline-danger";
+      button.textContent = "Remove";
+      button.addEventListener("click", async () => {
+        if (
+          !window.confirm(
+            "Remove this address from future SSO linking? Existing linked sign-in identities will remain active.",
+          )
+        )
+          return;
+        button.disabled = true;
+        try {
+          await api("/v1/me/sso-emails/remove", {
+            method: "POST",
+            body: { email: address.email },
+          });
+          await loadSsoEmails();
+        } catch (error) {
+          if (el.ssoEmailStatus)
+            el.ssoEmailStatus.textContent = error?.message || String(error);
+          button.disabled = false;
+        }
       });
-      toast(`Email ${res?.verified || ""} verified.`, "success");
-      await loadLinkedEmails();
-
-      await loadMfaStatus();
-    } catch (err) {
-      toast(err?.message || "Verification link invalid or expired", "error");
+      item.append(label, button);
+      el.ssoEmailList.append(item);
     }
-    // Strip the one-time token from the address bar once it is used.
-    const url = new URL(window.location.href);
-    url.searchParams.delete("verify_email");
-    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    if (!(data.addresses || []).length) {
+      const item = document.createElement("li");
+      item.textContent = "No verified SSO email addresses.";
+      el.ssoEmailList.append(item);
+    }
+  }
+
+  async function requestSsoEmail(event) {
+    event.preventDefault();
+    const button = el.ssoEmailForm?.querySelector("button");
+    if (button) button.disabled = true;
+    try {
+      const result = await api("/v1/me/sso-emails/request", {
+        method: "POST",
+        body: { email: el.ssoEmail?.value || "" },
+      });
+      if (el.ssoEmailStatus)
+        el.ssoEmailStatus.textContent = result?.already_verified
+          ? "This address is already verified."
+          : "Verification email sent. Stay signed into this account and open the link within 30 minutes. Requesting another link replaces this one.";
+    } catch (error) {
+      if (el.ssoEmailStatus)
+        el.ssoEmailStatus.textContent = error?.message || String(error);
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function safeHref(url) {
@@ -773,8 +688,10 @@
     if (el.newPassword) el.newPassword.value = "";
     if (el.confirmPassword) el.confirmPassword.value = "";
 
-    setPasswordMsg("Password updated.", "info");
-    toast("Password updated.", "success");
+    // As in KEEN, the new password ends every session, this one included.
+    setPasswordMsg("Password updated. Sign in again to continue.", "info");
+    toast("Password updated. Sign in again to continue.", "success");
+    window.location.assign("/login.html");
   }
 
   function setMfaMsg(text, kind = "info") {
@@ -859,54 +776,8 @@
   }
 
   function wireEvents() {
-    el.saveEmailBtn?.addEventListener("click", () => {
-      saveEmail();
-    });
-
-    el.profileEmailInput?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        saveEmail();
-      }
-    });
-
-    el.addLinkedEmailBtn?.addEventListener("click", () => {
-      addLinkedEmail().catch((err) =>
-        toast(err?.message || "Failed to link email", "error"),
-      );
-    });
-
-    el.linkedEmailInput?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        addLinkedEmail().catch((err) =>
-          toast(err?.message || "Failed to link email", "error"),
-        );
-      }
-    });
-
-    el.linkedEmailsList?.addEventListener("click", (e) => {
-      const t = e?.target;
-      if (!(t instanceof HTMLElement)) return;
-      const btn = t.closest("button[data-action]");
-      if (!btn) return;
-      const row = btn.closest("[data-email-id]");
-      const id = row?.getAttribute("data-email-id");
-      if (!id) return;
-      const action = btn.getAttribute("data-action");
-      if (action === "primary") {
-        makeLinkedEmailPrimary(id).catch((err) =>
-          toast(err?.message || "Failed to update primary email", "error"),
-        );
-      } else if (action === "verify") {
-        requestEmailVerification(id).catch((err) =>
-          toast(err?.message || "Failed to send verification", "error"),
-        );
-      } else if (action === "delete") {
-        deleteLinkedEmail(id).catch((err) =>
-          toast(err?.message || "Failed to remove email", "error"),
-        );
-      }
+    el.ssoEmailForm?.addEventListener("submit", (event) => {
+      requestSsoEmail(event);
     });
 
     el.changePasswordForm?.addEventListener("submit", (e) => {
@@ -1101,30 +972,9 @@
       el.profileUsername.textContent = state.me.username || "";
     if (el.profileRole) el.profileRole.textContent = role;
     initMyQuestions();
-    const emailEditable = state.me?.email_editable !== false;
+    if (el.profileEmail)
+      el.profileEmail.textContent = state.me.email || "Not set";
 
-    if (el.profileEmailInput) {
-      el.profileEmailInput.value = state.me.email || "";
-      if (!emailEditable) {
-        el.profileEmailInput.setAttribute("readonly", "readonly");
-      } else {
-        el.profileEmailInput.removeAttribute("readonly");
-      }
-    }
-
-    if (el.saveEmailBtn) {
-      if (!emailEditable) {
-        el.saveEmailBtn.classList.add("d-none");
-      } else {
-        el.saveEmailBtn.classList.remove("d-none");
-      }
-    }
-
-    if (el.profileEmailMsg) {
-      el.profileEmailMsg.textContent = emailEditable
-        ? ""
-        : "Primary email is managed through linked email addresses for SSO sessions.";
-    }
     // Password change is only available for local-auth deployments when OIDC is disabled.
     const canChangePassword =
       Boolean(state.me?.password_features_enabled) &&
@@ -1144,6 +994,8 @@
     if (el.mfaCard) {
       if (canChangePassword) {
         el.mfaCard.classList.remove("d-none");
+        // The card's summary reads the account's second-factor state.
+        await loadMfaStatus();
       } else {
         el.mfaCard.classList.add("d-none");
       }
@@ -1177,7 +1029,10 @@
     wireEvents();
     await refreshPaletteForFramework();
 
-    await loadLinkedEmails();
+    await loadSsoEmails().catch((error) => {
+      if (el.ssoEmailStatus)
+        el.ssoEmailStatus.textContent = error?.message || String(error);
+    });
 
     await loadShortcuts();
     renderShortcuts();
@@ -1187,11 +1042,9 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    init()
-      .then(completePendingEmailVerification)
-      .catch((err) => {
-        console.error(err);
-        toast(err?.message || "Failed to load account page", "error");
-      });
+    init().catch((err) => {
+      console.error(err);
+      toast(err?.message || "Failed to load account page", "error");
+    });
   });
 })();

@@ -15,9 +15,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models import OidcLoginState, User, UserEmail, UserIdentity
-from app.security.auth import get_password_hash, get_user_by_username
-from app.security.roles import canonicalize_role
+from app.core.email_address import single_mailbox
+from app.db.models import OidcLoginState, User, UserIdentity, UserSsoEmail
 
 log = logging.getLogger(__name__)
 
@@ -40,10 +39,7 @@ class SsoProvider:
     emails_endpoint: str = ""
     end_session_endpoint: str = ""
     post_logout_redirect_uri: str = ""
-    username_claims: str = "preferred_username,email"
     allowed_email_domains: str = ""
-    auto_provision: bool = False
-    auto_provision_role: str = "pending"
     auto_link_existing: bool = True
     token_endpoint_auth_method: str = "client_secret_basic"
     supports_id_token: bool = True
@@ -100,16 +96,8 @@ def _oidc_provider() -> SsoProvider:
         post_logout_redirect_uri=_first_nonempty(
             _setting("oidc_post_logout_redirect_uri", "")
         ),
-        username_claims=_first_nonempty(
-            _setting("oidc_username_claims", ""),
-            "preferred_username,email",
-        ),
         allowed_email_domains=_first_nonempty(
             _setting("oidc_allowed_email_domains", "")
-        ),
-        auto_provision=bool(_setting("oidc_auto_provision", False)),
-        auto_provision_role=_first_nonempty(
-            _setting("oidc_auto_provision_role", ""), "pending"
         ),
         auto_link_existing=bool(_setting("oidc_auto_link_existing", True)),
         token_endpoint_auth_method="client_secret_basic",
@@ -154,15 +142,8 @@ def _google_provider() -> SsoProvider:
         post_logout_redirect_uri=_first_nonempty(
             _setting("google_post_logout_redirect_uri", "")
         ),
-        username_claims=_first_nonempty(
-            _setting("google_username_claims", ""), "email"
-        ),
         allowed_email_domains=_first_nonempty(
             _setting("google_allowed_email_domains", "")
-        ),
-        auto_provision=bool(_setting("google_auto_provision", False)),
-        auto_provision_role=_first_nonempty(
-            _setting("google_auto_provision_role", ""), "pending"
         ),
         auto_link_existing=bool(_setting("google_auto_link_existing", True)),
         token_endpoint_auth_method="client_secret_post",
@@ -200,10 +181,6 @@ def _github_provider() -> SsoProvider:
         redirect_uri=_first_nonempty(_setting("github_redirect_uri", "")),
         allowed_email_domains=_first_nonempty(
             _setting("github_allowed_email_domains", "")
-        ),
-        auto_provision=bool(_setting("github_auto_provision", False)),
-        auto_provision_role=_first_nonempty(
-            _setting("github_auto_provision_role", ""), "pending"
         ),
         auto_link_existing=bool(_setting("github_auto_link_existing", True)),
         token_endpoint_auth_method="client_secret_post",
@@ -401,330 +378,147 @@ def _normalize_next(next_url: str | None) -> str | None:
     return safe_relative_route_path(next_url)
 
 
-def _allowed_by_domain(provider: SsoProvider, email: str | None) -> bool:
+def _allowed_by_domain(provider: SsoProvider, claims: dict[str, Any]) -> bool:
+    """Whether the provider's current verified email is in an allowed domain."""
     domains = _split_csv(provider.allowed_email_domains or "")
     if not domains:
         return True
-    if not email or "@" not in email:
+    email = _claim_email(claims)
+    if not email or not _email_is_verified(provider, claims):
         return False
-    dom = email.split("@", 1)[1].lower()
+    dom = email.split("@", 1)[1]
     return any(dom == d.lower() for d in domains)
 
 
-def _claim_first(claims: dict[str, Any], keys: list[str]) -> str | None:
-    for k in keys:
-        v = claims.get(k)
-        if v is None:
-            continue
-        s = str(v).strip()
-        if s:
-            return s
-    return None
-
-
-def _clean_username(candidate: str | None) -> str | None:
-    if not candidate:
-        return None
-    if "@" in candidate:
-        candidate = candidate.split("@", 1)[0]
-    cleaned = "".join(
-        ch for ch in candidate if ch.isalnum() or ch in ("_", "-", ".")
-    ).strip("._-")
-    return cleaned or None
-
-
-def _derive_username(provider: SsoProvider, claims: dict[str, Any]) -> str | None:
-    order = _split_csv(provider.username_claims or "preferred_username,email")
-    if not order:
-        order = ["preferred_username", "email"]
-    candidate = _clean_username(_claim_first(claims, order))
-    if candidate:
-        return candidate
-
-    sub = str(claims.get("sub") or "").strip()
-    if sub:
-        return _clean_username(sub[:160])
-    return None
-
-
-def _unique_username(db: Session, base: str) -> str:
-    base_clean = (base or "").strip()[:160] or "user"
-    if not get_user_by_username(db, base_clean):
-        return base_clean
-
-    for i in range(2, 1000):
-        cand = f"{base_clean[:150]}_{i}"
-        if not get_user_by_username(db, cand):
-            return cand
-    return f"{base_clean[:140]}_{secrets.token_hex(6)}"
-
-
 def _claim_email(claims: dict[str, Any]) -> str | None:
-    email = str(claims.get("email") or "").strip().lower()
-    if not email or "@" not in email:
-        return None
-    return email
+    email = single_mailbox(claims.get("email"))
+    return email.lower() if email else None
 
 
 def _email_is_verified(provider: SsoProvider, claims: dict[str, Any]) -> bool:
-    raw = claims.get("email_verified")
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        return raw.strip().lower() in {"1", "true", "yes"}
-    # The GitHub callback only sets email after selecting a verified address from
-    # /user/emails, so an email in its synthetic claims is safe to link on.
-    return provider.key == "github" and bool(_claim_email(claims))
+    # OIDC uses a JSON boolean; GitHub synthesizes one from /user/emails.
+    return claims.get("email_verified") is True
 
 
-def _single_active_user_by_email(db: Session, email: str) -> User | None:
-    """Find the one active account holding this *verified* mailbox.
-
-    Only ``user_emails`` rows marked verified participate: a self-asserted,
-    never-proofed address must not route a provider login into an account.
-    """
-
-    normalized = (email or "").strip().lower()
-    if not normalized:
-        return None
-
-    users_by_id: dict[int, User] = {}
-
-    for row in (
-        db.query(UserEmail)
-        .filter(UserEmail.email_lower == normalized, UserEmail.is_verified == True)  # noqa: E712
-        .all()
-    ):
-        user = db.query(User).filter(User.id == row.user_id).one_or_none()
-        if user and bool(getattr(user, "is_active", False)):
-            users_by_id[int(user.id)] = user
-
-    if len(users_by_id) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="Multiple active OSPMAE users already use this SSO email address",
-        )
-    return next(iter(users_by_id.values()), None)
-
-
-def _identity_kwargs(
-    user: User, provider: SsoProvider, subject: str, claims: dict[str, Any]
-) -> dict[str, Any]:
-    return {
-        "user_id": user.id,
-        "provider": provider.key,
-        "issuer": _canonical_issuer(provider),
-        "subject": subject,
-        "email": _claim_email(claims),
-        "preferred_username": str(claims.get("preferred_username") or "").strip()
-        or None,
-        "display_name": str(claims.get("name") or "").strip() or None,
-        "claims": claims or {},
-    }
-
-
-def _ensure_user_email(
-    db: Session,
-    *,
-    user: User,
-    email: str | None,
-    source: str,
-    verified: bool,
-    primary: bool = False,
-) -> None:
-    normalized = (email or "").strip().lower()
-    if not normalized or "@" not in normalized:
-        return
-
-    existing = (
-        db.query(UserEmail).filter(UserEmail.email_lower == normalized).one_or_none()
+def _update_identity_metadata(identity: UserIdentity, claims: dict[str, Any]) -> None:
+    identity.email = _claim_email(claims) or identity.email
+    identity.preferred_username = (
+        str(
+            claims.get("preferred_username") or identity.preferred_username or ""
+        ).strip()
+        or None
     )
-    if existing:
-        if existing.user_id == user.id:
-            existing.email = normalized
-            existing.source = existing.source or source
-            existing.is_verified = bool(existing.is_verified or verified)
-            existing.is_primary = bool(existing.is_primary or primary)
-            db.add(existing)
-        return
-
-    if primary:
-        (
-            db.query(UserEmail)
-            .filter(UserEmail.user_id == user.id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
-            .update({"is_primary": False}, synchronize_session=False)
-        )  # noqa: E712
-
-    db.add(
-        UserEmail(
-            user_id=user.id,
-            email=normalized,
-            email_lower=normalized,
-            source=source,
-            is_verified=bool(verified),
-            is_primary=bool(primary),
-        )
+    identity.display_name = (
+        str(claims.get("name") or identity.display_name or "").strip() or None
     )
+    identity.claims = claims or {}
 
 
-def _link_identity(
-    db: Session,
-    *,
-    user: User,
-    provider: SsoProvider,
-    subject: str,
-    claims: dict[str, Any],
-) -> User:
-    ident = UserIdentity(**_identity_kwargs(user, provider, subject, claims))
-    try:
-        user.last_login_at = _now()
-        db.add(user)
-        db.add(ident)
-        _ensure_user_email(
-            db,
-            user=user,
-            email=_claim_email(claims),
-            source=f"sso:{provider.key}",
-            verified=_email_is_verified(provider, claims),
-        )
-        db.commit()
-        db.refresh(user)
-        return user
-    except IntegrityError:
-        db.rollback()
-        ident2 = (
-            db.query(UserIdentity)
-            .filter(
-                UserIdentity.issuer == _canonical_issuer(provider),
-                UserIdentity.subject == subject,
-            )
-            .one_or_none()
-        )
-        if ident2:
-            user2 = db.query(User).filter(User.id == ident2.user_id).one_or_none()
-            if user2 and user2.is_active:
-                return user2
-        raise
-    except Exception:
-        db.rollback()
-        raise
+class LinkedAccountRefused(HTTPException):
+    """A refused sign-in whose provider identity is linked to an account."""
+
+    def __init__(self, account: User, detail: str) -> None:
+        super().__init__(status_code=403, detail=detail)
+        self.account = account
+
+
+def linked_account(error: Exception) -> User | None:
+    """The account a refused SSO sign-in reached, if its identity is linked."""
+    return error.account if isinstance(error, LinkedAccountRefused) else None
+
+
+def sso_attempt(request: Request) -> str | None:
+    """The provider of a sign-in this request's callback consumed, if any."""
+    return getattr(request.state, "sso_provider", None)
 
 
 def _get_or_create_user_for_identity(
     db: Session, *, provider: SsoProvider, subject: str, claims: dict[str, Any]
 ) -> User:
-    ident = (
+    """The existing account an identity signs in to, as KEEN resolves it.
+
+    OSPMAE creates no account at sign-in: a linked identity signs in to its
+    account, and a new identity links to the one active account that has
+    proved, by mailbox, the address the provider reports as verified.
+    """
+    issuer = _canonical_issuer(provider)
+    identity = (
         db.query(UserIdentity)
-        .filter(
-            UserIdentity.issuer == _canonical_issuer(provider),
-            UserIdentity.subject == subject,
-        )
+        .filter(UserIdentity.issuer == issuer, UserIdentity.subject == subject)
         .one_or_none()
     )
-    if ident:
-        user = db.query(User).filter(User.id == ident.user_id).one_or_none()
-        if user and user.is_active:
-            try:
-                ident.provider = provider.key
-                ident.email = _claim_email(claims) or ident.email
-                ident.preferred_username = (
-                    str(
-                        claims.get("preferred_username")
-                        or ident.preferred_username
-                        or ""
-                    ).strip()
-                    or None
-                )
-                ident.display_name = (
-                    str(claims.get("name") or ident.display_name or "").strip() or None
-                )
-                ident.claims = claims or {}
-                user.last_login_at = _now()
-                db.add(ident)
-                db.add(user)
-                _ensure_user_email(
-                    db,
-                    user=user,
-                    email=_claim_email(claims),
-                    source=f"sso:{provider.key}",
-                    verified=_email_is_verified(provider, claims),
-                )
-                db.commit()
-                db.refresh(user)
-            except Exception:
-                # The sign-in stands on the linked identity; the profile
-                # refresh is best effort, such as a claimed address that
-                # another account already holds.
-                db.rollback()
-                log.warning(
-                    "Could not refresh the SSO profile for user_id=%s",
-                    ident.user_id,
-                    exc_info=True,
-                )
-            return user
-        raise HTTPException(status_code=403, detail="User is inactive")
+    # The allowlist governs every sign-in, so an identity linked earlier stops
+    # signing in once its email leaves the allowed domains.
+    allowed = _allowed_by_domain(provider, claims)
+    if identity:
+        user = db.query(User).filter(User.id == identity.user_id).one_or_none()
+        if not user:
+            raise HTTPException(status_code=403, detail="User is inactive")
+        if not allowed:
+            raise LinkedAccountRefused(user, "Email domain is not allowed")
+        if not user.is_active:
+            raise LinkedAccountRefused(user, "User is inactive")
+        _update_identity_metadata(identity, claims)
+        identity.provider = provider.key
+        user.last_login_at = _now()
+        db.add(identity)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
 
     email = _claim_email(claims)
-    if not _allowed_by_domain(provider, email):
+    if not allowed:
         raise HTTPException(status_code=403, detail="Email domain is not allowed")
-
-    if bool(provider.auto_link_existing):
-        # Automatic linking needs proof on both sides: the provider must mark
-        # the address verified, and OSPMAE must already hold that mailbox as a
-        # verified email. Usernames are never linked -- an identity provider's
-        # preferred_username claim is selectable by whoever registers it, so
-        # matching a local account on it would hand that account over.
-        if email and _email_is_verified(provider, claims):
-            user = _single_active_user_by_email(db, email)
-            if user:
-                return _link_identity(
-                    db, user=user, provider=provider, subject=subject, claims=claims
-                )
-
-    if not bool(provider.auto_provision):
+    if not provider.auto_link_existing:
         raise HTTPException(
             status_code=403, detail="No local account linked to this identity"
         )
 
-    base_username = _derive_username(provider, claims) or "user"
-    username = _unique_username(db, base_username)
-    role = canonicalize_role(provider.auto_provision_role) or "pending"
+    candidates: dict[int, User] = {}
+    # Both OSPMAE mailbox verification and provider verification are required.
+    # Usernames never link: a provider's preferred_username is chosen by
+    # whoever registers it.
+    if email and _email_is_verified(provider, claims):
+        for user in (
+            db.query(User)
+            .join(UserSsoEmail, UserSsoEmail.user_id == User.id)
+            .filter(UserSsoEmail.email == email)
+            .all()
+        ):
+            candidates[user.id] = user
 
-    user = User(
-        username=username,
-        password_hash=get_password_hash(secrets.token_urlsafe(24)),
-        role=role,
-        is_active=True,
-        last_login_at=_now(),
+    active = [user for user in candidates.values() if user.is_active]
+    if len(active) != 1:
+        detail = (
+            "Multiple active OSPMAE users match this SSO identity"
+            if len(active) > 1
+            else "No active OSPMAE account matches this SSO identity"
+        )
+        raise HTTPException(status_code=403, detail=detail)
+
+    user = active[0]
+    identity = UserIdentity(
+        user_id=user.id,
+        provider=provider.key,
+        issuer=issuer,
+        subject=subject,
+        email=email,
+        preferred_username=str(claims.get("preferred_username") or "").strip() or None,
+        display_name=str(claims.get("name") or "").strip() or None,
+        claims=claims or {},
     )
-    db.add(user)
-    db.flush()
-
-    ident = UserIdentity(**_identity_kwargs(user, provider, subject, claims))
-    db.add(ident)
-    _ensure_user_email(
-        db,
-        user=user,
-        email=_claim_email(claims),
-        source=f"sso:{provider.key}",
-        verified=_email_is_verified(provider, claims),
-        primary=True,
-    )
-
-    from app.services.mailer import send_new_user_admin_notification_email
-
-    # The administrators' notice commits with the account it reports.
-    base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    send_new_user_admin_notification_email(
-        db=db,
-        username=user.username,
-        email=_claim_email(claims),
-        provider_label=provider.label,
-        role=role,
-        admin_url=(f"{base_url}/admin.html" if base_url else None),
-    )
-    db.commit()
-    db.refresh(user)
+    try:
+        user.last_login_at = _now()
+        db.add(user)
+        db.add(identity)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=403, detail="SSO identity link conflict"
+        ) from exc
     return user
 
 
@@ -908,6 +702,9 @@ async def handle_callback(
     row = pop_login_state(db, state=state)
     if not row:
         raise HTTPException(status_code=400, detail="SSO state missing or expired")
+    # From here the callback consumed a sign-in this browser started, so a
+    # refusal is audited (see sso_attempt).
+    request.state.sso_provider = provider.key
 
     if provider.kind == "github":
         user, next_url, id_token = await _handle_github_callback(

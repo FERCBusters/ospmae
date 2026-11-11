@@ -108,34 +108,13 @@ def test_all_mailer_helpers_queue_into_the_outbox(monkeypatch, db):
         settings.smtp_port,
         settings.smtp_from_email,
         settings.smtp_from_name,
-        settings.admin_notification_email,
     )
     settings.smtp_host = "smtp.example.com"
     settings.smtp_port = 587
     settings.smtp_from_email = "noreply@example.com"
     settings.smtp_from_name = "OSPMAE"
-    settings.admin_notification_email = "ops@example.com"
     try:
         with SessionLocal() as s:
-            mailer.send_password_reset_email(
-                db=s,
-                user_id=None,
-                to_email="u@example.com",
-                username="u",
-                reset_link="https://x/reset",
-                expires_minutes=60,
-            )
-            mailer.send_new_user_admin_notification_email(
-                db=s,
-                username="u2",
-                email="u2@example.com",
-                provider_label="OIDC",
-                role="pending",
-                admin_url="https://x/admin.html",
-            )
-            mailer.send_account_approved_email(
-                db=s, user_id=None, to_email="u3@example.com", username="u3"
-            )
             mailer.send_project_version_published_email(
                 db=s,
                 to_email="u4@example.com",
@@ -164,17 +143,11 @@ def test_all_mailer_helpers_queue_into_the_outbox(monkeypatch, db):
                 project_name="proj",
                 reply_body="r",
             )
-            mailer.send_email_verification_email(
-                db=s,
-                to_email="u9@example.com",
-                username="u9",
-                verification_link="https://x/v",
-            )
             s.commit()
             rows = s.query(Notification).all()
             subjects = [r.subject for r in rows]
-            assert len(rows) == 9, f"queued subjects: {subjects}"
-            assert any("Password reset" in s2 for s2 in subjects)
+            assert len(rows) == 5, f"queued subjects: {subjects}"
+            assert any("New release for proj" in s2 for s2 in subjects)
             assert any("New reply on" in s2 for s2 in subjects)
             assert all(r.status == "pending" for r in rows)
 
@@ -184,7 +157,6 @@ def test_all_mailer_helpers_queue_into_the_outbox(monkeypatch, db):
             settings.smtp_port,
             settings.smtp_from_email,
             settings.smtp_from_name,
-            settings.admin_notification_email,
         ) = saved
 
 
@@ -353,10 +325,9 @@ def test_release_feed_noops_when_feature_off(monkeypatch):
 def test_sweep_removes_expired_rows(db):
     from app.db.models import (
         AuditLog,
-        EmailVerificationToken,
         OidcLoginState,
-        PasswordResetToken,
         RateLimitEntry,
+        SsoEmailChallenge,
     )
     from app.tasks.maintenance import sweep_expired_rows
 
@@ -365,14 +336,13 @@ def test_sweep_removes_expired_rows(db):
     owner = make_user("SweepOwner", "Password1!", role="viewer")
     db.add(OidcLoginState(state="s", nonce="n", code_verifier="v", expires_at=past))
     db.add(
-        PasswordResetToken(user_id=int(owner.id), token_hash="0" * 64, expires_at=past)
-    )
-    db.add(
-        EmailVerificationToken(
-            user_id=int(owner.id),
-            email_lower="x@y",
+        SsoEmailChallenge(
             token_hash="1" * 64,
+            user_id=int(owner.id),
+            email="x@y.test",
             expires_at=past,
+            mfa_version=0,
+            password_digest="2" * 64,
         )
     )
     db.add(
@@ -393,8 +363,7 @@ def test_sweep_removes_expired_rows(db):
     result = sweep_expired_rows()
     assert result["ok"] is True
     assert db.query(OidcLoginState).count() == 0
-    assert db.query(PasswordResetToken).count() == 0
-    assert db.query(EmailVerificationToken).count() == 0
+    assert db.query(SsoEmailChallenge).count() == 0
     assert db.query(RateLimitEntry).count() == 0
     assert db.query(AuditLog).count() == 0
 

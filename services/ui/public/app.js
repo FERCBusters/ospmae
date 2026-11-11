@@ -627,7 +627,7 @@
   }
 
   function startNotifications() {
-    if (!state.me || isPendingUser()) return;
+    if (!state.me) return;
     if (
       state.ws &&
       (state.ws.readyState === WebSocket.OPEN ||
@@ -693,10 +693,6 @@
     ).toLowerCase();
   }
 
-  function isPendingUser() {
-    return role() === "pending";
-  }
-
   // Default palette keyed by '<framework_machine_name>:<node_key>'
   // (Only UWRA is pre-seeded here; other frameworks fall back to a deterministic hash colour.)
   const DEFAULT_NODE_COLORS = {
@@ -732,11 +728,6 @@
       permission: "framework_admin",
     },
     { value: "/account.html", label: "Account", permission: "public" },
-    {
-      value: "/pending.html",
-      label: "Pending approval",
-      permission: "pending",
-    },
     { value: "/admin.html", label: "Admin", permission: "admin" },
   ];
 
@@ -753,10 +744,7 @@
     const raw = String(value || "").trim();
     if (!raw) return DEFAULT_START_PAGE;
     const v = raw.startsWith("/") ? raw : `/${raw}`;
-    if (v === "/pending.html") return isPendingUser() ? v : DEFAULT_START_PAGE;
-    const allowed = (ALLOWED_START_PAGES || [])
-      .filter((p) => p?.permission !== "pending")
-      .some((p) => p?.value === v);
+    const allowed = (ALLOWED_START_PAGES || []).some((p) => p?.value === v);
     return allowed ? v : DEFAULT_START_PAGE;
   }
 
@@ -826,10 +814,8 @@
   async function loadUserPreferences(options = {}) {
     const force = options.force === true;
 
-    if (!state.me || isPendingUser()) {
-      state.userPreferences = normalizeUserPreferences(
-        isPendingUser() ? { default_start_page: "/pending.html" } : null,
-      );
+    if (!state.me) {
+      state.userPreferences = normalizeUserPreferences(null);
       applyUiBehaviourPreferences(state.userPreferences);
       state.userPreferencesLoaded = false;
       state.userPreferencesPromise = null;
@@ -1241,17 +1227,6 @@
 
   function maybeRedirectToPreferredStart() {
     if (!state.me) return false;
-    if (isPendingUser()) {
-      if (location.pathname !== "/pending.html") {
-        window.location.replace("/pending.html");
-        return true;
-      }
-      return false;
-    }
-    if (location.pathname === "/pending.html") {
-      window.location.replace("/index.html");
-      return true;
-    }
     if (location.pathname !== "/") return false;
     const preferred = getDefaultStartPage();
     if (preferred && preferred !== "/index.html") {
@@ -1303,17 +1278,6 @@
             });
         }
         await state.featuresPromise;
-
-        if (isPendingUser()) {
-          state.userPreferences = normalizeUserPreferences({
-            default_start_page: "/pending.html",
-          });
-          updateWhoAmI();
-          applyNavPermissions();
-          applyBrandHomeLink();
-          const redirected = maybeRedirectToPreferredStart();
-          return redirected ? null : me;
-        }
 
         await loadUserPreferences();
         updateWhoAmI();
@@ -1528,7 +1492,6 @@
     entityChangelogHtml,
     loadEntityChangelog,
     role,
-    isPendingUser,
     DEFAULT_NODE_COLORS,
     normalizeUserPreferences,
     ALLOWED_START_PAGES,

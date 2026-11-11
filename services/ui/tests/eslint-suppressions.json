@@ -6,7 +6,7 @@
   },
   "services/ui/public/pages/account.js": {
     "no-unsanitized/property": {
-      "count": 9
+      "count": 8
     }
   },
   "services/ui/public/pages/admin.js": {

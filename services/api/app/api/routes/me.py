@@ -1,29 +1,23 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.api.payloads import (
-    EmailVerifyPayload,
-    MeProfileUpdatePayload,
-    UserEmailCreatePayload,
     UserPreferencesUpdatePayload,
     UserShortcutCreatePayload,
 )
 from app.core.config import settings
 from app.core.features import public_dict
 from app.db.models import (
-    EmailVerificationToken,
     Group,
     Project,
     ProjectSubscription,
     User,
-    UserEmail,
     UserGroup,
-    UserIdentity,
     UserPreference,
     UserShortcut,
 )
@@ -31,11 +25,11 @@ from app.db.models import (
     Session as SessionRow,
 )
 from app.db.session import get_db
+from app.security.auth import get_current_user
 from app.security.client_addr import request_client_address
 from app.security.oidc import any_sso_enabled, get_sso_provider
-from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
-from app.security.roles import ROLE_PENDING, attach_effective_role
-from app.services.notification_recipients import notification_email_for_user
+from app.security.roles import attach_effective_role
+from app.services import sso_emails
 
 router = APIRouter()
 
@@ -48,13 +42,16 @@ ALLOWED_START_PAGES = {
     # Backwards-compatible: previously this page was named Preferences.
     "/preferences.html",
     "/admin.html",
-    "/pending.html",
 }
 
 
 def _password_features_enabled() -> bool:
-    """Match auth.py behaviour: disable local password flows when external SSO is enabled."""
-    return bool(getattr(settings, "local_auth_enabled", True)) and not any_sso_enabled()
+    """Whether the account page offers a password change, as KEEN decides it."""
+    return (
+        bool(getattr(settings, "local_auth_enabled", True))
+        and not bool(settings.trust_remote_user)
+        and not any_sso_enabled()
+    )
 
 
 def _session_auth_method(request: Request, db: Session) -> str:
@@ -63,175 +60,6 @@ def _session_auth_method(request: Request, db: Session) -> str:
         return ""
     row = db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
     return str(getattr(row, "auth_method", "") or "") if row else ""
-
-
-def _resolved_email(db: Session, user: User) -> tuple[str | None, str | None]:
-    """Return (email, source) where source is one of: 'user', 'account', 'oidc', or None."""
-
-    if (user.email or "").strip():
-        return str(user.email).strip(), "user"
-
-    account_email = (
-        db.query(UserEmail)
-        .filter(UserEmail.user_id == user.id)
-        .order_by(UserEmail.is_primary.desc(), UserEmail.updated_at.desc())
-        .first()
-    )
-    if account_email:
-        return str(account_email.email).strip(), "account"
-
-    ident = (
-        db.query(UserIdentity.email)
-        .filter(UserIdentity.user_id == user.id)
-        .filter(UserIdentity.email.isnot(None))
-        .order_by(desc(UserIdentity.updated_at))
-        .first()
-    )
-    if ident and ident[0]:
-        return str(ident[0]).strip(), "oidc"
-    return None, None
-
-
-def _normalize_email(value: str | None) -> str | None:
-    email = str(value or "").strip().lower()
-    if not email:
-        return None
-    if "@" not in email or email.startswith("@") or email.endswith("@"):
-        raise HTTPException(status_code=400, detail="Invalid email address")
-    return email
-
-
-def _maybe_send_email_verification(
-    db: Session, user: User, row: UserEmail
-) -> bool | None:
-    """Email a one-time mailbox proof for a self-asserted address.
-
-    Returns False with a reason for the caller to surface when the request
-    cannot be honoured: verification is fail-closed, so with no SMTP host,
-    no sender address or no explicit public base URL the address simply stays
-    unverified and SSO linking will never trust it.
-    """
-
-    if bool(row.is_verified):
-        return False
-    smtp_host = (settings.smtp_host or "").strip()
-    from_email = (settings.smtp_from_email or "").strip()
-    base = (settings.public_base_url or "").strip().rstrip("/")
-    if not smtp_host or not from_email or not base:
-        return False
-
-    import hashlib
-    import secrets as _secrets
-
-    # Verification senders are rate limited per account.
-    allowed, _info = check_rate_limit(
-        db, f"email_verify:{int(user.id)}", max_attempts=5, window_seconds=3600
-    )
-    if not allowed:
-        return False
-    record_rate_limit_attempt(db, f"email_verify:{int(user.id)}")
-
-    token = _secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    now = datetime.utcnow()
-    db.query(EmailVerificationToken).filter(
-        EmailVerificationToken.user_id == user.id,
-        EmailVerificationToken.email_lower == row.email_lower,
-        EmailVerificationToken.used_at.is_(None),
-    ).update({"used_at": now}, synchronize_session=False)
-    db.add(
-        EmailVerificationToken(
-            user_id=user.id,
-            email_lower=row.email_lower,
-            token_hash=token_hash,
-            created_at=now,
-            expires_at=now + timedelta(seconds=60 * 60 * 24),
-            used_at=None,
-        )
-    )
-    db.commit()
-
-    from app.services.mailer import send_email_verification_email
-    from app.tasks.notifications import kick_delivery
-
-    send_email_verification_email(
-        db=db,
-        user_id=user.id,
-        to_email=row.email,
-        username=user.username,
-        verification_link=f"{base}/account.html?verify_email={token}",
-    )
-    db.commit()
-    # Delivery is the worker's job, but the beat schedule can be minutes away,
-    # so a best-effort immediate dispatch keeps verification fast.
-    kick_delivery()
-    return True
-
-
-def _serialize_user_email(row: UserEmail) -> dict:
-    return {
-        "id": int(row.id),
-        "email": row.email,
-        "source": row.source,
-        "is_primary": bool(row.is_primary),
-        "is_verified": bool(row.is_verified),
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def _ensure_user_email_row(
-    db: Session,
-    *,
-    user_id: int,
-    email: str,
-    source: str = "user",
-    is_primary: bool = False,
-    is_verified: bool = False,
-) -> UserEmail:
-    normalized = _normalize_email(email)
-    assert normalized is not None
-
-    existing = (
-        db.query(UserEmail).filter(UserEmail.email_lower == normalized).one_or_none()
-    )
-    if existing:
-        if existing.user_id != user_id:
-            raise HTTPException(
-                status_code=409, detail="Email address already belongs to another user"
-            )
-        if is_primary:
-            (
-                db.query(UserEmail)
-                .filter(UserEmail.user_id == user_id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
-                .update({"is_primary": False}, synchronize_session=False)
-            )  # noqa: E712
-            existing.is_primary = True
-        existing.is_verified = bool(existing.is_verified or is_verified)
-        db.add(existing)
-        db.commit()
-        db.refresh(existing)
-        return existing
-
-    if is_primary:
-        (
-            db.query(UserEmail)
-            .filter(UserEmail.user_id == user_id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
-            .update({"is_primary": False}, synchronize_session=False)
-        )  # noqa: E712
-
-    row = UserEmail(
-        user_id=user_id,
-        email=normalized,
-        email_lower=normalized,
-        source=source,
-        is_primary=bool(is_primary),
-        is_verified=bool(is_verified),
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
 
 
 def _normalize_color(value: str | None) -> str | None:
@@ -300,9 +128,6 @@ def _normalize_node_colors(value: dict | None) -> dict[str, str]:
 
 def _pages_allowed_for_role(user: User) -> set[str]:
     role = str(getattr(user, "effective_role", "") or "").lower()
-    if role == ROLE_PENDING:
-        return {"/pending.html"}
-
     allowed = {
         "/index.html",
         "/manifests.html",
@@ -324,8 +149,6 @@ def _normalize_start_page(
     value: str | None, allowed_pages: set[str] | None = None
 ) -> str:
     allowed = allowed_pages or ALLOWED_START_PAGES
-    if allowed == {"/pending.html"}:
-        return "/pending.html"
 
     raw = str(value or "").strip()
     if not raw:
@@ -440,15 +263,11 @@ def me(request: Request, db: Session = Depends(get_db)):
     if auth_method != "local" and get_sso_provider(auth_method):
         logout_url = "/v1/auth/logout"
 
-    email, email_source = _resolved_email(db, user)
-    email_editable = auth_method == "local"
-
     return {
         "id": user.id,
         "username": user.username,
-        "email": email,
-        "email_source": email_source,
-        "email_editable": email_editable,
+        # Set by an administrator; account mail goes only here, as in KEEN.
+        "email": user.email,
         "auth_method": auth_method,
         "password_features_enabled": _password_features_enabled(),
         "role": user.role,
@@ -466,204 +285,57 @@ def me(request: Request, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/v1/me/emails")
-def list_my_emails(request: Request, db: Session = Depends(get_db)):
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, User):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    # Keep the account-email table in sync with the legacy profile email,
-    # without marking a self-asserted address verified.
-    if (user.email or "").strip():
-        _ensure_user_email_row(
-            db,
-            user_id=user.id,
-            email=str(user.email),
-            source="user",
-            is_primary=False,
-        )
-
-    rows = (
-        db.query(UserEmail)
-        .filter(UserEmail.user_id == user.id)
-        .order_by(UserEmail.is_primary.desc(), UserEmail.email.asc())
-        .all()
-    )
-    return {"items": [_serialize_user_email(row) for row in rows]}
-
-
-def _address_notice(
-    db: Session,
+@router.get("/v1/me/sso-emails")
+def list_sso_emails(
     request: Request,
-    user: User,
-    event: str,
-    *,
-    email: str,
-    recipient: str | None = None,
-) -> None:
-    """Mail a security notice about an address change already committed."""
-    from app.services import security_notifications
-    from app.tasks.notifications import commit_and_kick
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return sso_emails.list_addresses(user=user, db=db)
 
-    if security_notifications.enqueue(
-        db,
-        user,
-        event,
+
+@router.post("/v1/me/sso-emails/request")
+def request_sso_email(
+    payload: sso_emails.Address,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return sso_emails.request_address(
+        payload=payload,
         ip=request_client_address(request),
-        email=email,
-        recipient=recipient,
-    ):
-        commit_and_kick(db)
+        user=user,
+        db=db,
+        session_id=request.cookies.get(settings.session_cookie_name, ""),
+    )
 
 
-def _tell_previous_address(
-    db: Session, request: Request, user: User, previous: str | None
-) -> None:
-    """When the account's notice address changed, tell the one it replaced."""
-    current = notification_email_for_user(db, user=user)
-    if previous and current and previous.strip().lower() != current.strip().lower():
-        _address_notice(
-            db,
-            request,
-            user,
-            "notice-address-changed",
-            email=current,
-            recipient=previous,
-        )
-
-
-@router.post("/v1/me/emails")
-def add_my_email(
-    payload: UserEmailCreatePayload, request: Request, db: Session = Depends(get_db)
+@router.post("/v1/me/sso-emails/confirm")
+def confirm_sso_email(
+    payload: sso_emails.Proof,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, User):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    previous = notification_email_for_user(db, user=user)
-    row = _ensure_user_email_row(
-        db,
-        user_id=user.id,
-        email=payload.email,
-        source="user",
-        is_primary=bool(payload.is_primary),
-        # Local account additions are self-asserted: the row starts
-        # unverified and a mailbox proof (verification email) can mark it
-        # verified. A verified mailbox is what SSO auto-linking trusts.
-        is_verified=False,
+    return sso_emails.confirm_address(
+        payload=payload, ip=request_client_address(request), user=user, db=db
     )
 
-    # If the user explicitly marks an address primary, keep the legacy user.email
-    # column aligned because existing notification code reads it directly.
-    if bool(payload.is_primary):
-        user.email = row.email
-        db.add(user)
-        db.commit()
-        _tell_previous_address(db, request, user, previous)
 
-    _maybe_send_email_verification(db, user, row)
-
-    return _serialize_user_email(row)
-
-
-@router.post("/v1/me/emails/{email_id}/primary")
-def make_my_email_primary(
-    email_id: int, request: Request, db: Session = Depends(get_db)
+@router.post("/v1/me/sso-emails/remove")
+def remove_sso_email(
+    payload: sso_emails.Address,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, User):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    row = (
-        db.query(UserEmail)
-        .filter(UserEmail.id == email_id, UserEmail.user_id == user.id)
-        .one_or_none()
+    return sso_emails.remove_address(
+        payload=payload,
+        ip=request_client_address(request),
+        user=user,
+        db=db,
+        session_id=request.cookies.get(settings.session_cookie_name, ""),
     )
-    if not row:
-        raise HTTPException(status_code=404, detail="Email address not found")
-
-    previous = notification_email_for_user(db, user=user)
-    (
-        db.query(UserEmail)
-        .filter(UserEmail.user_id == user.id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
-        .update({"is_primary": False}, synchronize_session=False)
-    )  # noqa: E712
-    row.is_primary = True
-    user.email = row.email
-    db.add(row)
-    db.add(user)
-    db.commit()
-    _tell_previous_address(db, request, user, previous)
-    db.refresh(row)
-    return _serialize_user_email(row)
-
-
-@router.delete("/v1/me/emails/{email_id}")
-def delete_my_email(email_id: int, request: Request, db: Session = Depends(get_db)):
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, User):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    row = (
-        db.query(UserEmail)
-        .filter(UserEmail.id == email_id, UserEmail.user_id == user.id)
-        .one_or_none()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Email address not found")
-
-    previous = notification_email_for_user(db, user=user)
-    was_primary = bool(row.is_primary)
-    row_email = row.email
-    db.delete(row)
-    db.commit()
-
-    if was_primary or (user.email or "").strip().lower() == row_email.lower():
-        replacement = (
-            db.query(UserEmail)
-            .filter(UserEmail.user_id == user.id)
-            .order_by(UserEmail.is_verified.desc(), UserEmail.email.asc())
-            .first()
-        )
-        user.email = replacement.email if replacement else None
-        if replacement:
-            replacement.is_primary = True
-            db.add(replacement)
-        db.add(user)
-        db.commit()
-
-    # The address that received the account's notices until now hears of it,
-    # even when it is the address removed.
-    _address_notice(
-        db, request, user, "email-removed", email=row_email, recipient=previous
-    )
-    return {"deleted": True}
-
-
-@router.post("/v1/me/emails/{email_id}/verify-request")
-def request_email_verification(
-    email_id: int, request: Request, db: Session = Depends(get_db)
-):
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, User):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    row = (
-        db.query(UserEmail)
-        .filter(UserEmail.id == email_id, UserEmail.user_id == user.id)
-        .one_or_none()
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Email address not found")
-    if bool(row.is_verified):
-        return {"queued": False, "reason": "already verified"}
-    queued = _maybe_send_email_verification(db, user, row)
-    if not queued:
-        return {
-            "queued": False,
-            "reason": "Outgoing mail needs SMTP settings and OSPMAE_PUBLIC_BASE_URL",
-        }
-    return {"queued": True}
 
 
 @router.get("/v1/me/notifications")
@@ -676,48 +348,6 @@ def my_notifications(request: Request, db: Session = Depends(get_db), limit: int
 
     limit = max(1, min(int(limit or 20), 100))
     return notification_snapshot(db, user_id=user.id, limit=limit)
-
-
-@router.post("/v1/me/emails/verify")
-def verify_my_email(
-    payload: EmailVerifyPayload, request: Request, db: Session = Depends(get_db)
-):
-    import hashlib
-
-    token = (payload.token or "").strip()
-    if not token:
-        raise HTTPException(status_code=400, detail="Invalid token")
-
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    row = (
-        db.query(EmailVerificationToken)
-        .filter(EmailVerificationToken.token_hash == token_hash)
-        .one_or_none()
-    )
-    now = datetime.utcnow()
-    if not row or row.used_at is not None or row.expires_at <= now:
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-
-    email_row = (
-        db.query(UserEmail)
-        .filter(
-            UserEmail.user_id == row.user_id, UserEmail.email_lower == row.email_lower
-        )
-        .one_or_none()
-    )
-    if not email_row:
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-
-    row.used_at = now
-    email_row.is_verified = True
-    db.add(row)
-    db.add(email_row)
-    db.commit()
-    owner = db.get(User, row.user_id)
-    if owner is not None:
-        _address_notice(db, request, owner, "email-verified", email=email_row.email)
-
-    return {"verified": email_row.email}
 
 
 @router.get("/v1/me/groups")
@@ -770,69 +400,6 @@ def list_my_subscriptions(request: Request, db: Session = Depends(get_db)):
         )
 
     return {"items": items}
-
-
-@router.put("/v1/me/profile")
-def update_my_profile(
-    payload: MeProfileUpdatePayload,
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    user = getattr(request.state, "user", None)
-    if not isinstance(user, User):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    auth_method = _session_auth_method(request, db) or "local"
-    if auth_method != "local":
-        raise HTTPException(
-            status_code=403,
-            detail="Primary email is managed through the account emails list for SSO sessions",
-        )
-
-    # Basic validation.
-    raw = str(payload.email or "").strip()
-    new_email = raw or None
-    if new_email is not None:
-        if "@" not in new_email or new_email.startswith("@") or new_email.endswith("@"):
-            raise HTTPException(status_code=400, detail="Invalid email address")
-
-    # Enforce uniqueness (case-insensitive-ish).
-    if new_email is not None:
-        existing = (
-            db.query(User.id)
-            .filter(User.id != user.id)
-            .filter(User.email.isnot(None))
-            .filter(User.email.ilike(new_email))
-            .one_or_none()
-        )
-        existing_alias = (
-            db.query(UserEmail.id)
-            .filter(UserEmail.email_lower == new_email.lower())
-            .filter(UserEmail.user_id != user.id)
-            .one_or_none()
-        )
-        if existing or existing_alias:
-            raise HTTPException(status_code=409, detail="Email address already in use")
-
-    user.email = new_email
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    if new_email:
-        row = _ensure_user_email_row(
-            db,
-            user_id=user.id,
-            email=new_email,
-            source="user",
-            is_primary=True,
-            # Self-asserted profile addresses stay unverified until the
-            # mailbox is proven with a verification link.
-            is_verified=False,
-        )
-        _maybe_send_email_verification(db, user, row)
-
-    return {"email": user.email}
 
 
 @router.get("/v1/me/preferences")

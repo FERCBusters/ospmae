@@ -2,7 +2,6 @@
   const msgEl = document.getElementById("msg");
   const form = document.getElementById("loginForm");
   const btn = document.getElementById("loginBtn");
-  const forgotWrap = document.getElementById("forgotWrap");
 
   const ssoSection = document.getElementById("ssoSection");
   const ssoButtons = document.getElementById("ssoButtons");
@@ -134,9 +133,6 @@
         if (divider) divider.classList.add("d-none");
         setMsg("Sign in using one of the enabled single sign-on providers.");
       }
-
-      if (methods.password_reset_enabled && forgotWrap)
-        forgotWrap.classList.remove("d-none");
       return methods;
     } catch (err) {
       console.warn("Auth methods unavailable", err);
@@ -150,10 +146,7 @@
         allowErrorStatuses: [401],
       });
       if (me && me.username) {
-        const role = String(me.effective_role || me.role || "").toLowerCase();
-        window.location.replace(
-          role === "pending" ? "/pending.html" : sanitizeNext(getNextParam()),
-        );
+        window.location.replace(sanitizeNext(getNextParam()));
       }
     } catch (_) {
       // not signed in
@@ -192,10 +185,7 @@
       }
 
       setMsg("Signed in. Redirecting…");
-      const role = String(res.effective_role || res.role || "").toLowerCase();
-      window.location.replace(
-        role === "pending" ? "/pending.html" : sanitizeNext(getNextParam()),
-      );
+      window.location.replace(sanitizeNext(getNextParam()));
     } catch (err) {
       // The server's own reason, such as a wrong password or a wait after
       // too many attempts.

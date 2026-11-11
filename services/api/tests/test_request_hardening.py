@@ -112,7 +112,7 @@ def test_an_oversized_tail_is_refused_before_the_application_sees_any_of_it():
 
 def test_body_limits_by_route():
     assert request_limits.body_limit("/v1/auth/login") == 16 * 1024
-    assert request_limits.body_limit("/v1/auth/reset-password") == 16 * 1024
+    assert request_limits.body_limit("/v1/auth/change-password") == 16 * 1024
     assert request_limits.body_limit("/v1/auth/mfa/webauthn/register") == 256 * 1024
     assert request_limits.body_limit("/v1/projects") == 2 * 1024 * 1024
 
@@ -371,16 +371,23 @@ def test_header_signed_in_writes_need_the_csrf_token(header_signed_in):
 # --- The signed-in account in routes ----------------------------------------
 
 
-def test_routes_can_change_the_signed_in_account():
-    c, user = auth_client(role="admin")
+def test_routes_can_change_the_signed_in_account(monkeypatch):
+    monkeypatch.setattr(settings, "local_auth_enabled", True)
+    c, user = auth_client(password="Old-password-1!", role="admin")
+    with SessionLocal() as db:
+        before = db.get(User, user.id).password_hash
     response = c.post(
-        "/v1/me/emails",
-        json={"email": "primary@example.com", "is_primary": True},
+        "/v1/auth/change-password",
+        json={
+            "current_password": "Old-password-1!",
+            "new_password": "New-password-2!",
+            "confirm_password": "New-password-2!",
+        },
         headers={"X-CSRF-Token": c.cookies["ospmae_csrf"]},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 204, response.text
     with SessionLocal() as db:
-        assert db.get(User, user.id).email == "primary@example.com"
+        assert db.get(User, user.id).password_hash != before
 
 
 # --- Audit trail -------------------------------------------------------------
@@ -610,17 +617,19 @@ def test_ignore_patterns_read_a_bounded_window_of_feed_text():
 def test_every_per_address_allowance_counts_one_ipv6_network(client, monkeypatch):
     from app.db.models import RateLimitEntry
 
-    # Password reset runs only with mail configured.
-    monkeypatch.setattr(settings, "smtp_host", "smtp.example.org")
-    monkeypatch.setattr(settings, "smtp_from_email", "ospmae@example.org")
-
+    monkeypatch.setattr(settings, "local_auth_enabled", True)
+    signed_in, _user = auth_client(role="viewer")
     for host in (1, 2, 3):
         from_address(client, f"2001:db8:5:6::{host}")
-        assert (
-            client.post(
-                "/v1/auth/request-password-reset", json={"identifier": "x@example.com"}
-            ).status_code
-            == 204
+        from_address(signed_in, f"2001:db8:5:6::{host}")
+        signed_in.post(
+            "/v1/auth/change-password",
+            json={
+                "current_password": "wrong-password",
+                "new_password": "New-password-2!",
+                "confirm_password": "New-password-2!",
+            },
+            headers={"X-CSRF-Token": signed_in.cookies["ospmae_csrf"]},
         )
         client.get("/v1/auth/sso/nope/start")
         client.post(
@@ -630,7 +639,7 @@ def test_every_per_address_allowance_counts_one_ipv6_network(client, monkeypatch
         keys = {
             key: db.query(RateLimitEntry).filter_by(identifier=key).count()
             for key in (
-                "pwreset_ip:2001:db8:5:6::/64",
+                "password_change:2001:db8:5:6::/64",
                 "login:2001:db8:5:6::/64",
             )
         }
@@ -639,31 +648,8 @@ def test_every_per_address_allowance_counts_one_ipv6_network(client, monkeypatch
             .filter(RateLimitEntry.identifier.like("%2001:db8:5:6::_"))
             .count()
         )
-    assert keys == {"pwreset_ip:2001:db8:5:6::/64": 3, "login:2001:db8:5:6::/64": 3}
+    assert keys == {
+        "password_change:2001:db8:5:6::/64": 3,
+        "login:2001:db8:5:6::/64": 3,
+    }
     assert stray == 0
-
-
-def test_password_reset_requests_spend_the_address_allowance(client, monkeypatch):
-    from app.db.models import Notification, PasswordResetToken
-
-    monkeypatch.setattr(settings, "smtp_host", "smtp.example.org")
-    monkeypatch.setattr(settings, "smtp_from_email", "ospmae@example.org")
-    monkeypatch.setattr(settings, "public_base_url", "https://ospmae.example")
-    make_user("reset-target", "Secret-pass-1!", role="viewer", email="t@example.org")
-    from_address(client, "198.51.100.40")
-    for n in range(5):
-        client.post(
-            "/v1/auth/request-password-reset", json={"identifier": f"nobody{n}"}
-        )
-    # The sixth request from the address is answered alike but sends nothing.
-    response = client.post(
-        "/v1/auth/request-password-reset", json={"identifier": "reset-target"}
-    )
-    assert response.status_code == 204
-    with SessionLocal() as db:
-        assert db.query(PasswordResetToken).count() == 0
-        assert db.query(Notification).count() == 0
-    from_address(client, "198.51.100.41")
-    client.post("/v1/auth/request-password-reset", json={"identifier": "reset-target"})
-    with SessionLocal() as db:
-        assert db.query(PasswordResetToken).count() == 1

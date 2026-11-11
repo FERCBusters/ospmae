@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import (
     APIRouter,
@@ -17,13 +16,10 @@ from sqlalchemy.orm import Session
 from app.api.payloads import (
     ChangePasswordPayload,
     LoginPayload,
-    PasswordResetConfirmPayload,
-    PasswordResetRequestPayload,
 )
 from app.core.config import settings
 from app.db.models import (
     LoginDevice,
-    PasswordResetToken,
     User,
 )
 from app.db.models import (
@@ -38,7 +34,6 @@ from app.security.auth import (
     clear_session_cookie,
     get_current_user,
     get_password_hash,
-    get_user_by_email,
     get_user_by_username,
     set_session_cookie,
 )
@@ -50,10 +45,12 @@ from app.security.oidc import (
     configured_sso_providers,
     get_sso_provider,
     handle_callback,
+    linked_account,
+    sso_attempt,
 )
 from app.security.passwords import verify_password
 from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
-from app.security.roles import ROLE_PENDING, attach_effective_role
+from app.security.roles import attach_effective_role
 from app.security.sessions import (
     create_session,
     delete_all_sessions_for_user,
@@ -61,8 +58,6 @@ from app.security.sessions import (
 )
 from app.security.url_safety import safe_relative_route_path
 from app.services import security_notifications
-from app.services.mailer import send_password_reset_email
-from app.services.notification_recipients import notification_email_for_user
 
 router = APIRouter()
 
@@ -110,16 +105,6 @@ def auth_methods():
         # Same-origin relative paths are always allowed; this list only applies
         # to absolute cross-origin URLs.
         "redirect_allowed_hosts": allowed_hosts,
-        "password_reset_enabled": (
-            bool(getattr(settings, "local_auth_enabled", True))
-            and not any_sso_enabled()
-            and bool((getattr(settings, "smtp_host", "") or "").strip())
-            and bool((getattr(settings, "smtp_from_email", "") or "").strip())
-        ),
-        "password_reset": {
-            "request_url": "/v1/auth/request-password-reset",
-            "page_url": "/forgot-password.html",
-        },
     }
 
 
@@ -327,9 +312,25 @@ async def sso_callback(
 async def _complete_sso_callback(
     request: Request, db: Session, *, provider_key: str
 ) -> Response:
-    user, next_url, id_token, provider = await handle_callback(
-        request, db, provider_key=provider_key
-    )
+    try:
+        user, next_url, id_token, provider = await handle_callback(
+            request, db, provider_key=provider_key
+        )
+    except HTTPException as error:
+        # Audit a refusal of a sign-in this browser started, naming the
+        # account only when the provider's identity is linked to one.
+        attempted = sso_attempt(request)
+        if attempted is not None:
+            db.rollback()
+            record_sign_in(
+                db,
+                request,
+                method=attempted,
+                outcome="failed",
+                account=linked_account(error),
+            )
+            db.commit()
+        raise
     request.state.user = user
     request.state.audit_username = user.username
 
@@ -348,13 +349,7 @@ async def _complete_sso_callback(
         _kick_delivery()
     csrf_token = generate_csrf_token()
 
-    effective_role = attach_effective_role(db, user)
-    dest = (
-        "/pending.html"
-        if effective_role == ROLE_PENDING
-        else (next_url or "/index.html")
-    )
-    resp = RedirectResponse(dest, status_code=302)
+    resp = RedirectResponse(next_url or "/index.html", status_code=302)
     set_session_cookie(resp, sid)
     set_csrf_cookie(resp, csrf_token)
     return resp
@@ -384,21 +379,9 @@ def _local_password_features_enabled() -> bool:
     return bool(getattr(settings, "local_auth_enabled", True)) and not any_sso_enabled()
 
 
-def _hash_reset_token(token: str) -> str:
-
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _derive_public_base_url(request: Request) -> str:
-    """The public origin for links sent by email.
-
-    Host headers are client-controlled, so the base URL is never derived from
-    the request: without explicit configuration no absolute link can be built
-    and mail-dependent flows stay disabled (fail closed).
-    """
-
-    configured = (getattr(settings, "public_base_url", "") or "").strip()
-    return configured.rstrip("/") if configured else ""
+# Current-password confirmations a session may make, per address (the sign-in
+# allowance) and per account within the same window, as KEEN limits them.
+PASSWORD_CHANGES_PER_ACCOUNT = 15
 
 
 @router.post("/v1/auth/change-password")
@@ -410,17 +393,34 @@ def change_password(
 ) -> Response:
     if not _local_password_features_enabled():
         raise HTTPException(status_code=404, detail="Password change disabled")
-
-    # Current-password guessing through a stolen session is bounded per account.
-    attempt_id = f"pw_change:{int(me.id)}"
-    allowed, _info = check_rate_limit(
-        db, attempt_id, max_attempts=5, window_seconds=300
-    )
-    if not allowed:
+    if settings.trust_remote_user:
         raise HTTPException(
-            status_code=429, detail="Too many attempts; try again later"
+            status_code=403,
+            detail="Password changes are disabled when OSPMAE_TRUST_REMOTE_USER is enabled",
         )
-    record_rate_limit_attempt(db, attempt_id)
+
+    # A session holder must not be able to test many current passwords, from
+    # one address or by spreading attempts across addresses.
+    for attempt_id, allowance in (
+        (request_allowance_key("password_change", request), throttle.ADDRESS_ATTEMPTS),
+        (f"pw_change:{int(me.id)}", PASSWORD_CHANGES_PER_ACCOUNT),
+    ):
+        allowed, _info = check_rate_limit(
+            db,
+            attempt_id,
+            max_attempts=allowance,
+            window_seconds=throttle.ADDRESS_WINDOW_SECONDS,
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many password change attempts. Please try again later.",
+            )
+    for attempt_id in (
+        request_allowance_key("password_change", request),
+        f"pw_change:{int(me.id)}",
+    ):
+        record_rate_limit_attempt(db, attempt_id)
 
     # Only allow password change for local sessions.
     sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
@@ -438,188 +438,36 @@ def change_password(
     if payload.new_password != payload.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match")
 
-    if not verify_password(payload.current_password, me.password_hash):
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
-
-    # The middleware attaches the actor to its own session; this route's
-    # session is a different one, so re-read the row here before writing.
-    user_row = db.query(User).filter(User.id == me.id).one_or_none()
+    user_row = (
+        db.query(User)
+        .filter(User.id == me.id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
     if not user_row:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    if not verify_password(payload.current_password, user_row.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
     user_row.password_hash = get_password_hash(payload.new_password)
-    db.add(user_row)
-    # Other sessions and every browser's recognition end with the old
-    # password (KEEN's rule); this browser keeps its session and is
-    # recognised again at its next correct password.
-    db.query(SessionRow).filter(SessionRow.user_id == user_row.id).filter(
-        SessionRow.session_id != sid
-    ).delete(synchronize_session=False)
+    # As in KEEN, the new password ends every local session of the account,
+    # this one included, and every browser's recognition: each signs in again.
+    user_row.mfa_version += 1
     db.query(LoginDevice).filter(LoginDevice.user_id == user_row.id).delete(
         synchronize_session=False
     )
     notice_queued = security_notifications.enqueue(
         db, user_row, "password-changed", ip=request_client_address(request)
     )
+    db.add(user_row)
     db.commit()
     if notice_queued:
         _kick_delivery()
-    return Response(status_code=204)
-
-
-@router.post("/v1/auth/request-password-reset")
-def request_password_reset(
-    payload: PasswordResetRequestPayload,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> Response:
-    if not _local_password_features_enabled():
-        # Don't leak configuration details.
-        return Response(status_code=204)
-
-    smtp_host = (getattr(settings, "smtp_host", "") or "").strip()
-    from_email = (getattr(settings, "smtp_from_email", "") or "").strip()
-    if not smtp_host or not from_email:
-        # Still avoid account enumeration.
-        return Response(status_code=204)
-
-    ident = (payload.identifier or "").strip()
-    if not ident:
-        return Response(status_code=204)
-
-    # The endpoint answers identically for known and unknown names, so it is
-    # a favourite of both enumerators and mail-bombers: both allowances are
-    # checked before any account-dependent work.
-    address_id = request_allowance_key("pwreset_ip", request)
-    allowed, _info = check_rate_limit(
-        db, address_id, max_attempts=5, window_seconds=900
-    )
-    if not allowed:
-        return Response(status_code=204)
-    # Every admitted request spends the address's allowance, whatever the
-    # name turns out to be.
-    record_rate_limit_attempt(db, address_id)
-
-    user = None
-    if "@" in ident:
-        ident_l = ident.lower()
-        user = (
-            get_user_by_email(db, ident_l)
-            or db.query(User).filter(User.username == ident).one_or_none()
-        )
-    else:
-        user = db.query(User).filter(User.username == ident).one_or_none()
-
-    # Always return 204 to avoid enumeration.
-    if not user or not bool(getattr(user, "is_active", False)):
-        # A rejection pays the same committed write as an issue, so wall
-        # clock cannot separate the two paths.
-        record_rate_limit_attempt(db, f"pwreset_dummy:{_hash_reset_token(ident)}")
-        return Response(status_code=204)
-
-    target_id = f"pwreset_target:{int(user.id)}"
-    allowed, _info = check_rate_limit(db, target_id, max_attempts=3, window_seconds=900)
-    if not allowed:
-        record_rate_limit_attempt(db, target_id)
-        return Response(status_code=204)
-    record_rate_limit_attempt(db, target_id)
-
-    # Always send account mail to the address the user has explicitly marked
-    # primary. The resolver retains legacy fallbacks for pre-migration accounts.
-    recipient = notification_email_for_user(db, user=user) or ""
-    if not recipient:
-        # Fallback: if username is an email.
-        if "@" in (user.username or ""):
-            recipient = user.username.strip()
-    if not recipient:
-        return Response(status_code=204)
-
-    base = _derive_public_base_url(request)
-    if not base:
-        # Without a configured public origin, the link's host would be chosen
-        # by the requester's Host header, so no token is issued (fail closed).
-        return Response(status_code=204)
-
-    token = secrets.token_urlsafe(32)
-    token_hash = _hash_reset_token(token)
-
-    expires = datetime.utcnow() + timedelta(
-        minutes=int(getattr(settings, "password_reset_token_ttl_minutes", 60))
-    )
-
-    row = PasswordResetToken(
-        user_id=user.id, token_hash=token_hash, expires_at=expires, used_at=None
-    )
-    db.add(row)
-    # The token and its e-mail commit together; the worker delivers with retries.
-    send_password_reset_email(
-        db=db,
-        user_id=user.id,
-        to_email=recipient,
-        username=user.username,
-        reset_link=f"{base}/reset-password.html?token={token}",
-        expires_minutes=int(getattr(settings, "password_reset_token_ttl_minutes", 60)),
-    )
-    db.commit()
-    _kick_delivery()
-
-    return Response(status_code=204)
-
-
-@router.post("/v1/auth/reset-password")
-def reset_password(
-    payload: PasswordResetConfirmPayload,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> Response:
-    if not _local_password_features_enabled():
-        raise HTTPException(status_code=404, detail="Password reset disabled")
-
-    if payload.new_password != payload.confirm_password:
-        raise HTTPException(status_code=400, detail="Passwords do not match")
-
-    token = (payload.token or "").strip()
-    if not token:
-        raise HTTPException(status_code=400, detail="Invalid token")
-
-    token_hash = _hash_reset_token(token)
-    row = (
-        db.query(PasswordResetToken)
-        .filter(PasswordResetToken.token_hash == token_hash)
-        .one_or_none()
-    )
-    if not row:
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-
-    now = datetime.utcnow()
-    if row.used_at is not None or row.expires_at <= now:
-        raise HTTPException(status_code=400, detail="Invalid or expired token")
-
-    user = db.query(User).filter(User.id == row.user_id).one_or_none()
-    if not user or not bool(getattr(user, "is_active", False)):
-        raise HTTPException(status_code=400, detail="Invalid token")
-
-    user.password_hash = get_password_hash(payload.new_password)
-    row.used_at = now
-
-    db.add(user)
-    db.add(row)
-    # A reset is the account's recovery: every session and recognised browser
-    # ends, and the sign-in throttle for its name starts afresh.
-    db.query(SessionRow).filter(SessionRow.user_id == user.id).delete(
-        synchronize_session=False
-    )
-    db.query(LoginDevice).filter(LoginDevice.user_id == user.id).delete(
-        synchronize_session=False
-    )
-    throttle.clear_throttle(db, throttle.name_key(user.username))
-    notice_queued = security_notifications.enqueue(
-        db, user, "password-changed", ip=request_client_address(request)
-    )
-    db.commit()
-    if notice_queued:
-        _kick_delivery()
-
-    return Response(status_code=204)
+    response = Response(status_code=204)
+    clear_session_cookie(response)
+    clear_csrf_cookie(response)
+    return response
 
 
 def _safe_next(next_url: str | None) -> str | None:

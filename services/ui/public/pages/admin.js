@@ -171,7 +171,6 @@
 
   function roleOptions(selected) {
     const roles = [
-      "pending",
       "viewer",
       "engineer",
       "contributor",
@@ -544,6 +543,7 @@
               <div class="d-flex flex-wrap gap-2">
                 <button type="button" class="btn btn-sm btn-primary" data-action="save-user" data-user-id="${u.id}"><i class="bi bi-save"></i> Save</button>
                 <button type="button" class="btn btn-sm btn-outline-primary" data-action="edit-user-access" data-user-id="${u.id}"><i class="bi bi-key"></i> Access</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-action="reset-password" data-user-id="${u.id}"><i class="bi bi-asterisk"></i> Reset password</button>
                 <button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-user" data-user-id="${u.id}" ${disableSelfDelete}><i class="bi bi-trash"></i> Delete</button>
               </div>
             </td>
@@ -623,7 +623,6 @@
             <td>
               <select class="form-select form-select-sm" data-field="group-role" data-group-id="${g.id}">
                 <option value="" ${!g.role ? "selected" : ""}>(no role)</option>
-                <option value="pending" ${g.role === "pending" ? "selected" : ""}>pending</option>
                 <option value="viewer" ${g.role === "viewer" ? "selected" : ""}>viewer</option>
                 <option value="engineer" ${g.role === "engineer" ? "selected" : ""}>engineer</option>
                 <option value="contributor" ${g.role === "contributor" ? "selected" : ""}>contributor</option>
@@ -682,7 +681,7 @@
       username: String(fd.get("username") || "").trim(),
       email: String(fd.get("email") || "").trim() || null,
       password: String(fd.get("password") || ""),
-      role: String(fd.get("role") || "pending"),
+      role: String(fd.get("role") || "viewer"),
     };
 
     await OSPMAE.api("/v1/admin/users", { method: "POST", body: payload });
@@ -721,10 +720,11 @@
       const activeEl = el.usersTable.querySelector(
         `input[data-field="active"][data-user-id="${userId}"]`,
       );
+      // An empty address clears the account's email, as in KEEN.
       const payload = {
-        role: roleEl?.value || "pending",
+        role: roleEl?.value || "viewer",
         is_active: Boolean(activeEl?.checked),
-        email: String(emailEl?.value || "").trim() || null,
+        email: String(emailEl?.value || "").trim(),
       };
       await OSPMAE.api(`/v1/admin/users/${userId}`, {
         method: "PATCH",
@@ -732,6 +732,19 @@
       });
       setMessage(`User #${userId} updated.`, "success");
       await refreshAll();
+      return;
+    }
+
+    if (action === "reset-password" && userId) {
+      const target = state.users.find((x) => Number(x.id) === Number(userId));
+      const label = target?.username || `#${userId}`;
+      const password = window.prompt(`Set a new password for ${label}:`);
+      if (!password) return;
+      await OSPMAE.api(`/v1/admin/users/${userId}/password`, {
+        method: "POST",
+        body: { new_password: password },
+      });
+      setMessage(`Password updated for ${label}.`, "success");
       return;
     }
 

@@ -50,14 +50,12 @@ test("canMaintain/canAnswer follow the effective role", () => {
   assert.equal(OSPMAE.canAnswerQuestions(), false);
 });
 
-test("pending users are detected from the me payload", () => {
-  OSPMAE.state.me = {
-    username: "x",
-    role: "pending",
-    effective_role: "pending",
-  };
-  assert.equal(OSPMAE.isPendingUser(), true);
-  OSPMAE.state.me = null;
+test("accounts are created by administrators: no pending start page", () => {
+  // As in KEEN, there is no pending sign-up role or page.
+  assert.equal(OSPMAE.isPendingUser, undefined);
+  const values = OSPMAE.ALLOWED_START_PAGES.map((p) => p.value);
+  assert.equal(values.includes("/pending.html"), false);
+  assert.equal(OSPMAE.normalizeStartPage("/pending.html"), "/index.html");
 });
 
 test("applyFeatureVisibility hides links of disabled pages", () => {
@@ -90,7 +88,7 @@ test("canAskQuestions widens the answering roles with the asking ones", () => {
   for (const role of ["product_owner", "architect"]) {
     assert.equal(ask(role), true, role);
   }
-  for (const role of ["viewer", "pending"]) {
+  for (const role of ["viewer", "inherit"]) {
     assert.equal(ask(role), false, role);
   }
   OSPMAE.state.me = null;

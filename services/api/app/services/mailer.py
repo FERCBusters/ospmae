@@ -16,10 +16,6 @@ def smtp_configured() -> bool:
     )
 
 
-def _smtp_config_ok() -> bool:
-    return smtp_configured()
-
-
 def send_email(*, to_email: str, subject: str, body: str) -> None:
     """Transport used by the notification worker; raises on failure.
 
@@ -44,87 +40,6 @@ def queue_email(
     outbox.queue_email(
         db, user_id=user_id, recipient=recipient, subject=subject, body=body
     )
-
-
-def send_password_reset_email(
-    *,
-    db: Session,
-    user_id: int | None,
-    to_email: str,
-    username: str,
-    reset_link: str,
-    expires_minutes: int,
-) -> None:
-    """Queue a password reset email.
-
-    The one-time reset link is posed to the outbox in the caller's
-    transaction; the worker sends it.
-    """
-
-    if not _smtp_config_ok():
-        return
-
-    from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
-
-    to_addr = (to_email or "").strip()
-    if not to_addr:
-        return
-
-    safe_user = username or "your account"
-
-    subject = f"{from_name}: Password reset"
-
-    body = (
-        f"Hello {safe_user},\n\n"
-        f"A password reset was requested for your OSPMAE account.\n\n"
-        f"Reset your password using this one-time link (valid for {expires_minutes} minutes):\n\n"
-        f"{reset_link}\n\n"
-        f"If you did not request this, you can ignore this email.\n"
-    )
-
-    queue_email(db, user_id=user_id, recipient=to_addr, subject=subject, body=body)
-
-
-def send_new_user_admin_notification_email(
-    *,
-    db: Session,
-    username: str,
-    email: str | None = None,
-    provider_label: str | None = None,
-    role: str | None = None,
-    admin_url: str | None = None,
-) -> None:
-    """Notify administrators that a new user was auto-provisioned.
-
-    The recipient is configured with OSPMAE_ADMIN_NOTIFICATION_EMAIL. It may be
-    a single email address or a comma-separated list accepted by SMTP.
-    """
-
-    to_email = (settings.admin_notification_email or "").strip()
-    if not to_email:
-        return
-
-    from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
-    safe_username = (username or "").strip() or "unknown"
-    safe_role = (role or "pending").strip() or "pending"
-    source = (provider_label or "SSO").strip() or "SSO"
-
-    subject = f"{from_name}: New user awaiting review - {safe_username}"
-    body = (
-        "Hello,\n\n"
-        f"A new OSPMAE user has been auto-created after signing in with {source}.\n\n"
-        f"Username: {safe_username}\n"
-        f"Email: {(email or '').strip() or 'not provided'}\n"
-        f"Initial role: {safe_role}\n\n"
-        "If this user should have access, sign in as an administrator, open the "
-        "Admin page, review the account, and change the role or group membership "
-        "as appropriate.\n"
-    )
-    if admin_url:
-        body += f"\nAdmin page: {admin_url}\n"
-    body += "\nIf this sign-in was unexpected, leave the user pending or disable the account.\n"
-
-    queue_email(db, user_id=None, recipient=to_email, subject=subject, body=body)
 
 
 def _deliver_email(*, to_email: str, subject: str, body: str) -> None:
@@ -170,36 +85,6 @@ def _deliver_email(*, to_email: str, subject: str, body: str) -> None:
         if user and pwd:
             s.login(user, pwd)
         s.send_message(msg)
-
-
-def send_account_approved_email(
-    *,
-    db: Session,
-    user_id: int | None = None,
-    to_email: str,
-    username: str | None = None,
-    login_url: str | None = None,
-) -> None:
-    """Notify a pending user that an administrator has granted access."""
-
-    recipient = (to_email or "").strip()
-    if not recipient:
-        return
-
-    from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
-    safe_username = (username or "").strip()
-    subject = f"{from_name}: Your account has been approved"
-
-    greeting = f"Hello {safe_username}," if safe_username else "Hello,"
-    body = (
-        f"{greeting}\n\n"
-        "An administrator has approved your OSPMAE account. You can now sign in "
-        "and use the application.\n"
-    )
-    if login_url:
-        body += f"\nSign in: {login_url}\n"
-
-    queue_email(db, user_id=user_id, recipient=recipient, subject=subject, body=body)
 
 
 def send_project_version_published_email(
@@ -339,30 +224,5 @@ def send_project_question_replied_email(
     if project_url:
         body += f"View project (Questions tab): {project_url}\n\n"
     body += "You are receiving this email because you subscribed to questions/replies for this project.\n"
-
-    queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)
-
-
-def send_email_verification_email(
-    *,
-    db: Session,
-    user_id: int | None = None,
-    to_email: str,
-    username: str | None,
-    verification_link: str,
-) -> None:
-    """Queue the one-time mailbox verification link for a self-asserted address."""
-
-    from_name = (settings.smtp_from_name or "OSPMAE").strip() or "OSPMAE"
-    subject = f"{from_name}: Verify your email address"
-
-    safe_user = (username or "").strip() or "your account"
-    body = (
-        f"Hello {safe_user},\n\n"
-        "A verification was requested for this email address on OSPMAE.\n\n"
-        "Confirm this mailbox with the one-time link below (valid for 24 hours):\n\n"
-        f"{verification_link}\n\n"
-        "If you did not request this, you can ignore this email.\n"
-    )
 
     queue_email(db, user_id=user_id, recipient=to_email, subject=subject, body=body)

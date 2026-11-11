@@ -60,7 +60,8 @@ test("the page starts with no message and asks for the sign-in methods", async (
     ],
   );
   assert.ok(document.getElementById("ssoSection").classList.contains("d-none"));
-  assert.ok(document.getElementById("forgotWrap").classList.contains("d-none"));
+  // Passwords are reset by an administrator, as in KEEN: no reset link.
+  assert.equal(document.querySelector('a[href*="password"]'), null);
 });
 
 test("the fields open, and take focus, once the page can submit them", async (t) => {
@@ -127,16 +128,6 @@ test("without local passwords only the providers remain", async (t) => {
     className: "alert alert-info",
     text: "Sign in using one of the enabled single sign-on providers.",
   });
-});
-
-test("password reset is offered only when the installation sends it", async (t) => {
-  const { document } = await signIn(t, {
-    methods: { password_reset_enabled: true },
-  });
-  assert.equal(
-    document.getElementById("forgotWrap").classList.contains("d-none"),
-    false,
-  );
 });
 
 test("a blank form is refused before any request", async (t) => {

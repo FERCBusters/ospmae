@@ -39,7 +39,7 @@ from app.security.request_limits import (
     RequestLimitMiddleware,
     validation_error_response,
 )
-from app.security.roles import ROLE_PENDING, attach_effective_role
+from app.security.roles import attach_effective_role
 
 app = FastAPI(
     title=settings.app_title,
@@ -94,25 +94,6 @@ class _TrustedProxySchemeMiddleware:
         await self.asgi_app(scope, receive, send)
 
 
-def _pending_user_api_allowed(method: str, path: str) -> bool:
-    """Return True for the tiny API surface a pending user needs.
-
-    Pending users are authenticated accounts awaiting administrative review. They
-    may only discover their own session state and log out; catalogue, framework,
-    manifest, dependency, question and admin APIs remain unavailable.
-    """
-
-    method_u = (method or "GET").upper()
-    normalized = str(path or "")
-    if normalized == "/v1/me" and method_u == "GET":
-        return True
-    if normalized == "/v1/auth/logout":
-        return True
-    if normalized in {"/v1/auth/check", "/v1/auth/methods"} and method_u == "GET":
-        return True
-    return False
-
-
 def _authenticate(request: Request) -> JSONResponse | None:
     """Attach the request's user, or return the response refusing the request.
 
@@ -126,20 +107,10 @@ def _authenticate(request: Request) -> JSONResponse | None:
         if user is None:
             return None
         # Loads every column, so the detached instance stays readable.
-        effective_role = attach_effective_role(db, user)
+        attach_effective_role(db, user)
         db.expunge(user)
         request.state.user = user
         request.state.audit_username = user.username
-        path = request.url.path or ""
-        if (
-            path.startswith("/v1")
-            and effective_role == ROLE_PENDING
-            and not _pending_user_api_allowed(request.method, path)
-        ):
-            return JSONResponse(
-                {"detail": "Your account is pending administrator approval."},
-                status_code=403,
-            )
         return None
     finally:
         db.close()
@@ -319,10 +290,6 @@ async def ws_notifications(ws: WebSocket):
         )
         if not user:
             await ws.close(code=4401)
-            return
-        if attach_effective_role(db, user) == ROLE_PENDING:
-            user = None
-            await ws.close(code=4403)
             return
 
         if not await hub.connect_if_capacity(

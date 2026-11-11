@@ -13,76 +13,46 @@ from app.api.payloads import (
     AdminGroupPermissionsUpdatePayload,
     AdminGroupUpdatePayload,
     AdminProjectOwnershipPayload,
+    AdminSetPasswordPayload,
     AdminUserAccessUpdatePayload,
     AdminUserCreatePayload,
     AdminUserUpdatePayload,
     OrganisationMemberPayload,
     OrganisationPayload,
 )
-from app.core.config import settings
+from app.core.email_address import single_mailbox
 from app.db.models import (
     AuditLog,
     Group,
     GroupPermission,
+    LoginDevice,
     Organisation,
     OrganisationMember,
     Permission,
     Project,
     ProjectOwnerGroup,
     User,
-    UserEmail,
     UserGroup,
     UserPermission,
 )
 from app.db.session import get_db
-from app.security.auth import create_user
+from app.security import sign_in_throttle as throttle
+from app.security.auth import create_user, get_password_hash, get_user_by_email
+from app.security.client_addr import request_client_address
 from app.security.permissions import PERM_AUDITTRAIL_READ, has_permission
-from app.security.roles import ROLE_PENDING, attach_effective_role, normalize_role
+from app.security.roles import attach_effective_role, normalize_role
+from app.security.sessions import end_all_sessions
+from app.services import security_notifications
 from app.services.entity_changelog import (
     list_entity_changelogs,
     project_changelog_state,
     record_entity_changelog,
 )
-from app.services.mailer import send_account_approved_email
-from app.services.notification_recipients import notification_email_for_user
-from app.tasks.notifications import commit_and_kick
+from app.tasks.notifications import kick_delivery
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _login_url() -> str | None:
-    base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    return f"{base_url}/login.html" if base_url else None
-
-
-def _notify_if_pending_user_approved(
-    db: Session, *, user: User, previous_effective_role: str | None
-) -> None:
-    """Notify a user only when they transition from pending to non-pending."""
-
-    if (previous_effective_role or "").lower() != ROLE_PENDING:
-        return
-    current_effective_role = attach_effective_role(db, user)
-    if current_effective_role == ROLE_PENDING:
-        return
-    if not bool(getattr(user, "is_active", False)):
-        return
-
-    recipient = notification_email_for_user(db, user=user)
-    if not recipient:
-        return
-
-    send_account_approved_email(
-        db=db,
-        user_id=user.id,
-        to_email=recipient,
-        username=user.username,
-        login_url=_login_url(),
-    )
-    # The approval was committed before this mail was queued.
-    commit_and_kick(db)
 
 
 def require_audit_access(
@@ -175,8 +145,6 @@ def update_user_route(
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
 
-    previous_effective_role = attach_effective_role(db, u)
-
     new_role = u.role
     if payload.role is not None:
         nr = normalize_role(payload.role)
@@ -187,6 +155,10 @@ def update_user_route(
     new_is_active = (
         u.is_active if payload.is_active is None else bool(payload.is_active)
     )
+    if u.id == me.id and payload.is_active is False:
+        raise HTTPException(
+            status_code=400, detail="You cannot deactivate your own account"
+        )
 
     # Safety: don't allow demoting or deactivating the last active admin, the
     # same guard the delete path applies.
@@ -206,54 +178,31 @@ def update_user_route(
                 detail="Cannot demote or deactivate the last active admin user",
             )
 
+    if payload.email is not None:
+        email = None
+        if payload.email.strip():
+            email = single_mailbox(payload.email)
+            if email is None:
+                raise HTTPException(status_code=400, detail="Invalid email address")
+            email = email.lower()
+            other = get_user_by_email(db, email)
+            if other is not None and other.id != u.id:
+                raise HTTPException(status_code=400, detail="Email already in use")
+        u.email = email
+
     if payload.role is not None:
         u.role = new_role
+    if payload.is_active is False and u.is_active:
+        # As in KEEN, deactivation ends the account's sessions for good: they
+        # do not return if the account is activated again, and the enrolment
+        # version moves on so pending ceremonies and address proofs end too.
+        end_all_sessions(db, u)
     if payload.is_active is not None:
         u.is_active = new_is_active
-
-    if payload.email is not None:
-        e = (payload.email or "").strip().lower() or None
-        # allow clearing email by sending empty string
-        if e:
-            existing_user = (
-                db.query(User).filter(User.email == e, User.id != u.id).one_or_none()
-            )
-            existing_email = (
-                db.query(UserEmail)
-                .filter(UserEmail.email_lower == e, UserEmail.user_id != u.id)
-                .one_or_none()
-            )
-            if existing_user or existing_email:
-                raise HTTPException(status_code=400, detail="Email already in use")
-            row = db.query(UserEmail).filter(UserEmail.email_lower == e).one_or_none()
-            if row:
-                row.is_primary = True
-                row.is_verified = True
-                db.add(row)
-            else:
-                db.add(
-                    UserEmail(
-                        user_id=u.id,
-                        email=e,
-                        email_lower=e,
-                        source="admin",
-                        is_primary=True,
-                        is_verified=True,
-                    )
-                )
-            (
-                db.query(UserEmail)
-                .filter(UserEmail.user_id == u.id, UserEmail.email_lower != e)
-                .update({"is_primary": False}, synchronize_session=False)
-            )
-        u.email = e
 
     db.add(u)
     db.commit()
     db.refresh(u)
-    _notify_if_pending_user_approved(
-        db, user=u, previous_effective_role=previous_effective_role
-    )
     eff = attach_effective_role(db, u)
     return {
         "id": u.id,
@@ -263,6 +212,44 @@ def update_user_route(
         "effective_role": eff,
         "is_active": u.is_active,
     }
+
+
+@router.post("/v1/admin/users/{user_id}/password")
+def set_user_password_route(
+    user_id: int,
+    payload: AdminSetPasswordPayload,
+    request: Request,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """An administrator's password reset, as KEEN's.
+
+    The account's local sessions and every browser's recognition end, its
+    sign-in throttle starts afresh, and its owner is mailed a notice.
+    """
+    target = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.password_hash = get_password_hash(payload.new_password)
+    target.mfa_version += 1
+    db.query(LoginDevice).filter(LoginDevice.user_id == target.id).delete(
+        synchronize_session=False
+    )
+    throttle.clear_throttle(db, throttle.name_key(target.username))
+    notice_queued = security_notifications.enqueue(
+        db, target, "password-reset", ip=request_client_address(request)
+    )
+    db.add(target)
+    db.commit()
+    if notice_queued:
+        kick_delivery()
+    return {"ok": True}
 
 
 @router.delete("/v1/admin/users/{user_id}")
@@ -347,8 +334,6 @@ def set_user_access(
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
 
-    previous_effective_role = attach_effective_role(db, u)
-
     group_ids = sorted(set(body.group_ids))
     permission_ids = sorted(set(body.permission_ids))
 
@@ -397,9 +382,6 @@ def set_user_access(
 
     db.commit()
     db.refresh(u)
-    _notify_if_pending_user_approved(
-        db, user=u, previous_effective_role=previous_effective_role
-    )
 
     return {
         "status": "ok",
@@ -479,17 +461,6 @@ def update_group(
         raise HTTPException(status_code=404, detail="group not found")
 
     body = payload.model_dump(exclude_unset=True)
-    pending_members_before = []
-    if "role" in body:
-        members = (
-            db.query(User)
-            .join(UserGroup, UserGroup.user_id == User.id)
-            .filter(UserGroup.group_id == group_id)
-            .all()
-        )
-        pending_members_before = [
-            (member, attach_effective_role(db, member)) for member in members
-        ]
 
     if "name" in body:
         name = (body.get("name") or "").strip()
@@ -520,13 +491,6 @@ def update_group(
     db.add(g)
     db.commit()
     db.refresh(g)
-
-    for member, previous_effective_role in pending_members_before:
-        db.refresh(member)
-        _notify_if_pending_user_approved(
-            db, user=member, previous_effective_role=previous_effective_role
-        )
-
     return _group_to_dict(g)
 
 

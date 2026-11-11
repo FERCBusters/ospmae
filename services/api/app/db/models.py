@@ -118,10 +118,6 @@ class User(Base):
         "UserShortcut", back_populates="user", cascade="all, delete-orphan"
     )
 
-    emails: Mapped[list["UserEmail"]] = relationship(
-        "UserEmail", back_populates="user", cascade="all, delete-orphan"
-    )
-
 
 class Session(Base):
     __tablename__ = "sessions"
@@ -212,57 +208,6 @@ class MfaChallenge(Base):
 
 
 # -----------------------------------------------------------------------------
-# Password resets (local auth)
-# -----------------------------------------------------------------------------
-
-
-class PasswordResetToken(Base):
-    __tablename__ = "password_reset_tokens"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-
-    # SHA256 hex digest of the token sent to the user (store hash only).
-    token_hash: Mapped[str] = mapped_column(
-        String(64), unique=True, index=True, nullable=False
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
-    )
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-
-# -----------------------------------------------------------------------------
-# Mailbox verification (self-asserted account emails)
-# -----------------------------------------------------------------------------
-
-
-class EmailVerificationToken(Base):
-    __tablename__ = "email_verification_tokens"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    email_lower: Mapped[str] = mapped_column(String(255), nullable=False)
-
-    # SHA256 hex digest of the token sent to the user (store hash only).
-    token_hash: Mapped[str] = mapped_column(
-        String(64), unique=True, index=True, nullable=False
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
-    )
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-
-# -----------------------------------------------------------------------------
 # External identities (OIDC)
 # -----------------------------------------------------------------------------
 
@@ -298,29 +243,41 @@ class UserIdentity(Base):
     )
 
 
-class UserEmail(Base):
-    __tablename__ = "user_emails"
+class UserSsoEmail(Base):
+    """An address whose mailbox the account has proved, for SSO linking.
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    Ported from KEEN: an identity provider that reports one of these addresses
+    as verified links its identity to the account at the first sign-in.
+    """
+
+    __tablename__ = "user_sso_emails"
+
+    email: Mapped[str] = mapped_column(String(256), primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    email: Mapped[str] = mapped_column(String(255), nullable=False)
-    email_lower: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-
-    # source: user, admin, sso, legacy_user, legacy_identity
-    source: Mapped[str] = mapped_column(String(40), nullable=False, default="user")
-    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
     )
 
-    user: Mapped[User] = relationship("User", back_populates="emails")
+
+class SsoEmailChallenge(Base):
+    """The one outstanding mailbox proof an account has requested.
+
+    It holds a digest of the e-mailed token and the account's password and
+    second-factor state when it was requested, so a change to either ends it.
+    """
+
+    __tablename__ = "sso_email_challenges"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    email: Mapped[str] = mapped_column(String(256), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    mfa_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    password_digest: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class OidcLoginState(Base):

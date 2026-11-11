@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import re
-import secrets
 from collections.abc import Mapping
 from datetime import datetime
 
 from fastapi import Depends, HTTPException, Request, Response
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models import User, UserEmail
+from app.core.email_address import single_mailbox
+from app.db.models import User
 from app.db.session import get_db
 from app.security.passwords import hash_password, verify_password
 from app.security.roles import (
@@ -20,7 +21,6 @@ from app.security.roles import (
     ROLE_FRAMEWORK_ADMIN,
     ROLE_INHERIT,
     ROLE_MAINTAINER,
-    ROLE_PENDING,
     ROLE_PRODUCT_OWNER,
     ROLE_VIEWER,
     attach_effective_role,
@@ -41,7 +41,6 @@ ALLOWED_USER_ROLES = {
     ROLE_PRODUCT_OWNER,
     ROLE_ARCHITECT,
     ROLE_VIEWER,
-    ROLE_PENDING,
     ROLE_INHERIT,
 }
 
@@ -60,16 +59,11 @@ def get_user_by_username(db: Session, username: str) -> User | None:
 
 
 def get_user_by_email(db: Session, email: str) -> User | None:
+    """The account whose e-mail is this address, compared without case."""
     e = (email or "").strip().lower()
     if not e:
         return None
-    user = db.query(User).filter(User.email == e).one_or_none()
-    if user:
-        return user
-    row = db.query(UserEmail).filter(UserEmail.email_lower == e).one_or_none()
-    if not row:
-        return None
-    return db.query(User).filter(User.id == row.user_id).one_or_none()
+    return db.query(User).filter(func.lower(func.trim(User.email)) == e).one_or_none()
 
 
 def authenticate_user(db: Session, username: str, password: str) -> User | None:
@@ -118,51 +112,6 @@ def _remote_user_from_headers(
     return value
 
 
-def _normalize_role(raw: str | None) -> str:
-    canonical = canonicalize_role(raw)
-    if canonical is None:
-        return ROLE_PENDING
-    return canonical
-
-
-def _auto_provision_remote_user(db: Session, username: str) -> User | None:
-    if not bool(getattr(settings, "remote_user_auto_provision", False)):
-        return None
-
-    role = _normalize_role(
-        getattr(settings, "remote_user_auto_provision_role", ROLE_PENDING)
-    )
-
-    existing = get_user_by_username(db, username)
-    if existing:
-        return existing
-
-    u = User(
-        username=username,
-        password_hash=get_password_hash(secrets.token_urlsafe(24)),
-        role=role,
-        is_active=True,
-        last_login_at=datetime.utcnow(),
-    )
-    db.add(u)
-
-    from app.services.mailer import send_new_user_admin_notification_email
-
-    # The administrators' notice commits with the account it reports.
-    base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    send_new_user_admin_notification_email(
-        db=db,
-        username=username,
-        email=None,
-        provider_label="trusted remote-user",
-        role=role,
-        admin_url=(f"{base_url}/admin.html" if base_url else None),
-    )
-    db.commit()
-    db.refresh(u)
-    return u
-
-
 def get_current_user_from_headers_cookies(
     headers: Mapping[str, str],
     cookies: Mapping[str, str],
@@ -176,9 +125,9 @@ def get_current_user_from_headers_cookies(
     """
     remote_user = _remote_user_from_headers(headers, socket_peer)
     if remote_user:
+        # The authenticating proxy names an existing account; OSPMAE creates
+        # none here, as KEEN does not.
         user = get_user_by_username(db, remote_user)
-        if not user:
-            user = _auto_provision_remote_user(db, remote_user)
         if user and user.is_active:
             user.last_login_at = datetime.utcnow()
             db.add(user)
@@ -291,17 +240,19 @@ def create_user(
         raise ValueError("username already exists")
 
     email_norm = None
-    if email is not None:
-        email_norm = (email or "").strip().lower() or None
-        if email_norm and get_user_by_email(db, email_norm):
+    if email is not None and email.strip():
+        email_norm = single_mailbox(email)
+        if email_norm is None:
+            raise ValueError("Invalid email address")
+        if get_user_by_email(db, email_norm):
             raise ValueError("email already exists")
     if not password or len(password) < 8:
         raise ValueError("password must be at least 8 chars")
 
-    normalized = canonicalize_role(role) or ROLE_VIEWER
+    normalized = canonicalize_role(role) if (role or "").strip() else ROLE_VIEWER
     if normalized not in ALLOWED_USER_ROLES:
         raise ValueError(
-            "role must be one of: admin, maintainer, contributor, engineer, product_owner, architect, viewer, pending, inherit"
+            "role must be one of: admin, framework_admin, maintainer, contributor, engineer, product_owner, architect, viewer, inherit"
         )
 
     u = User(
@@ -312,18 +263,6 @@ def create_user(
         is_active=bool(is_active),
     )
     db.add(u)
-    db.flush()
-    if email_norm:
-        db.add(
-            UserEmail(
-                user_id=u.id,
-                email=email_norm,
-                email_lower=email_norm,
-                source="user",
-                is_primary=True,
-                is_verified=True,
-            )
-        )
     db.commit()
     db.refresh(u)
     return u

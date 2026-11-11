@@ -11,7 +11,6 @@ from app.security.roles import (
     ROLE_ENGINEER,
     ROLE_FRAMEWORK_ADMIN,
     ROLE_MAINTAINER,
-    ROLE_PENDING,
     ROLE_PRODUCT_OWNER,
     attach_effective_role,
 )
@@ -127,8 +126,6 @@ def has_permission(db: Session, user: User, code: str) -> bool:
     """Return True if the user has the given permission code."""
 
     effective_role = attach_effective_role(db, user)
-    if effective_role == ROLE_PENDING:
-        return False
     if effective_role == ROLE_ADMIN:
         return True
 

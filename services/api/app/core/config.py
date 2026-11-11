@@ -86,13 +86,10 @@ class Settings(BaseSettings):
     #   - Leave empty to disallow all cross-origin redirects.
     login_redirect_allowed_hosts: str = Field(default="")
 
-    # Public base URL for links in emails etc. Optional; if empty we derive
-    # from the incoming request.
+    # Public base URL: the origin for links in emails and for second-factor
+    # ceremonies. It is never derived from a request, so without it no mail
+    # carries a link.
     public_base_url: str = Field(default="")
-
-    # Optional admin email address (or comma-separated addresses) for operational
-    # notifications such as newly auto-provisioned SSO users awaiting review.
-    admin_notification_email: str = Field(default="")
 
     # ---------------------------------------------------------------------
     # Generic OpenID Connect provider
@@ -114,11 +111,8 @@ class Settings(BaseSettings):
     oidc_end_session_endpoint: str = Field(default="")
     oidc_post_logout_redirect_uri: str = Field(default="")
     oidc_id_token_leeway_seconds: int = Field(default=60)
-    oidc_auto_provision: bool = Field(default=False)
-    oidc_auto_provision_role: str = Field(default="pending")
     oidc_auto_link_existing: bool = Field(default=True)
     oidc_allowed_email_domains: str = Field(default="")
-    oidc_username_claims: str = Field(default="preferred_username,email")
 
     # Google OIDC. Defaults are suitable for consumer Google and any Google
     # Workspace domain; do not set a hosted-domain restriction unless you want
@@ -142,11 +136,8 @@ class Settings(BaseSettings):
     google_redirect_uri: str = Field(default="")
     google_end_session_endpoint: str = Field(default="")
     google_post_logout_redirect_uri: str = Field(default="")
-    google_auto_provision: bool = Field(default=False)
-    google_auto_provision_role: str = Field(default="pending")
     google_auto_link_existing: bool = Field(default=True)
     google_allowed_email_domains: str = Field(default="")
-    google_username_claims: str = Field(default="email")
 
     # GitHub OAuth. OSPMAE uses /user for the stable numeric account id and
     # /user/emails to resolve a verified primary email when possible.
@@ -165,8 +156,6 @@ class Settings(BaseSettings):
     github_client_secret: str = Field(default="")
     github_scopes: str = Field(default="read:user user:email")
     github_redirect_uri: str = Field(default="")
-    github_auto_provision: bool = Field(default=False)
-    github_auto_provision_role: str = Field(default="pending")
     github_auto_link_existing: bool = Field(default=True)
     github_allowed_email_domains: str = Field(default="")
 
@@ -174,13 +163,8 @@ class Settings(BaseSettings):
     trust_remote_user: bool = Field(default=False)
     remote_user_header_name: str = Field(default="REMOTE_USER")
 
-    # Optional: auto-create local users on first trusted remote-user login.
-    # Useful in SSO-first deployments.
-    remote_user_auto_provision: bool = Field(default=False)
-    remote_user_auto_provision_role: str = Field(default="pending")
-
     # ---------------------------------------------------------------------
-    # SMTP (password reset emails)
+    # SMTP (account security and notification emails)
     # ---------------------------------------------------------------------
     smtp_host: str = Field(default="")
     smtp_port: int = Field(default=587)
@@ -191,8 +175,6 @@ class Settings(BaseSettings):
     smtp_timeout_seconds: int = Field(default=20)
     smtp_from_email: str = Field(default="")
     smtp_from_name: str = Field(default="OSPMAE")
-
-    password_reset_token_ttl_minutes: int = Field(default=60)
 
     # ---------------------------------------------------------------------
     # Background jobs (Celery)

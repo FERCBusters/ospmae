@@ -584,3 +584,85 @@ def test_page_moves_rewrite_saved_start_pages_and_shortcuts() -> None:
         assert pages == list(start_pages.values())
     finally:
         _drop_chain()
+
+
+def test_keen_account_model_retires_pending_sign_up_and_old_addresses() -> None:
+    """0038 deactivates every account that was never approved, directly or
+    through a pending group, and keeps only verified addresses as SSO
+    linking addresses."""
+    if not _IS_POSTGRES:
+        return
+    cfg = _alembic_config()
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        command.upgrade(cfg, "0037_user_login_ips")
+        with engine.begin() as conn:
+
+            def account(name: str, role: str) -> int:
+                return conn.execute(
+                    text(
+                        "INSERT INTO users (username, password_hash, role, is_active, "
+                        "created_at) VALUES (:u, 'x', :r, true, now()) RETURNING id"
+                    ),
+                    {"u": name, "r": role},
+                ).scalar_one()
+
+            def group(name: str, role: str) -> int:
+                return conn.execute(
+                    text(
+                        "INSERT INTO groups (name, role, created_at) "
+                        "VALUES (:n, :r, now()) RETURNING id"
+                    ),
+                    {"n": name, "r": role},
+                ).scalar_one()
+
+            account("waiting", "Pending")
+            inheriting = account("inheriting", "inherit")
+            approved = account("approved", "inherit")
+            viewer = account("viewer", "viewer")
+            arrivals = group("arrivals", "pending")
+            readers = group("readers", "viewer")
+            for user_id, group_id in (
+                (inheriting, arrivals),
+                (approved, arrivals),
+                (approved, readers),
+            ):
+                conn.execute(
+                    text("INSERT INTO user_groups (user_id, group_id) VALUES (:u, :g)"),
+                    {"u": user_id, "g": group_id},
+                )
+            for user_id, email, verified in (
+                (viewer, "proved@x.test", True),
+                (viewer, "claimed@x.test", False),
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO user_emails (user_id, email, email_lower, source, "
+                        "is_primary, is_verified, created_at, updated_at) VALUES "
+                        "(:u, :e, :e, 'user', false, :v, now(), now())"
+                    ),
+                    {"u": user_id, "e": email, "v": verified},
+                )
+        command.upgrade(cfg, "head")
+        with engine.begin() as conn:
+            accounts = dict(
+                conn.execute(
+                    text("SELECT username, role || ':' || is_active FROM users")
+                ).all()
+            )
+            groups = dict(conn.execute(text("SELECT name, role FROM groups")).all())
+            linking = conn.execute(
+                text("SELECT email, user_id FROM user_sso_emails")
+            ).all()
+        assert accounts == {
+            "waiting": "viewer:false",
+            "inheriting": "inherit:false",
+            "approved": "inherit:true",
+            "viewer": "viewer:true",
+        }
+        assert groups == {"arrivals": None, "readers": "viewer"}
+        assert [tuple(row) for row in linking] == [("proved@x.test", viewer)]
+    finally:
+        _drop_chain()

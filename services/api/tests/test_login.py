@@ -20,7 +20,7 @@ from app.security.auth import authenticate_user
 from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
 from fastapi.testclient import TestClient
 
-from tests.conftest import make_user, peer_wrapper
+from tests.conftest import auth_client, make_user, peer_wrapper
 
 PASSWORD = "Password1!"
 WRONG = "BadPass1!"
@@ -299,11 +299,9 @@ def test_concurrent_attempts_cannot_share_one_opening():
 # --------------------------------------------------------------- recoveries --
 
 
-def test_password_reset_clears_the_throttle_and_ends_sessions_and_devices(
-    client, db, monkeypatch
+def test_an_administrators_reset_clears_the_throttle_and_ends_sessions_and_devices(
+    client, db
 ):
-    from app.api.routes import auth as auth_routes
-
     make_user("Kim", PASSWORD, role="viewer")
     kim = user_id("Kim")
     owner = browser("8.8.8.8")
@@ -312,35 +310,22 @@ def test_password_reset_clears_the_throttle_and_ends_sessions_and_devices(
         attempt(browser(f"9.4.0.{n}"), "Kim", WRONG)
     assert attempt(browser("9.4.1.1"), "Kim", PASSWORD).status_code == 429
 
-    from app.db.models import PasswordResetToken
-
-    token = "reset-token-for-kim-0123456789"
-    db.add(
-        PasswordResetToken(
-            user_id=kim,
-            token_hash=auth_routes._hash_reset_token(token),
-            expires_at=datetime.utcnow() + timedelta(hours=1),
-        )
+    admin, _ = auth_client("kim-admin", PASSWORD, role="admin")
+    reset = admin.post(
+        f"/v1/admin/users/{kim}/password",
+        json={"new_password": "NewPassword2!"},
+        headers={"X-CSRF-Token": admin.cookies.get("ospmae_csrf")},
     )
-    db.commit()
-    reset = browser("8.8.8.9").post(
-        "/v1/auth/reset-password",
-        json={
-            "token": token,
-            "new_password": "NewPassword2!",
-            "confirm_password": "NewPassword2!",
-        },
-    )
-    assert reset.status_code == 204, reset.text
+    assert reset.status_code == 200, reset.text
+    assert owner.get("/v1/auth/check").status_code == 401
     with SessionLocal() as s:
-        assert s.query(SessionRow).filter_by(user_id=kim).count() == 0
         assert s.query(LoginDevice).filter_by(user_id=kim).count() == 0
     assert _throttle_row("Kim") is None
     # Any browser now signs in with the new password straight away.
     assert attempt(browser("9.4.1.2"), "Kim", "NewPassword2!").status_code == 200
 
 
-def test_password_change_ends_other_sessions_and_every_recognition(client):
+def test_password_change_ends_every_session_and_every_recognition(client):
     make_user("Lee", PASSWORD, role="viewer")
     here = browser("8.8.8.8")
     elsewhere = browser("8.8.8.7")
@@ -353,6 +338,8 @@ def test_password_change_ends_other_sessions_and_every_recognition(client):
     lee = user_id("Lee")
     with SessionLocal() as s:
         other_sid = create_session(s, user_id=lee, ttl_seconds=600)
+    elsewhere.cookies.set("ospmae_session", other_sid, domain="testserver.local")
+    assert elsewhere.get("/v1/auth/check").status_code == 204
     changed = here.post(
         "/v1/auth/change-password",
         json={
@@ -364,11 +351,11 @@ def test_password_change_ends_other_sessions_and_every_recognition(client):
     )
     assert changed.status_code == 204, changed.text
     with SessionLocal() as s:
-        sids = {r.session_id for r in s.query(SessionRow).filter_by(user_id=lee)}
         devices = s.query(LoginDevice).filter_by(user_id=lee).all()
-    assert other_sid not in sids and len(sids) == 1
     assert devices == []
-    assert here.get("/v1/auth/check").status_code == 204
+    # As in KEEN, this browser signs in again too.
+    assert here.get("/v1/auth/check").status_code == 401
+    assert elsewhere.get("/v1/auth/check").status_code == 401
 
 
 def test_a_password_without_its_second_factor_signs_no_one_out(client, db, monkeypatch):

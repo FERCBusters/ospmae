@@ -65,14 +65,8 @@ class ChangePasswordPayload(BaseModel):
     confirm_password: str = Field(min_length=8, max_length=200)
 
 
-class PasswordResetRequestPayload(BaseModel):
-    identifier: str = Field(min_length=1, max_length=255)
-
-
-class PasswordResetConfirmPayload(BaseModel):
-    token: str = Field(min_length=10, max_length=512)
+class AdminSetPasswordPayload(BaseModel):
     new_password: str = Field(min_length=8, max_length=200)
-    confirm_password: str = Field(min_length=8, max_length=200)
 
 
 class AdminUserCreatePayload(BaseModel):
@@ -492,19 +486,6 @@ class UserShortcutCreatePayload(BaseModel):
         if not s:
             return s
         return validate_safe_href(s, allow_relative=True)
-
-
-class MeProfileUpdatePayload(BaseModel):
-    email: str | None = Field(default=None, max_length=255)
-
-
-class UserEmailCreatePayload(BaseModel):
-    email: str = Field(min_length=3, max_length=255)
-    is_primary: bool = False
-
-
-class EmailVerifyPayload(BaseModel):
-    token: str = Field(default="", max_length=200)
 
 
 # -----------------------------------------------------------------------------

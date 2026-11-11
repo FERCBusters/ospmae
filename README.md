@@ -63,7 +63,7 @@ try:
         db,
         username="admin",            # 1-64 chars: letters, digits, _ - .
         password="SomethingStrongHere!",  # >= 8 chars
-        email="admin@example.com",   # optional but enables reset/SSO linking
+        email="admin@example.com",   # optional: account and security mail
         role="admin",
     )
 finally:
@@ -83,9 +83,9 @@ docker compose exec component-api python scripts/mfa_admin.py USERNAME --reset -
 
 | Setting | Purpose |
 | --- | --- |
-| `OSPMAE_PUBLIC_BASE_URL` | The origin used in links printed into e-mail (reset, approval, verification). Set this before enabling mail flows. |
+| `OSPMAE_PUBLIC_BASE_URL` | The origin used in links printed into e-mail (SSO email address verification, which needs HTTPS). Set this before enabling mail flows. |
 | `OSPMAE_FEATURE_*` | Installation switches above. |
-| `OSPMAE_LOCAL_AUTH_ENABLED`, `OSPMAE_PASSWORD_RESET_*` | Local accounts, reset/verification flows. |
+| `OSPMAE_LOCAL_AUTH_ENABLED` | Local password sign-in. Administrators create accounts, set their e-mail and reset passwords; single sign-on reaches existing accounts only. |
 | `OSPMAE_MFA_POLICY`, `OSPMAE_MFA_ENCRYPTION_KEY` | Local second factor: `optional` (default), `admins` or `all` accounts must complete TOTP/security-key/recovery-code verification on local sign-in; the key is a persistent Fernet key (`openssl rand -base64 32`) that encrypts TOTP secrets at rest and belongs in your secrets manager. |
 | `OSPMAE_OIDC_*` (or `OSPMAE_GITHUB_*`) | SSO providers; each enabled provider requires explicit `CLIENT_ID`, `CLIENT_SECRET`, endpoints and `REDIRECT_URI`. |
 | `OSPMAE_TRUST_REMOTE_USER` + `OSPMAE_REMOTE_USER_HEADER_NAME` | Trusted header identity for deployments where the network path alone reaches the API through the authenticating proxy. |

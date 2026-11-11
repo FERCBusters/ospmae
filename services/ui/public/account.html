@@ -80,38 +80,9 @@
                 <div id="profileRole" class="fw-semibold font-monospace">–</div>
               </div>
               <div class="col-12">
-                <div class="small-muted">Primary email (used for notifications)</div>
-                <div class="d-flex flex-wrap gap-2 align-items-center mt-1">
-                  <input id="profileEmailInput" class="form-control" style="max-width:420px;" type="email" placeholder="name@example.com" />
-                  <button id="saveEmailBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-save"></i> Save email</button>
-                  <span id="profileEmailMsg" class="text-secondary small"></span>
-                </div>
-              </div>
-              <div class="col-12">
-                <hr class="my-3" />
-                <div class="d-flex flex-wrap gap-2 align-items-end justify-content-between">
-                  <div>
-                    <div class="fw-semibold">Linked email addresses</div>
-                    <div class="small-muted">Additional addresses can be used to map Google, GitHub and OpenID Connect sign-ins to this same OSPMAE account.</div>
-                  </div>
-                </div>
-                <div class="row g-2 align-items-end mt-1">
-                  <div class="col-12 col-lg-7">
-                    <label class="form-label small-muted mb-1" for="linkedEmailInput">Add email address</label>
-                    <input id="linkedEmailInput" class="form-control" type="email" placeholder="other@example.com" />
-                  </div>
-                  <div class="col-12 col-lg-3">
-                    <div class="form-check mt-4">
-                      <input id="linkedEmailPrimary" class="form-check-input" type="checkbox" />
-                      <label class="form-check-label" for="linkedEmailPrimary">Make primary</label>
-                    </div>
-                  </div>
-                  <div class="col-12 col-lg-2 d-grid">
-                    <button id="addLinkedEmailBtn" class="btn btn-outline-primary" type="button"><i class="bi bi-plus"></i> Add</button>
-                  </div>
-                </div>
-                <div id="linkedEmailsList" class="mt-3"></div>
-                <div id="linkedEmailMsg" class="text-secondary small mt-2"></div>
+                <div class="small-muted">Email</div>
+                <div id="profileEmail" class="fw-semibold font-monospace">–</div>
+                <div class="form-text">Set by your OSPMAE administrator. Account and security emails go to this address.</div>
               </div>
             </div>
           </div>
@@ -310,6 +281,26 @@
               </div>
             </form>
             <div class="text-secondary small mt-2" id="mfaMsg"></div>
+          </div>
+        </div>
+
+        <div class="card mb-3" id="ssoEmailCard">
+          <div class="card-header">
+            <div class="fw-bold">SSO email addresses</div>
+            <div class="small-muted">SSO providers must report a verified email that exactly matches an address verified here. Verify your primary address or additional addresses you own. Existing linked SSO identities continue working independently of this list.</div>
+          </div>
+          <div class="card-body">
+            <p id="ssoEmailStatus" role="status">Loading</p>
+            <ul id="ssoEmailList" class="list-unstyled"></ul>
+            <form id="ssoEmailForm" class="row g-2 align-items-end">
+              <div class="col-12 col-lg-6">
+                <label for="ssoEmail" class="form-label small-muted mb-1">Email address</label>
+                <input id="ssoEmail" type="email" class="form-control" maxlength="256" autocomplete="email" required />
+              </div>
+              <div class="col-12 col-lg-3">
+                <button class="btn btn-primary" type="submit">Send verification link</button>
+              </div>
+            </form>
           </div>
         </div>
 

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models import Session as SessionRow
+from app.db.models import User
 
 
 def _now() -> datetime:
@@ -89,6 +90,19 @@ def delete_session(db: Session, session_id: str) -> None:
     if row:
         db.delete(row)
         db.commit()
+
+
+def end_all_sessions(db: Session, user: User) -> None:
+    """End every session of the account, in the caller's transaction.
+
+    The enrolment version moves on too, so a second-factor ceremony or an
+    address proof started under the old state ends with them (KEEN advances
+    its session and second-factor versions the same way).
+    """
+    db.query(SessionRow).filter(SessionRow.user_id == user.id).delete(
+        synchronize_session=False
+    )
+    user.mfa_version = User.mfa_version + 1
 
 
 def delete_all_sessions_for_user(db: Session, user_id: int) -> int:
