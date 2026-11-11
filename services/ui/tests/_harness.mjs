@@ -66,7 +66,6 @@ shim.document = {
   documentElement: shim.createElement("html"),
 };
 shim.window.document = shim.document;
-shim.window.downloadResponseAsFile = undefined;
 shim.window.OSPMAE = undefined;
 
 const originalWindow = globalThis.window;

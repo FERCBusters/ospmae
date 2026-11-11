@@ -11,6 +11,7 @@
     setActiveFrameworkByMachineName,
     loadFrameworkNodes,
     nodeColor,
+    escapeHtml,
   } = OSPMAE;
 
   const state = {
@@ -119,17 +120,6 @@
     deleteVersionBtn: document.getElementById("deleteVersionBtn"),
     cancelVersionBtn: document.getElementById("cancelVersionBtn"),
   };
-
-  function escapeHtml(v) {
-    return OSPMAE.escapeHtml
-      ? OSPMAE.escapeHtml(v)
-      : String(v ?? "")
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;")
-          .replaceAll('"', "&quot;")
-          .replaceAll("'", "&#39;");
-  }
 
   function toQueryString(query) {
     const params = new URLSearchParams();
@@ -402,29 +392,11 @@
     }
   }
 
-  function parseTags(value) {
-    if (!value) return [];
-    return String(value)
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-  }
-
   // A release date is a calendar date: the one written in the API's text,
   // whatever time zone the page is read in.
   function fmtDateInput(value) {
     const written = /^\d{4}-\d{2}-\d{2}/.exec(String(value || ""));
     return written ? written[0] : "";
-  }
-
-  function safeJsonParse(text) {
-    const raw = String(text || "").trim();
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw);
-    } catch (err) {
-      throw new Error(`Invalid JSON: ${err.message}`);
-    }
   }
 
   function renderFrameworkSelect() {
@@ -737,7 +709,7 @@
     return String(version?.version || "").trim() || "this version";
   }
 
-  function renderVersionEditorContext(mode = "edit") {
+  function renderVersionEditorContext() {
     if (!el.versionEditContext) return;
 
     if (!state.editingVersion && !state.creatingVersion) {
@@ -891,7 +863,10 @@
           const v = (state.editingProject.versions || []).find(
             (x) => x.id === id,
           );
-          if (v) openVersion(v);
+          if (v)
+            openVersion(v).catch((err) =>
+              OSPMAE.toast(err.message || "Failed to open version", "error"),
+            );
         });
       });
   }
@@ -969,7 +944,7 @@
     el.versionEditor.style.display = "";
     el.versionFormTitle.textContent = `Edit version: ${version.version}`;
     fillVersionForm(version);
-    renderVersionEditorContext("edit");
+    renderVersionEditorContext();
     renderVersionsList();
     surfaceVersionEditor();
 
@@ -985,7 +960,7 @@
     el.versionEditor.style.display = "";
     el.versionFormTitle.textContent = "Create new version";
     fillVersionForm({});
-    renderVersionEditorContext("create");
+    renderVersionEditorContext();
     renderVersionsList();
     surfaceVersionEditor();
 
@@ -997,11 +972,15 @@
     el.deleteVersionBtn.style.display = "none";
   }
 
-  async function openProject(projectId) {
+  function fetchProject(projectId) {
     const fwId = state.activeFramework?.id;
-    const full = await apiFetch(
+    return apiFetch(
       `/v1/projects/${projectId}${toQueryString({ framework_id: fwId || undefined })}`,
     );
+  }
+
+  async function openProject(projectId) {
+    const full = await fetchProject(projectId);
     state.editingProject = full;
     state.creatingProject = false;
 
@@ -1246,12 +1225,22 @@
       await loadVersionFrameworkNodes(state.editingVersion.id);
     } else {
       state.selectedNodeIds.clear();
+      state.dirtyNodeSelection = false;
       renderNodeTree();
     }
 
-    // Refresh project details and category counts.
+    // Refresh the versions' category counts for this framework. The version
+    // being edited stays open with what has been typed into its form.
     if (state.editingProject?.id) {
-      await openProject(state.editingProject.id);
+      const full = await fetchProject(state.editingProject.id);
+      state.editingProject = full;
+      const open = state.editingVersion?.id;
+      if (open) {
+        state.editingVersion =
+          (full.versions || []).find((v) => v.id === open) ||
+          state.editingVersion;
+      }
+      renderVersionsList();
     }
   }
 

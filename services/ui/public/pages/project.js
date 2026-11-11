@@ -731,17 +731,10 @@ function buildCapabilityTreeFromPaths(paths) {
 
 function graphHasCapabilities(graphData) {
   if (!graphData || typeof graphData !== "object") return false;
-  if (
+  return (
     Array.isArray(graphData.capability_tree) &&
     graphData.capability_tree.length > 0
-  )
-    return true;
-  if (
-    Array.isArray(graphData.capabilities) &&
-    graphData.capabilities.length > 0
-  )
-    return true;
-  return false;
+  );
 }
 
 function normalizeGraphData(graphData, versionId) {
@@ -926,56 +919,6 @@ function buildGraphHierarchy(graphData) {
     versionNode.children = graphData.capability_tree.map((node) =>
       mapTree(node, []),
     );
-  } else if (
-    Array.isArray(graphData.capabilities) &&
-    graphData.capabilities.length
-  ) {
-    // Backward-compatible parser for older payload shape.
-    const capabilities = graphData.capabilities;
-    const byId = new Map();
-
-    capabilities.forEach((cap) => {
-      const parent = cap.parent_id ? byId.get(cap.parent_id) : null;
-      const ownKey = slugifyCapabilityPart(
-        cap.key || cap.name || cap.display_name || "",
-      );
-      const keyPath = parent?.keyPath ? [...parent.keyPath, ownKey] : [ownKey];
-
-      byId.set(cap.id, {
-        id: cap.id,
-        name: cap.name || cap.display_name || cap.key || `Capability ${cap.id}`,
-        kind: "capability",
-        key: cap.key,
-        keyPath,
-        colorKey: colorKeyForCapabilityPath(pathFromParts(keyPath)),
-        path: cap.path,
-        level: Number(cap.level ?? 0),
-        parent_id: cap.parent_id,
-        children: [],
-      });
-    });
-
-    capabilities.forEach((cap) => {
-      const node = byId.get(cap.id);
-      const parentId = cap.parent_id;
-      if (parentId && byId.has(parentId)) {
-        byId.get(parentId).children.push(node);
-        return;
-      }
-      versionNode.children.push(node);
-    });
-
-    const stripInternal = (node) => {
-      if (!node || typeof node !== "object") return node;
-      const out = { ...node };
-      delete out.keyPath;
-      out.children = Array.isArray(out.children)
-        ? out.children.map(stripInternal)
-        : [];
-      return out;
-    };
-
-    versionNode.children = versionNode.children.map(stripInternal);
   }
 
   const sortTree = (node) => {
@@ -2574,7 +2517,6 @@ async function submitQuestion(body) {
       body: { body },
     });
     toast("Question submitted", "success");
-    window.OSPMAE?.refreshQuestionBell?.();
     await loadQuestions(true);
   } catch (err) {
     console.error(err);
@@ -2589,7 +2531,6 @@ async function submitReply(threadId, body) {
       body: { body },
     });
     toast("Reply sent", "success");
-    window.OSPMAE?.refreshQuestionBell?.();
     await loadQuestions(true);
   } catch (err) {
     console.error(err);

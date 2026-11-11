@@ -3,12 +3,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import { loadApp } from "./_harness.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
 const OSPMAE = await loadApp();
 const safeHref = OSPMAE.safeHref;
 
@@ -53,22 +49,4 @@ test("the design system's check decides once the shell has loaded it", () => {
   } finally {
     delete globalThis.window.mospUi;
   }
-});
-
-// The navbar shortcut changehandler in app.js refuses the same shapes.
-test("app.js shortcut handler rejects unsafe values", () => {
-  const src = readFileSync(
-    path.resolve(here, "..", "public", "app.js"),
-    "utf8",
-  );
-  const start = src.indexOf('addEventListener("change"');
-  assert.ok(start > 0, "shortcut change handler must exist");
-  const body = src.slice(start, start + 700);
-  assert.ok(body.includes("startsWith"), "relative routes only");
-  assert.ok(body.includes("u0000"), "control characters rejected");
-  assert.ok(
-    body.includes("\\") || body.includes("u007f"),
-    "backslashes rejected",
-  );
-  assert.ok(body.includes("quickAndDirty") === false, "no bypass");
 });

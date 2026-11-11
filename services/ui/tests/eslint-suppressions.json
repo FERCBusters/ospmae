@@ -1,7 +1,7 @@
 {
   "services/ui/public/app.js": {
     "no-unsanitized/property": {
-      "count": 2
+      "count": 1
     }
   },
   "services/ui/public/pages/account.js": {

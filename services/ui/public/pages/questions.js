@@ -2,7 +2,6 @@ const {
   api: apiFetch,
   initAuth,
   canAnswerQuestions,
-  refreshQuestionBell,
   escapeHtml,
 } = window.OSPMAE;
 
@@ -92,7 +91,6 @@ async function load() {
     el.notPermitted.style.display = "none";
     el.count.textContent = n ? `${n} open` : "";
     render(items);
-    refreshQuestionBell();
   } catch (e) {
     el.notPermitted.style.display = "";
     el.notPermitted.textContent = e?.message

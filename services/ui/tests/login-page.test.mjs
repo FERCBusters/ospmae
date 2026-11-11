@@ -4,10 +4,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { loadPage } from "./support/load-page.mjs";
 
-async function signIn(t, { methods = {}, login, me = null } = {}) {
+async function signIn(
+  t,
+  { methods = {}, login, me = null, next = "/project.html?id=3" } = {},
+) {
   const calls = [];
   const page = await loadPage("login.html", "pages/login.js", {
-    url: "https://ospmae.example/login.html?next=/project.html%3Fid%3D3",
+    url: `https://ospmae.example/login.html?next=${encodeURIComponent(next)}`,
     ospmae: {
       api: async (path, options = {}) => {
         const body =
@@ -15,8 +18,14 @@ async function signIn(t, { methods = {}, login, me = null } = {}) {
             ? undefined
             : JSON.parse(JSON.stringify(options.body));
         calls.push([options.method || "GET", path, body]);
-        if (path === "/v1/auth/methods") return structuredClone(methods);
-        if (path === "/v1/me") return me;
+        if (path === "/v1/auth/methods") {
+          if (methods instanceof Error) throw methods;
+          return structuredClone(methods);
+        }
+        if (path === "/v1/me") {
+          if (me instanceof Error) throw me;
+          return me;
+        }
         if (login instanceof Error) throw login;
         return structuredClone(login);
       },
@@ -170,4 +179,106 @@ test("a password that needs a second factor says so", async (t) => {
     className: "alert alert-info",
     text: "Second factor required. Redirecting…",
   });
+});
+
+// jsdom cannot leave the page: each move to another address is reported as
+// an error, which is how these count where the page tried to go.
+const departures = (page) =>
+  page.errors.filter((error) => /navigation/i.test(String(error?.message)))
+    .length;
+
+test("a visitor who is already signed in is sent on without the form", async (t) => {
+  const page = await signIn(t, { me: { username: "alice" } });
+  assert.equal(departures(page), 1);
+  const stays = await signIn(t, { me: { detail: "Not authenticated" } });
+  assert.equal(departures(stays), 0);
+  const offline = await signIn(t, { me: new Error("offline") });
+  assert.equal(departures(offline), 0);
+});
+
+test("a successful sign-in says so and moves on once", async (t) => {
+  const page = await signIn(t, { login: { username: "alice" } });
+  await submit(page, " alice ", "pw");
+  assert.deepEqual(page.calls.at(-1), [
+    "POST",
+    "/v1/auth/login",
+    { username: "alice", password: "pw" },
+  ]);
+  assert.deepEqual(message(page.document), {
+    hidden: false,
+    className: "alert alert-info",
+    text: "Signed in. Redirecting…",
+  });
+  assert.equal(departures(page), 1);
+  assert.equal(page.document.getElementById("loginBtn").disabled, false);
+});
+
+test("an empty answer to a sign-in is a failure, and nothing moves", async (t) => {
+  const page = await signIn(t, { login: null });
+  await submit(page, "alice", "pw");
+  assert.deepEqual(message(page.document), {
+    hidden: false,
+    className: "alert alert-danger",
+    text: "Login failed.",
+  });
+  assert.equal(departures(page), 0);
+});
+
+test("a failure without a reason falls back to a general message", async (t) => {
+  const failure = new Error("");
+  const page = await signIn(t, { login: failure });
+  await submit(page, "alice", "pw");
+  assert.equal(
+    message(page.document).text,
+    "Login failed. Please check your credentials.",
+  );
+});
+
+test("a provider button starts that provider's sign-in", async (t) => {
+  // Each return address here is one the page accepts or replaces before
+  // handing it on: its own pages, an allowed host, and shapes it refuses.
+  for (const next of [
+    "/project.html?id=3",
+    "",
+    "//evil.example",
+    "/a\\b",
+    "javascript:alert(1)",
+    "https://ospmae.example/account.html#shortcuts",
+    "https://partner.example/landing",
+    "https://evil.example/",
+    "http://[",
+  ]) {
+    const page = await signIn(t, {
+      next,
+      methods: {
+        redirect_allowed_hosts: [
+          " Partner.Example ",
+          "",
+          null,
+          "https://scheme.example",
+          "path.example/x",
+          "back\\slash",
+        ],
+        sso_providers: [{ key: "Google", label: " ", start_url: "" }],
+      },
+    });
+    const button = page.document.querySelector("#ssoButtons button");
+    assert.equal(button.textContent, "Continue with single sign-on");
+    assert.equal(button.querySelector("i").className, "bi bi-google me-1");
+    button.click();
+    assert.equal(departures(page), 1, next);
+  }
+});
+
+test("sign-in methods that cannot be read leave the password form in place", async (t) => {
+  const page = await signIn(t, { methods: new Error("offline") });
+  assert.equal(
+    page.document.getElementById("loginForm").classList.contains("d-none"),
+    false,
+  );
+  assert.ok(
+    page.document.getElementById("ssoSection").classList.contains("d-none"),
+  );
+  const none = await signIn(t, { methods: null });
+  assert.equal(none.document.querySelectorAll("#ssoButtons button").length, 0);
 });

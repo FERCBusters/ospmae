@@ -5,6 +5,7 @@ const {
   ensureInitialized,
   canMaintainProjects,
   csvCell,
+  escapeHtml,
   toast,
 } = OSPMAE;
 
@@ -108,27 +109,13 @@ function renderRows(projects) {
   }
   el.rows.innerHTML = projects
     .map((row) => {
-      const name = document.createElement("td");
-      name.textContent = "";
-      const escape = (s) =>
-        String(s ?? "").replace(
-          /[&<>"']/g,
-          (c) =>
-            ({
-              "&": "&amp;",
-              "<": "&lt;",
-              ">": "&gt;",
-              '"': "&quot;",
-              "'": "&#39;",
-            })[c],
-        );
       // A tracked branch stands in for releases: its version is the branch.
       // The icon alone tells the two apart: a branch, or a release tag.
       const [icon, kind] = row.tracked_branch
         ? ["bi-git", "Tracked branch"]
         : ["bi-tag", "Release"];
       const latest = row.latest
-        ? `<span title="${kind}"><i class="bi ${icon} text-secondary" aria-hidden="true"></i><span class="visually-hidden">${kind}: </span> ${escape(row.latest.version)}</span>`
+        ? `<span title="${kind}"><i class="bi ${icon} text-secondary" aria-hidden="true"></i><span class="visually-hidden">${kind}: </span> ${escapeHtml(row.latest.version)}</span>`
         : '<span class="text-secondary">no release</span>';
       // The column is a single number: how many direct dependencies the
       // latest release recorded. The status vocabulary is not_run, queued,
@@ -147,23 +134,19 @@ function renderRows(projects) {
         deps = '<span class="text-secondary small">not scanned yet</span>';
       }
       const link = row.latest
-        ? `href="/project.html?id=${row.id}&version_id=${row.latest.id}" data-true-pm="${row.name}"`
-        : `data-true-pm="${row.name}"`;
+        ? `href="/project.html?id=${Number(row.id)}&version_id=${Number(row.latest.id)}"`
+        : "";
       return `<tr>
-        <td><a class="text-decoration-none" ${link}>${escape(row.name)}</a></td>
-        <td>${escape(orgName(row))}</td>
+        <td><a class="text-decoration-none" ${link}>${escapeHtml(row.name)}</a></td>
+        <td>${escapeHtml(orgName(row))}</td>
         <td>${latest}</td>
-        <td>${escape(scanLabel(row))}</td>
+        <td>${escapeHtml(scanLabel(row))}</td>
         <td class="text-end">${deps}</td>
         <td>${severityChips(row.vulnerabilities)}</td>
-        <td class="text-nowrap"><a class="btn btn-sm btn-outline-primary" href="/project.html?id=${row.id}">Open</a></td>
+        <td class="text-nowrap"><a class="btn btn-sm btn-outline-primary" href="/project.html?id=${Number(row.id)}">Open</a></td>
       </tr>`;
     })
     .join("");
-  el.rows.querySelectorAll("[data-true-pm]").forEach((a) => {
-    a.textContent = "";
-    a.textContent = a.getAttribute("data-true-pm");
-  });
 }
 
 function csv() {

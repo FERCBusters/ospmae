@@ -15,12 +15,6 @@
     activeFramework: null,
     frameworkNodesById: new Map(),
     frameworkTreesById: new Map(),
-    questionBellInit: false,
-    questionBellTimer: null,
-    shortcuts: [],
-    shortcutsLoaded: false,
-    shortcutsPromise: null,
-    shortcutsInit: false,
     features: {},
     featuresPromise: null,
   };
@@ -310,48 +304,11 @@
     el.textContent = `${state.me.username} (${role})`;
   }
 
-  function getPreferredHomeHref() {
-    if (!state.me) return "/index.html";
-    return normalizeStartPage(state.userPreferences?.default_start_page);
-  }
-
-  function applyBrandHomeLink() {
-    const brand = document.querySelector(".topbar .brand");
-    if (!brand) return;
-
-    let titleEl = brand.querySelector("[data-brand-title]");
-    if (!titleEl) {
-      titleEl = brand.firstElementChild;
-    }
-    if (!titleEl) return;
-
-    const href = getPreferredHomeHref() || "/index.html";
-
-    if (titleEl.tagName && titleEl.tagName.toLowerCase() === "a") {
-      titleEl.href = href;
-      titleEl.classList.add("brand-home-link");
-      if (!titleEl.getAttribute("aria-label")) {
-        titleEl.setAttribute("aria-label", "Go to home page");
-      }
-      return;
-    }
-
-    const link = document.createElement("a");
-    link.href = href;
-    link.className = "brand-home-link";
-    link.setAttribute("aria-label", "Go to home page");
-    link.textContent = titleEl.textContent || "";
-    titleEl.replaceWith(link);
-  }
   function applyNavPermissions() {
     const currentRole = role();
     const canFrameworks =
       currentRole === "admin" || currentRole === "framework_admin";
     const adminOnly = currentRole === "admin";
-    const canAnswer =
-      currentRole === "admin" ||
-      currentRole === "maintainer" ||
-      currentRole === "contributor";
 
     document.querySelectorAll('a[href="/admin.html"]').forEach((el) => {
       el.style.display = adminOnly ? "" : "none";
@@ -362,168 +319,8 @@
       .forEach((el) => {
         el.style.display = canFrameworks ? "" : "none";
       });
-
-    const bell = document.getElementById("navQuestionsBell");
-    if (bell) bell.style.display = canAnswer ? "" : "none";
   }
 
-  // ---------------------------------------------------------------------------
-  // Shortcuts (saved views)
-  // ---------------------------------------------------------------------------
-
-  async function loadShortcuts(opts = {}) {
-    const force = opts.force === true;
-    if (!force && state.shortcutsPromise) return state.shortcutsPromise;
-
-    state.shortcutsPromise = (async () => {
-      try {
-        const rows = await apiRequest("/v1/me/shortcuts", {
-          allowErrorStatuses: [401],
-        });
-        if (!Array.isArray(rows)) {
-          state.shortcuts = [];
-          state.shortcutsLoaded = true;
-          return state.shortcuts;
-        }
-        state.shortcuts = rows
-          .map((r) => ({
-            id: Number(r.id),
-            name: String(r.name || "").trim(),
-            url: String(r.url || "").trim(),
-          }))
-          .filter((r) => r.name && r.url);
-        state.shortcutsLoaded = true;
-        return state.shortcuts;
-      } catch (_) {
-        state.shortcuts = [];
-        state.shortcutsLoaded = true;
-        return state.shortcuts;
-      } finally {
-        state.shortcutsPromise = null;
-      }
-    })();
-
-    return state.shortcutsPromise;
-  }
-
-  function _currentRelativeUrl() {
-    const { pathname, search, hash } = window.location;
-    return `${pathname || "/"}${search || ""}${hash || ""}`;
-  }
-
-  async function saveCurrentViewAsShortcut() {
-    if (!state.me) return;
-    const defaultName =
-      document.title?.replace(/\s+\|\s+.*$/, "").trim() || "Saved view";
-    const name = prompt("Shortcut name", defaultName);
-    if (!name) return;
-
-    const url = _currentRelativeUrl();
-
-    try {
-      await apiRequest("/v1/me/shortcuts", {
-        method: "POST",
-        body: { name, url },
-      });
-      toast("Shortcut saved.");
-      await loadShortcuts({ force: true });
-      renderShortcutsNav();
-    } catch (err) {
-      toast(err?.message || "Failed to save shortcut", "error");
-    }
-  }
-
-  function initShortcutsNav() {
-    if (state.shortcutsInit) return;
-    const nav = document.querySelector(".topbar .nav");
-    if (!nav) return;
-
-    let select = document.getElementById("navShortcutsSelect");
-    if (!select) {
-      select = document.createElement("select");
-      select.id = "navShortcutsSelect";
-      select.className = "nav-shortcuts";
-      select.style.display = "none";
-      select.innerHTML = '<option value="">Shortcuts…</option>';
-      nav.insertBefore(
-        select,
-        nav.querySelector('a[href="/preferences.html"]') ||
-          nav.lastElementChild,
-      );
-    }
-
-    let saveBtn = document.getElementById("navShortcutsSaveBtn");
-    if (!saveBtn) {
-      saveBtn = document.createElement("button");
-      saveBtn.id = "navShortcutsSaveBtn";
-      saveBtn.type = "button";
-      saveBtn.className = "secondary nav-shortcuts-save";
-      saveBtn.textContent = "Save view";
-      saveBtn.style.display = "none";
-      nav.insertBefore(
-        saveBtn,
-        nav.querySelector('a[href="/preferences.html"]') ||
-          nav.lastElementChild,
-      );
-    }
-
-    select.addEventListener("change", () => {
-      const v = select.value || "";
-      if (!v) return;
-      // Only same-origin relative routes may navigate: reject the same
-      // shapes the server refuses when a shortcut is stored.
-      const raw = String(v).trim();
-      if (
-        !raw.startsWith("/") ||
-        raw.startsWith("//") ||
-        /[\\\u0000-\u001f\u007f]/.test(raw) ||
-        raw.includes("://")
-      ) {
-        return;
-      }
-      window.location.href = raw;
-    });
-
-    saveBtn.addEventListener("click", () => {
-      saveCurrentViewAsShortcut();
-    });
-
-    state.shortcutsInit = true;
-  }
-
-  function renderShortcutsNav() {
-    const select = document.getElementById("navShortcutsSelect");
-    const saveBtn = document.getElementById("navShortcutsSaveBtn");
-    if (!select || !saveBtn) return;
-
-    if (!state.me) {
-      select.style.display = "none";
-      saveBtn.style.display = "none";
-      return;
-    }
-
-    // Always show save button when authenticated.
-    saveBtn.style.display = "";
-
-    const items = Array.isArray(state.shortcuts) ? state.shortcuts : [];
-    if (!items.length) {
-      select.style.display = "none";
-      select.innerHTML = '<option value="">Shortcuts…</option>';
-      return;
-    }
-
-    select.style.display = "";
-    const current = _currentRelativeUrl();
-
-    const opts = ['<option value="">Shortcuts…</option>'].concat(
-      items.map((s) => {
-        const selected = s.url === current ? " selected" : "";
-        return `<option value="${escapeHtml(s.url)}"${selected}>${escapeHtml(s.name)}</option>`;
-      }),
-    );
-
-    select.innerHTML = opts.join("");
-  }
   function canAnswerQuestions() {
     const r = role();
     return r === "admin" || r === "maintainer" || r === "contributor";
@@ -538,78 +335,6 @@
       r === "product_owner" ||
       r === "architect"
     );
-  }
-
-  function _setQuestionBellCount(n) {
-    const bell = document.getElementById("navQuestionsBell");
-    const badge = document.getElementById("navQuestionsCount");
-    if (!bell || !badge) return;
-
-    const v = Number(n || 0);
-    if (v > 0) {
-      badge.style.display = "";
-      badge.textContent = String(v);
-      bell.classList.add("has-unread");
-    } else {
-      badge.style.display = "none";
-      badge.textContent = "";
-      bell.classList.remove("has-unread");
-    }
-  }
-
-  async function refreshQuestionBell() {
-    if (!state.me) return;
-    if (!canAnswerQuestions()) {
-      _setQuestionBellCount(0);
-      return;
-    }
-
-    try {
-      const sum = await apiRequest("/v1/questions/unanswered/summary", {
-        allowErrorStatuses: [403, 404],
-      });
-      const n = sum?.open_count ?? 0;
-      _setQuestionBellCount(n);
-    } catch (_) {
-      // ignore
-    }
-  }
-
-  function initQuestionBell() {
-    const bell = document.getElementById("navQuestionsBell");
-    const badge = document.getElementById("navQuestionsCount");
-    if (!bell || !badge) return;
-
-    if (!state.me || !canAnswerQuestions()) {
-      bell.style.display = "none";
-      _setQuestionBellCount(0);
-      return;
-    }
-
-    bell.style.display = "";
-
-    // Only bind listeners once per page load.
-    if (!state.questionBellInit) {
-      state.questionBellInit = true;
-
-      window.addEventListener("ospmae-notification", (ev) => {
-        const msg = ev?.detail;
-        if (!msg) return;
-        if (
-          msg.kind === "project_question_created" ||
-          msg.kind === "project_question_replied"
-        ) {
-          refreshQuestionBell();
-        }
-      });
-
-      if (state.questionBellTimer) {
-        clearInterval(state.questionBellTimer);
-      }
-      state.questionBellTimer = setInterval(() => refreshQuestionBell(), 30000);
-    }
-
-    refreshQuestionBell();
   }
 
   function wsBaseUrl() {
@@ -892,9 +617,6 @@
     state.userPreferences = normalizeUserPreferences(saved || payload || null);
     state.userPreferencesLoaded = true;
     applyUiBehaviourPreferences(state.userPreferences);
-    applyBrandHomeLink();
-
-    initShortcutsNav();
     return state.userPreferences;
   }
 
@@ -985,71 +707,10 @@
     return { ...(state.userPreferences?.node_colors || {}) };
   }
 
-  function getNodeColors() {
-    return {
-      ...DEFAULT_NODE_COLORS,
-      ...getNodeColorOverrides(),
-    };
-  }
-
-  function setNodeColor(fullKey, color) {
-    if (!fullKey) return false;
-    const normalized = normalizeHexColor(color);
-    if (!normalized) return false;
-    const current = { ...(state.userPreferences?.node_colors || {}) };
-    current[fullKey] = normalized;
-    state.userPreferences = {
-      ...state.userPreferences,
-      node_colors: current,
-    };
-    return true;
-  }
-
-  function clearNodeColor(fullKey) {
-    const current = { ...(state.userPreferences?.node_colors || {}) };
-    delete current[fullKey];
-    state.userPreferences = {
-      ...state.userPreferences,
-      node_colors: current,
-    };
-  }
-
-  function resetNodeColors() {
-    state.userPreferences = {
-      ...state.userPreferences,
-      node_colors: {},
-    };
-  }
-
   function nodeColor(fullKey) {
     const overrides = getNodeColorOverrides();
     if (overrides[fullKey]) return overrides[fullKey];
     return _defaultColorForKey(fullKey);
-  }
-
-  // Legacy aliases (for older pages; safe to remove later).
-  function getCapabilityColorOverrides() {
-    const out = {};
-    const nodeOverrides = getNodeColorOverrides();
-    Object.entries(nodeOverrides).forEach(([k, v]) => {
-      if (String(k).startsWith("uwra:")) out[k.slice(5)] = v;
-    });
-    return out;
-  }
-
-  function getCapabilityColors() {
-    const out = {};
-    Object.entries(DEFAULT_NODE_COLORS).forEach(([k, v]) => {
-      if (String(k).startsWith("uwra:")) out[k.slice(5)] = v;
-    });
-    return {
-      ...out,
-      ...getCapabilityColorOverrides(),
-    };
-  }
-
-  function capabilityColor(rootKey) {
-    return nodeColor(`uwra:${rootKey || "technology_capabilities"}`);
   }
 
   function _legacyFrameworkStorageKey() {
@@ -1188,11 +849,6 @@
     }
   }
 
-  async function loadActiveFramework(options = {}) {
-    await loadFrameworks(options);
-    return getActiveFramework();
-  }
-
   async function loadFrameworkNodes(frameworkId, options = {}) {
     const fwId = Number(frameworkId);
     if (!fwId || Number.isNaN(fwId)) throw new Error("frameworkId is required");
@@ -1284,14 +940,7 @@
         applyNavPermissions();
         applyFeatureVisibility();
         watchNavbarForFeatures();
-        applyBrandHomeLink();
-
-        initShortcutsNav();
         startNotifications();
-        initQuestionBell();
-        initShortcutsNav();
-        await loadShortcuts({ force: true });
-        renderShortcutsNav();
 
         const redirected = maybeRedirectToPreferredStart();
         if (redirected) {
@@ -1334,10 +983,6 @@
     state.activeFramework = null;
     state.frameworkNodesById = new Map();
     state.frameworkTreesById = new Map();
-    state.shortcuts = [];
-    state.shortcutsLoaded = false;
-    state.shortcutsPromise = null;
-    renderShortcutsNav();
     const csrf = getCookie("ospmae_csrf") || "";
     window.location.href = "/v1/auth/logout?csrf=" + encodeURIComponent(csrf);
   }
@@ -1361,24 +1006,6 @@
   function canExportManifests() {
     const r = role();
     return r === "admin" || r === "architect" || r === "product_owner";
-  }
-
-  function downloadResponseAsFile(response, fallbackName = "download.bin") {
-    const disposition = response.headers.get("content-disposition") || "";
-    let filename = fallbackName;
-    const match = disposition.match(/filename="?([^";]+)"?/i);
-    if (match && match[1]) filename = match[1];
-
-    return response.blob().then((blob) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    });
   }
 
   function _changelogValueHtml(value) {
@@ -1445,20 +1072,6 @@
     container.innerHTML = entityChangelogHtml(items, { empty });
     return data;
   }
-
-  document.addEventListener("DOMContentLoaded", () => {
-    applyBrandHomeLink();
-
-    initShortcutsNav();
-
-    const logoutBtn = document.getElementById("logoutBtn");
-    if (logoutBtn) {
-      logoutBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        logout();
-      });
-    }
-  });
 
   // The address to link to, or "" when it is not safe to link: http(s)
   // addresses and same-site paths pass, script and data addresses do not.
@@ -1536,8 +1149,6 @@
     canExportManifests,
     canAnswerQuestions,
     canAskQuestions,
-    refreshQuestionBell,
-    downloadResponseAsFile,
     entityChangelogHtml,
     loadEntityChangelog,
     role,
@@ -1549,16 +1160,8 @@
     getFrameworks,
     getActiveFramework,
     setActiveFrameworkByMachineName,
-    loadActiveFramework,
     loadFrameworkNodes,
-    getCapabilityColors,
-    getCapabilityColorOverrides,
-    capabilityColor,
-    getNodeColors,
     getNodeColorOverrides,
-    setNodeColor,
-    clearNodeColor,
-    resetNodeColors,
     nodeColor,
     defaultNodeColor: _defaultColorForKey,
     normalizeHexColor,
@@ -1570,9 +1173,5 @@
     getAutoApplyEnabled: () =>
       state.userPreferences?.auto_apply_enabled !== false,
     getDefaultStartPage,
-    applyBrandHomeLink,
-    loadShortcuts,
-    renderShortcutsNav,
-    saveCurrentViewAsShortcut,
   };
 })();

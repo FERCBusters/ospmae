@@ -59,6 +59,54 @@ export function installLayout(window, { width = 1200, height = 700 } = {}) {
       bottom: height,
     };
   };
+  // jsdom keeps no SVG transform lists, which an animated transform reads
+  // as one matrix. This multiplies out the translate, rotate and scale
+  // steps of the element's transform attribute.
+  Object.defineProperty(proto, "transform", {
+    configurable: true,
+    get() {
+      const steps = [
+        ...(this.getAttribute("transform") || "").matchAll(
+          /(translate|rotate|scale)\(([^)]*)\)/g,
+        ),
+      ];
+      const consolidate = () => {
+        if (!steps.length) return null;
+        let m = [1, 0, 0, 1, 0, 0];
+        for (const [, kind, list] of steps) {
+          const [p = 0, q] = list
+            .split(/[\s,]+/)
+            .filter(Boolean)
+            .map(Number);
+          const turn = (p * Math.PI) / 180;
+          const step =
+            kind === "translate"
+              ? [1, 0, 0, 1, p, q ?? 0]
+              : kind === "scale"
+                ? [p, 0, 0, q ?? p, 0, 0]
+                : [
+                    Math.cos(turn),
+                    Math.sin(turn),
+                    -Math.sin(turn),
+                    Math.cos(turn),
+                    0,
+                    0,
+                  ];
+          m = [
+            m[0] * step[0] + m[2] * step[1],
+            m[1] * step[0] + m[3] * step[1],
+            m[0] * step[2] + m[2] * step[3],
+            m[1] * step[2] + m[3] * step[3],
+            m[0] * step[4] + m[2] * step[5] + m[4],
+            m[1] * step[4] + m[3] * step[5] + m[5],
+          ];
+        }
+        const [a, b, c, d, e, f] = m;
+        return { matrix: { a, b, c, d, e, f } };
+      };
+      return { baseVal: { consolidate } };
+    },
+  });
   for (const [name, value] of [
     ["clientWidth", width],
     ["clientHeight", height],
@@ -222,6 +270,7 @@ export function installBrowser(window, record, options) {
 // Options:
 //   me        the signed-in account (default an administrator)
 //   query, hash   the address after the page name
+//   address   the whole address, where the page name is not part of it
 //   api       (method, path, body, query) => [status, body] for the page's
 //             requests;
 //             return nothing to fall through to the defaults
@@ -239,7 +288,9 @@ export async function appPage(t, htmlName, scripts, options = {}) {
   };
   const me = options.me === undefined ? account() : options.me;
   const page = await loadPage(htmlName, scripts, {
-    url: `https://ospmae.example/${htmlName}${options.query || ""}${options.hash || ""}`,
+    url:
+      options.address ||
+      `https://ospmae.example/${htmlName}${options.query || ""}${options.hash || ""}`,
     withApp: true,
     libraries: options.d3 === false ? [] : [D3],
     setup(window) {
@@ -307,6 +358,14 @@ export async function appPage(t, htmlName, scripts, options = {}) {
       (typeof id === "string" ? doc.getElementById(id) : id).click();
       await settle();
     },
+    // The text of a blob the page handed to a download.
+    blobText: (blob) =>
+      new Promise((resolve, reject) => {
+        const reader = new page.window.FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(blob);
+      }),
     texts: (selector) =>
       [...doc.querySelectorAll(selector)].map((n) =>
         n.textContent.replace(/\s+/g, " ").trim(),
