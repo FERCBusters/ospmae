@@ -34,6 +34,7 @@ from app.services.entity_changelog import (
 )
 from app.services.mailer import send_project_version_draft_email
 from app.services.notification_recipients import notification_emails_for_users
+from app.services.scan_queue import launch_dependency_scan, mark_scan_queued
 from app.services.versioning import is_semantically_lower
 
 log = get_task_logger(__name__)
@@ -980,19 +981,12 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             latest = _best_automatic_latest_version_db(db, project.id) or newest_version
             _promote_latest(db, project.id, latest.id)
             if latest and str(latest.link_to_source_code or "").strip():
+                # Queued first, so the beat dispatcher hands it over if the
+                # broker refuses it now.
+                mark_scan_queued(latest)
                 db.commit()
-                from app.tasks.dependency_discovery import (
-                    discover_project_version_dependencies,
-                )
-
-                try:
-                    discover_project_version_dependencies.delay(latest.id)
-                    scanned_version_id = latest.id
-                except Exception:
-                    log.exception(
-                        "Failed to enqueue dependency discovery for project_id=%s",
-                        project.id,
-                    )
+                launch_dependency_scan(latest.id)
+                scanned_version_id = latest.id
         elif newest_version is not None:
             latest = _best_automatic_latest_version_db(db, project.id) or newest_version
             _promote_latest(db, project.id, latest.id)

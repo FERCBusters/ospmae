@@ -119,19 +119,6 @@ def scan_in_flight(version: ProjectVersion, now: datetime) -> bool:
     return True
 
 
-def mark_scan_queued(version: ProjectVersion) -> None:
-    """Queue a fresh scan of the branch head.
-
-    The previous results stay visible until the new scan replaces them, so a
-    dashboard never shows a tracked branch as empty between scans.
-    """
-
-    version.dependency_discovery_status = "queued"
-    version.dependency_discovery_error = None
-    version.dependency_discovery_started_at = None
-    version.dependency_discovery_finished_at = None
-
-
 def scan_due(project: Project, now: datetime) -> bool:
     if not is_tracking(project):
         return False

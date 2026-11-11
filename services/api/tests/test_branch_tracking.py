@@ -520,12 +520,16 @@ def test_discovery_clones_the_tracked_branch_for_the_branch_version(
     with SessionLocal() as s:
         project = _make_tracked(s, tracked_branch="dev")
         branch_version = ProjectVersion(
-            project_id=project.id, version="dev", link_to_source_code=REPO
+            project_id=project.id,
+            version="dev",
+            link_to_source_code=REPO,
+            dependency_discovery_status="queued",
         )
         release = ProjectVersion(
             project_id=project.id,
             version="v1.0.0",
             link_to_source_code="https://github.com/example/release-repo",
+            dependency_discovery_status="queued",
         )
         s.add_all([branch_version, release])
         s.commit()
@@ -542,3 +546,86 @@ def test_discovery_clones_the_tracked_branch_for_the_branch_version(
         assert scanned.dependency_discovery_status == "complete"
         assert scanned.dependency_last_commit == "c0ffee"
         assert scanned.dependency_count == 1
+
+
+def test_a_scan_runs_only_from_the_queued_state(client, db, monkeypatch, tmp_path):
+    # The caller and the beat dispatcher may both hand a queued scan to the
+    # workers; the second hand-over finds it no longer queued and stops.
+    import app.tasks.dependency_discovery as dd
+
+    clones: list[str] = []
+
+    def _fake_clone(url, version_hint=None, *, branch=None, credential=None):
+        clones.append(url)
+        repo = tmp_path / f"r{len(clones)}"
+        repo.mkdir()
+        return repo, "c0ffee"
+
+    monkeypatch.setattr(dd, "clone_repo", _fake_clone)
+    monkeypatch.setattr(dd, "scan_syft", lambda root: None)
+    monkeypatch.setattr(dd, "scan_grype", lambda root: None)
+    with SessionLocal() as s:
+        project = _make_tracked(s, tracked_branch="dev")
+        version = ProjectVersion(
+            project_id=project.id,
+            version="1.0",
+            link_to_source_code=REPO,
+            dependency_discovery_status="queued",
+        )
+        s.add(version)
+        s.commit()
+        version_id = version.id
+
+    assert dd.discover_project_version_dependencies.run(version_id)["ok"] is True
+    again = dd.discover_project_version_dependencies.run(version_id)
+    assert again == {"skipped": True, "reason": "not_queued"}
+    assert clones == [REPO]
+    with SessionLocal() as s:
+        for status in ("running", "complete", "error", "not_run"):
+            s.get(ProjectVersion, version_id).dependency_discovery_status = status
+            s.commit()
+            assert dd.discover_project_version_dependencies.run(version_id) == {
+                "skipped": True,
+                "reason": "not_queued",
+            }
+    assert clones == [REPO]
+
+
+def test_a_refused_hand_over_leaves_the_scan_queued_for_the_dispatcher(
+    client, db, monkeypatch
+):
+    from app.services import scan_queue
+    from app.tasks import dependency_discovery, dependency_queue
+
+    class Broker:
+        calls: list[int] = []
+        down = True
+
+        @classmethod
+        def delay(cls, version_id):
+            cls.calls.append(version_id)
+            if cls.down:
+                raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(
+        dependency_discovery, "discover_project_version_dependencies", Broker
+    )
+    with SessionLocal() as s:
+        project = _make_tracked(s, tracked_branch="dev")
+        version = ProjectVersion(
+            project_id=project.id, version="1.0", link_to_source_code=REPO
+        )
+        scan_queue.mark_scan_queued(version)
+        s.add(version)
+        s.commit()
+        version_id = version.id
+
+    assert scan_queue.launch_dependency_scan(version_id) is False
+    with SessionLocal() as s:
+        assert s.get(ProjectVersion, version_id).dependency_discovery_status == "queued"
+    Broker.down = False
+    assert dependency_queue.dispatch_queued_dependency_discoveries.run() == {
+        "queued": 1,
+        "launched": 1,
+    }
+    assert Broker.calls == [version_id, version_id]

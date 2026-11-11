@@ -793,7 +793,8 @@
           "Nothing has been emailed to this account from the current configuration yet.";
         return;
       }
-      const escapeHtml = window.escapeHtml ? window.escapeHtml : (s) => s;
+      // No fallback: without the shared escaper nothing is rendered.
+      const escapeHtml = window.OSPMAE.escapeHtml;
       el.mailSummary.textContent = `${body.length} queued e-mail(s)`;
       el.mailList.innerHTML = body
         .map(
@@ -801,7 +802,7 @@
             n,
           ) => `<div class="d-flex justify-content-between border-bottom py-2 small">
           <div>${escapeHtml(n.subject)} <span class="text-secondary">→ ${escapeHtml(n.recipient)}</span></div>
-          <div><span class="badge ${n.status === "sent" ? "text-bg-success" : n.status === "failed" ? "text-bg-danger" : "text-bg-secondary"}">${n.status}</span></div>
+          <div><span class="badge ${n.status === "sent" ? "text-bg-success" : n.status === "failed" ? "text-bg-danger" : "text-bg-secondary"}">${escapeHtml(n.status)}</span></div>
           </div>`,
         )
         .join("");

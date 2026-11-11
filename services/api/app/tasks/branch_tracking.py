@@ -14,7 +14,6 @@ from app.db.session import SessionLocal
 from app.services.branch_tracking import (
     ensure_branch_version,
     is_tracking,
-    mark_scan_queued,
     scan_due,
     scan_in_flight,
 )
@@ -22,6 +21,7 @@ from app.services.entity_changelog import (
     project_version_changelog_state,
     record_entity_changelog,
 )
+from app.services.scan_queue import mark_scan_queued
 
 log = get_task_logger(__name__)
 

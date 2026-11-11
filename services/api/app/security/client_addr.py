@@ -96,3 +96,18 @@ def public_client_address(
 
 def socket_peer_trusted(socket_peer: str | None) -> bool:
     return _in_trusted(socket_peer, _trusted_networks())
+
+
+def request_client_address(request) -> str | None:
+    """The client address of an HTTP request or WebSocket handshake."""
+
+    client = getattr(request, "client", None)
+    return public_client_address(
+        getattr(client, "host", None), request.headers.get("x-forwarded-for")
+    )
+
+
+def request_allowance_key(prefix: str, request) -> str:
+    """A per-address allowance key: one IPv4 address or one IPv6 /64."""
+
+    return f"{prefix}:{allowance_address(request_client_address(request)) or 'unknown'}"

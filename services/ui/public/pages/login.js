@@ -197,8 +197,12 @@
         role === "pending" ? "/pending.html" : sanitizeNext(getNextParam()),
       );
     } catch (err) {
-      console.error(err);
-      setMsg("Login failed. Please check your credentials.", "error");
+      // The server's own reason, such as a wrong password or a wait after
+      // too many attempts.
+      setMsg(
+        err?.message || "Login failed. Please check your credentials.",
+        "error",
+      );
     } finally {
       btn.disabled = false;
     }

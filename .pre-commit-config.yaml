@@ -12,6 +12,13 @@ repos:
         language: system
         files: '^services/ui/(public|scripts|tests)/.*\.(js|mjs|css)$'
         exclude: '/(vendor|node_modules|dist)/|\.min\.(js|css)$'
+      - id: frontend-html-insertion
+        name: Check first-party JavaScript for unescaped HTML insertion
+        entry: bash lint-ui.sh --check
+        language: system
+        pass_filenames: false
+        files: '^(services/ui/public/.*\.js|services/ui/tests/(eslint\.config\.mjs|eslint-suppressions\.json|package(-lock)?\.json)|lint-ui\.sh)$'
+        exclude: '/(vendor|node_modules|dist)/'
       - id: python-types
         name: Check Python types
         entry: bash -c 'cd services/api && poetry run mypy'

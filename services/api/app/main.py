@@ -22,7 +22,7 @@ from app.security.auth import (
 )
 from app.security.client_addr import (
     allowance_address,
-    public_client_address,
+    request_client_address,
     socket_peer_trusted,
 )
 from app.security.csrf import (
@@ -63,13 +63,6 @@ _ws_handshakes = LocalAllowance(_WS_HANDSHAKES_PER_MINUTE, 60)
 _UNAUDITED_PUBLIC_READS = frozenset({"/v1/system/health", "/v1/auth/methods"})
 # The navbar's unanswered-questions badge polls this on every page.
 _UNAUDITED_POLLS = frozenset({"/v1/questions/unanswered/summary"})
-
-
-def _client_ip(request) -> str | None:
-    return public_client_address(
-        getattr(getattr(request, "client", None), "host", None),
-        request.headers.get("x-forwarded-for"),
-    )
 
 
 class _TrustedProxySchemeMiddleware:
@@ -237,7 +230,7 @@ def _record_request(
     request: Request, path: str, status_code: int, duration_ms: int
 ) -> None:
     username = getattr(request.state, "audit_username", None)
-    client_ip = _client_ip(request)
+    client_ip = request_client_address(request)
     if username is None and not _anonymous_audit.allow(allowance_address(client_ip)):
         return
 
@@ -314,11 +307,7 @@ async def ws_notifications(ws: WebSocket):
     # before the database is touched. Behind the proxy every socket peer is
     # the proxy itself, so the allowance counts the resolved client address.
     peer = getattr(getattr(ws, "client", None), "host", None)
-    if not _ws_handshakes.allow(
-        allowance_address(
-            public_client_address(peer, ws.headers.get("x-forwarded-for"))
-        )
-    ):
+    if not _ws_handshakes.allow(allowance_address(request_client_address(ws))):
         await ws.close(code=4429)
         return
 
@@ -351,7 +340,7 @@ async def ws_notifications(ws: WebSocket):
     try:
         while True:
             # Keep the socket alive and detect disconnects. Client text is
-            # ignored, and NumPy-free frame buffering stays bounded by ASGI.
+            # ignored; the server bounds the size of each frame.
             _ = await ws.receive_text()
     except WebSocketDisconnect:
         pass

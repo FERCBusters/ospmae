@@ -22,7 +22,7 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.db.models import MfaChallenge, MfaCredential, MfaRecoveryCode, User
-from app.security.client_addr import public_client_address
+from app.security.client_addr import request_allowance_key
 from app.security.rate_limit import check_rate_limit
 
 COOKIE = "ospmae_mfa_pending"
@@ -137,12 +137,8 @@ def limit(db, request, user_id=None):
     state changes.
     """
     try:
-        client_ip = public_client_address(
-            request.client.host if request.client else None,
-            request.headers.get("X-Forwarded-For"),
-        )
         allowed, _ = check_rate_limit(
-            db, f"mfa_addr:{client_ip or 'unknown'}", 40, _MFA_WINDOW_SECONDS
+            db, request_allowance_key("mfa_addr", request), 40, _MFA_WINDOW_SECONDS
         )
         if allowed and user_id is not None:
             allowed, _ = check_rate_limit(

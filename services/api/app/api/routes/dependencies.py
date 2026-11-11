@@ -27,6 +27,7 @@ from app.db.models import (
 from app.db.session import get_db
 from app.security.auth import get_current_user
 from app.security.roles import ROLE_ADMIN, attach_effective_role
+from app.services.scan_queue import launch_dependency_scan, mark_scan_queued
 
 router = APIRouter()
 
@@ -478,10 +479,7 @@ def enqueue_dependency_discovery(
             status_code=400, detail="Project version has no link_to_source_code"
         )
 
-    pv.dependency_discovery_status = "queued"
-    pv.dependency_discovery_error = None
-    pv.dependency_discovery_started_at = None
-    pv.dependency_discovery_finished_at = None
+    mark_scan_queued(pv)
     pv.dependency_last_commit = None
     pv.dependency_count = 0
     pv.vulnerability_count = 0
@@ -490,17 +488,7 @@ def enqueue_dependency_discovery(
     ).delete(synchronize_session=False)
     db.commit()
 
-    launched = False
-    if run_now:
-        try:
-            from app.tasks.dependency_discovery import (
-                discover_project_version_dependencies,
-            )
-
-            discover_project_version_dependencies.delay(project_version_id)
-            launched = True
-        except Exception:
-            launched = False
+    launched = launch_dependency_scan(project_version_id) if run_now else False
     return {
         "queued": True,
         "launched": launched,
@@ -1502,8 +1490,8 @@ def dependency_index(
     if search:
         query = query.filter(
             or_(
-                DependencyPackage.normalized_name.ilike(f"%{search}%"),
-                DependencyPackage.name.ilike(f"%{search}%"),
+                DependencyPackage.normalized_name.icontains(search, autoescape=True),
+                DependencyPackage.name.icontains(search, autoescape=True),
             )
         )
     if ecosystem:

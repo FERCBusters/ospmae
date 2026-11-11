@@ -419,7 +419,10 @@ def test_discovery_passes_the_projects_credential(monkeypatch, tmp_path):
         db.add(project)
         db.flush()
         version = ProjectVersion(
-            project_id=project.id, version="1.0.0", link_to_source_code=REPO
+            project_id=project.id,
+            version="1.0.0",
+            link_to_source_code=REPO,
+            dependency_discovery_status="queued",
         )
         db.add(version)
         db.commit()
@@ -448,7 +451,10 @@ def test_an_unreadable_token_is_reported_without_the_ciphertext(monkeypatch):
         db.add(project)
         db.flush()
         version = ProjectVersion(
-            project_id=project.id, version="1.0.0", link_to_source_code=REPO
+            project_id=project.id,
+            version="1.0.0",
+            link_to_source_code=REPO,
+            dependency_discovery_status="queued",
         )
         db.add(version)
         db.commit()

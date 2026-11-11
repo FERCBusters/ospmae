@@ -31,14 +31,7 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.security import sign_in_throttle as throttle
-from app.security.audit import (
-    log_login_failure,
-    log_login_success,
-    log_logout,
-    log_password_reset_confirm,
-    log_password_reset_request,
-    log_security_alert,
-)
+from app.security.audit import record_sign_in
 from app.security.auth import (
     ROLE_ADMIN,
     authenticate_user,
@@ -46,9 +39,10 @@ from app.security.auth import (
     get_current_user,
     get_password_hash,
     get_user_by_email,
+    get_user_by_username,
     set_session_cookie,
 )
-from app.security.client_addr import allowance_address, public_client_address
+from app.security.client_addr import request_allowance_key
 from app.security.csrf import clear_csrf_cookie, generate_csrf_token, set_csrf_cookie
 from app.security.oidc import (
     any_sso_enabled,
@@ -128,19 +122,6 @@ def auth_methods():
     }
 
 
-def _get_client_ip(request: Request) -> str:
-    """Client address resolved from the trusted-proxy chain, never the first
-    X-Forwarded-For entry, which clients control."""
-    peer = request.client.host if request.client else None
-    return (
-        public_client_address(peer, request.headers.get("X-Forwarded-For")) or "unknown"
-    )
-
-
-def _get_user_agent(request: Request) -> str | None:
-    return request.headers.get("User-Agent") or None
-
-
 @router.post("/v1/auth/login")
 def login(
     payload: LoginPayload, request: Request, db: Session = Depends(get_db)
@@ -155,8 +136,6 @@ def login(
     if not bool(getattr(settings, "local_auth_enabled", True)):
         raise HTTPException(status_code=404, detail="Local auth disabled")
 
-    client_ip = _get_client_ip(request)
-    user_agent = _get_user_agent(request)
     username = (payload.username or "").strip()
     # A blank username is refused before any throttling or password work.
     if not username or not throttle.login_name(username):
@@ -169,7 +148,7 @@ def login(
     )
 
     if device is None:
-        address_id = f"login:{allowance_address(client_ip) or 'unknown'}"
+        address_id = request_allowance_key("login", request)
         allowed, info = check_rate_limit(
             db,
             address_id,
@@ -177,34 +156,25 @@ def login(
             window_seconds=throttle.ADDRESS_WINDOW_SECONDS,
         )
         if not allowed:
-            log_security_alert(
-                db,
-                "rate_limit_exceeded",
-                {"action": "login"},
-                None,
-                client_ip,
-                user_agent,
-            )
             return _limited(int(info["retry_after"]) // 1000)
         record_rate_limit_attempt(db, address_id)
 
         admitted, retry = throttle.reserve_unrecognised_attempt(db, key, now)
         if not admitted:
-            log_security_alert(
-                db,
-                "rate_limit_exceeded",
-                {"action": "login", "scope": "account"},
-                None,
-                client_ip,
-                user_agent,
-            )
             return _limited(retry)
 
     user = authenticate_user(db, payload.username, payload.password)
     if not user:
         if device is not None:
             throttle.device_failed(db, device)
-        log_login_failure(db, username, "invalid_credentials", client_ip, user_agent)
+        record_sign_in(
+            db,
+            request,
+            method="local",
+            outcome="failed",
+            account=get_user_by_username(db, username),
+        )
+        db.commit()
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     # The password is proven: the account's count ends, and this browser is
@@ -258,18 +228,13 @@ def complete_local_login(
         else int(verified_version),
     )
 
-    try:
-        user.last_login_at = datetime.utcnow()
-        db.add(user)
-        db.commit()
-        request.state.user = user
-        request.state.audit_username = user.username
-
-        log_login_success(
-            db, user.id, "local", _get_client_ip(request), _get_user_agent(request)
-        )
-    except Exception:
-        db.rollback()
+    # Signing in is complete only here, any second factor included.
+    user.last_login_at = datetime.utcnow()
+    db.add(user)
+    record_sign_in(db, request, method="local", outcome="success", account=user)
+    db.commit()
+    request.state.user = user
+    request.state.audit_username = user.username
 
     eff = attach_effective_role(db, user)
     csrf_token = generate_csrf_token()
@@ -292,7 +257,10 @@ def _limit_sso_start(db: Session, request: Request) -> bool:
     """A small per-address allowance on SSO starts: each writes a login-state
     row, so an unauthenticated flood must not churn the database."""
     allowed, _info = check_rate_limit(
-        db, f"sso_start:{_get_client_ip(request)}", max_attempts=20, window_seconds=300
+        db,
+        request_allowance_key("sso_start", request),
+        max_attempts=20,
+        window_seconds=300,
     )
     return allowed
 
@@ -343,10 +311,7 @@ async def _complete_sso_callback(
     request.state.audit_username = user.username
 
     delete_all_sessions_for_user(db, user.id)
-
-    log_login_success(
-        db, user.id, provider.key, _get_client_ip(request), _get_user_agent(request)
-    )
+    record_sign_in(db, request, method=provider.key, outcome="success", account=user)
 
     sid = create_session(
         db,
@@ -378,7 +343,6 @@ def logout(request: Request, db: Session = Depends(get_db)) -> Response:
     user = getattr(request.state, "user", None)
     if user and isinstance(user, User):
         delete_all_sessions_for_user(db, user.id)
-        log_logout(db, user.id, _get_client_ip(request), _get_user_agent(request))
 
     from app.security import mfa
 
@@ -494,12 +458,15 @@ def request_password_reset(
     # The endpoint answers identically for known and unknown names, so it is
     # a favourite of both enumerators and mail-bombers: both allowances are
     # checked before any account-dependent work.
-    client_ip = _get_client_ip(request)
+    address_id = request_allowance_key("pwreset_ip", request)
     allowed, _info = check_rate_limit(
-        db, f"pwreset_ip:{client_ip}", max_attempts=5, window_seconds=900
+        db, address_id, max_attempts=5, window_seconds=900
     )
     if not allowed:
         return Response(status_code=204)
+    # Every admitted request spends the address's allowance, whatever the
+    # name turns out to be.
+    record_rate_limit_attempt(db, address_id)
 
     user = None
     if "@" in ident:
@@ -516,12 +483,6 @@ def request_password_reset(
         # A rejection pays the same committed write as an issue, so wall
         # clock cannot separate the two paths.
         record_rate_limit_attempt(db, f"pwreset_dummy:{_hash_reset_token(ident)}")
-        log_password_reset_request(
-            db,
-            None,  # type: ignore[arg-type]  # an unknown name has no account row
-            client_ip,
-            _get_user_agent(request),
-        )
         return Response(status_code=204)
 
     target_id = f"pwreset_target:{int(user.id)}"
@@ -539,18 +500,12 @@ def request_password_reset(
         if "@" in (user.username or ""):
             recipient = user.username.strip()
     if not recipient:
-        log_password_reset_request(
-            db, user.id, _get_client_ip(request), _get_user_agent(request)
-        )
         return Response(status_code=204)
 
     base = _derive_public_base_url(request)
     if not base:
         # Without a configured public origin, the link's host would be chosen
         # the requester's Host header, so no token is issued (fail closed).
-        log_password_reset_request(
-            db, user.id, _get_client_ip(request), _get_user_agent(request)
-        )
         return Response(status_code=204)
 
     import secrets
@@ -570,10 +525,6 @@ def request_password_reset(
     db.commit()
 
     reset_link = f"{base}/reset-password.html?token={token}"
-
-    log_password_reset_request(
-        db, user.id, _get_client_ip(request), _get_user_agent(request)
-    )
 
     # Queue in the caller's transaction; the worker delivers with retries.
     send_password_reset_email(
@@ -641,7 +592,6 @@ def reset_password(
     throttle.clear_throttle(db, throttle.name_key(user.username))
     db.commit()
 
-    log_password_reset_confirm(db, user.id, None, None)
     return Response(status_code=204)
 
 

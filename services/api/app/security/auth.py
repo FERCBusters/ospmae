@@ -27,7 +27,6 @@ from app.security.roles import (
     canonicalize_role,
 )
 from app.security.sessions import (
-    create_session,
     delete_session,
     get_session,
     refresh_session,
@@ -86,10 +85,6 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
         return None
     if not verify_password(password, user.password_hash):
         return None
-    user.last_login_at = datetime.utcnow()
-    db.add(user)
-    db.commit()
-    db.refresh(user)
     return user
 
 
@@ -121,11 +116,6 @@ def _remote_user_from_headers(
     if not value:
         return None
     return value
-
-
-def _extract_remote_user(request: Request) -> str | None:
-    peer = getattr(getattr(request, "client", None), "host", None)
-    return _remote_user_from_headers(request.headers, peer)
 
 
 def _normalize_role(raw: str | None) -> str:
@@ -279,22 +269,6 @@ def clear_session_cookie(response: Response) -> None:
         key=settings.session_cookie_name,
         domain=(settings.cookie_domain or "").strip() or None,
         path="/",
-    )
-
-
-def create_login_session(
-    db: Session,
-    user: User,
-    *,
-    mfa_verified: bool = False,
-    mfa_version: int = 0,
-) -> str:
-    return create_session(
-        db,
-        user_id=user.id,
-        ttl_seconds=settings.session_ttl_seconds,
-        mfa_verified=mfa_verified,
-        mfa_version=mfa_version,
     )
 
 

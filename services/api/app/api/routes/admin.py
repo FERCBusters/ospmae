@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_request_user, require_admin
 from app.api.payloads import (
+    AdminGroupCreatePayload,
+    AdminGroupPermissionsUpdatePayload,
+    AdminGroupUpdatePayload,
     AdminProjectOwnershipPayload,
+    AdminUserAccessUpdatePayload,
     AdminUserCreatePayload,
     AdminUserUpdatePayload,
     OrganisationMemberPayload,
@@ -336,7 +340,7 @@ def get_user_access(
 @router.put("/v1/admin/users/{user_id}/access")
 def set_user_access(
     user_id: int,
-    body: dict,
+    body: AdminUserAccessUpdatePayload,
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -346,16 +350,8 @@ def set_user_access(
 
     previous_effective_role = attach_effective_role(db, u)
 
-    raw_group_ids = body.get("group_ids") or []
-    raw_permission_ids = body.get("permission_ids") or []
-
-    try:
-        group_ids = sorted({int(x) for x in raw_group_ids})[:500]
-        permission_ids = sorted({int(x) for x in raw_permission_ids})[:500]
-    except Exception as e:
-        raise HTTPException(
-            status_code=400, detail="group_ids and permission_ids must be integer lists"
-        ) from e
+    group_ids = sorted(set(body.group_ids))
+    permission_ids = sorted(set(body.permission_ids))
 
     # Safety: stripping the last active admin's own access would lock the
     # installation out; refuse the change and ask for another admin.
@@ -444,16 +440,16 @@ def list_groups(
 
 @router.post("/v1/admin/groups")
 def create_group(
-    body: dict,
+    body: AdminGroupCreatePayload,
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    name = (body.get("name") or "").strip()
+    name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
 
-    role = normalize_role(body.get("role")) if body.get("role") is not None else None
-    if body.get("role") is not None and role is None:
+    role = normalize_role(body.role) if body.role is not None else None
+    if body.role is not None and role is None:
         raise HTTPException(status_code=400, detail="invalid role")
 
     existing = db.query(Group).filter(Group.name == name).one_or_none()
@@ -462,7 +458,7 @@ def create_group(
 
     g = Group(
         name=name,
-        description=(body.get("description") or "").strip() or None,
+        description=(body.description or "").strip() or None,
         role=role,
     )
     db.add(g)
@@ -475,7 +471,7 @@ def create_group(
 @router.patch("/v1/admin/groups/{group_id}")
 def update_group(
     group_id: int,
-    body: dict,
+    payload: AdminGroupUpdatePayload,
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -483,6 +479,7 @@ def update_group(
     if not g:
         raise HTTPException(status_code=404, detail="group not found")
 
+    body = payload.model_dump(exclude_unset=True)
     pending_members_before = []
     if "role" in body:
         members = (
@@ -581,7 +578,7 @@ def get_group_permissions(
 @router.put("/v1/admin/groups/{group_id}/permissions")
 def set_group_permissions(
     group_id: int,
-    body: dict,
+    body: AdminGroupPermissionsUpdatePayload,
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -589,13 +586,7 @@ def set_group_permissions(
     if not g:
         raise HTTPException(status_code=404, detail="group not found")
 
-    raw_permission_ids = body.get("permission_ids") or []
-    try:
-        permission_ids = sorted({int(x) for x in raw_permission_ids})
-    except Exception as e:
-        raise HTTPException(
-            status_code=400, detail="permission_ids must be integer list"
-        ) from e
+    permission_ids = sorted(set(body.permission_ids))
 
     if permission_ids:
         existing_perms = (
@@ -729,23 +720,17 @@ def admin_audit_trail(
         ~(AuditLog.path.ilike("%/v1/auth%") & AuditLog.path.ilike("%callback%"))
     )
     if username:
-        qry = qry.filter(AuditLog.username.ilike(f"%{username.strip()}%"))
+        qry = qry.filter(AuditLog.username.icontains(username.strip(), autoescape=True))
     if path:
-        qry = qry.filter(AuditLog.path.ilike(f"%{path.strip()}%"))
+        qry = qry.filter(AuditLog.path.icontains(path.strip(), autoescape=True))
     if method:
         m = method.strip().upper()
         if m:
             qry = qry.filter(AuditLog.method == m)
     if status_min is not None:
-        try:
-            qry = qry.filter(AuditLog.status_code >= int(status_min))
-        except Exception:
-            pass
+        qry = qry.filter(AuditLog.status_code >= status_min)
     if status_max is not None:
-        try:
-            qry = qry.filter(AuditLog.status_code <= int(status_max))
-        except Exception:
-            pass
+        qry = qry.filter(AuditLog.status_code <= status_max)
 
     total = qry.order_by(None).count()
     rows = qry.order_by(desc(AuditLog.ts)).limit(limit).offset(offset).all()
@@ -815,6 +800,7 @@ def admin_discover_all_release_feeds(
     """
     from app.core.features import is_enabled
     from app.db.models import Project
+    from app.services.scan_queue import launch_release_discovery
 
     if not is_enabled("release_feed", db):
         raise HTTPException(status_code=404, detail="Feature not available")
@@ -827,18 +813,7 @@ def admin_discover_all_release_feeds(
         .order_by(Project.id)
         .all()
     )
-    enqueued = 0
-    if projects:
-        from app.tasks.release_feed import discover_project_release_feed
-
-        for project in projects:
-            try:
-                discover_project_release_feed.delay(project.id)
-                enqueued += 1
-            except Exception:
-                logger.exception(
-                    "Failed to enqueue discovery for project_id=%s", project.id
-                )
+    enqueued = sum(launch_release_discovery(project.id) for project in projects)
     return {
         "enqueued": enqueued,
         "pending_notifications": _pending_notification_count(db),

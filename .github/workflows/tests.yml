@@ -96,9 +96,10 @@ jobs:
           # mypy's summary line, kept in the report, feeds the mypy badge.
           poetry run mypy | tee ../../test-results/mypy-report.txt
 
-      - name: Check frontend formatting
+      - name: Check frontend formatting and HTML insertion
         run: |
           bash format-ui.sh --check
+          bash lint-ui.sh --check
 
       - name: Run tests
         run: |

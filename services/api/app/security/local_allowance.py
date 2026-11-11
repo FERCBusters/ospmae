@@ -63,7 +63,3 @@ class LocalAllowance:
                     return False
             self._counts[key] = (now, 1)
             return True
-
-    def tracked(self) -> int:
-        with self._lock:
-            return len(self._counts)

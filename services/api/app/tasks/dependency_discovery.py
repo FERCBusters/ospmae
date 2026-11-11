@@ -302,11 +302,13 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
             db.commit()
             return {"skipped": True, "reason": "no_url"}
 
-        # Guard against concurrent scans.
+        # A scan runs only from the queued state: a scan handed to the workers
+        # twice (by its caller and the beat dispatcher) runs once, and a
+        # running scan is never started again.
         updated = db.execute(
             update(ProjectVersion)
             .where(ProjectVersion.id == project_version_id)
-            .where(ProjectVersion.dependency_discovery_status != "running")
+            .where(ProjectVersion.dependency_discovery_status == "queued")
             .values(
                 dependency_discovery_status="running",
                 dependency_discovery_started_at=datetime.utcnow(),
@@ -315,7 +317,7 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
             )
         )
         if getattr(updated, "rowcount", 0) == 0:
-            return {"skipped": True, "reason": "already_running"}
+            return {"skipped": True, "reason": "not_queued"}
         db.commit()
 
         repo_dir, commit = clone_repo(

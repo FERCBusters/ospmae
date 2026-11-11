@@ -10,32 +10,9 @@ from typing import Any
 from celery.utils.log import get_task_logger
 
 from app.core.config import settings
+from app.depscan.ecosystems import ecosystem, purl_type
 
 log = get_task_logger(__name__)
-
-ECOSYSTEM_MAP = {
-    # Keep OSPMAE's previous ecosystem names for existing lockfile-backed data.
-    "npm": "npm",
-    "yarn": "npm",
-    "pnpm": "npm",
-    "javascript": "npm",
-    "node": "npm",
-    "nodejs": "npm",
-    "python": "python",
-    "python-pkg": "python",
-    "pypi": "python",
-    "go": "go",
-    "go-module": "go",
-    "go-module-binary": "go",
-    "golang": "go",
-    "cargo": "cargo",
-    "rust-crate": "cargo",
-    "rust": "cargo",
-    "composer": "composer",
-    "php-composer": "composer",
-    "php-composer-installed": "composer",
-    "php": "composer",
-}
 
 
 @dataclass(frozen=True)
@@ -95,34 +72,6 @@ def _references(vulnerability: dict[str, Any]) -> list[str]:
     return refs
 
 
-def _purl_type(purl: str) -> str:
-    package_url = str(purl or "").strip().lower()
-    if not package_url.startswith("pkg:"):
-        return ""
-    rest = package_url[4:]
-    return rest.split("/", 1)[0].split(":", 1)[0].strip()
-
-
-def _clean_ecosystem(value: str) -> str | None:
-    clean = str(value or "").strip().lower().replace("_", "-")
-    if not clean:
-        return None
-    clean = ECOSYSTEM_MAP.get(clean, clean)
-    return clean[:32]
-
-
-def _ecosystem(raw_type: str, purl: str | None = None) -> str | None:
-    raw = str(raw_type or "").strip().lower()
-    purl_type = _purl_type(str(purl or ""))
-    # Prefer the concrete Grype/Syft artifact type so java-archive, gem, npm,
-    # etc. use the same ecosystem key as the Syft dependency inventory.
-    for value in (raw, purl_type):
-        eco = _clean_ecosystem(value)
-        if eco:
-            return eco
-    return None
-
-
 def scan_grype(repo_root: Path) -> list[VulnFinding] | None:
     """Run Grype against a cloned repository and return normalized findings.
 
@@ -180,10 +129,10 @@ def scan_grype(repo_root: Path) -> list[VulnFinding] | None:
         if not isinstance(artifact, dict) or not isinstance(vulnerability, dict):
             continue
 
-        ecosystem = _ecosystem(
-            str(artifact.get("type") or ""), str(artifact.get("purl") or "")
+        eco = ecosystem(
+            artifact.get("type"), purl_type(str(artifact.get("purl") or ""))
         )
-        if not ecosystem:
+        if not eco:
             continue
 
         pkg = str(artifact.get("name") or "").strip()
@@ -201,7 +150,7 @@ def scan_grype(repo_root: Path) -> list[VulnFinding] | None:
 
         out.append(
             VulnFinding(
-                ecosystem=ecosystem,
+                ecosystem=eco,
                 package=pkg,
                 version=ver,
                 vulnerability_id=vid,

@@ -16,7 +16,6 @@ DEFAULT_ALLOWED_HOSTS = {"github.com", "gitlab.com", "codeberg.org"}
 from .parsers import (  # noqa: E402 - module re-export root; config import precedes
     DiscoveredDependency,
     is_supported_lockfile,
-    parse_lockfile,
     redact_url,
 )
 
@@ -389,21 +388,3 @@ def find_lockfiles(repo_root: Path) -> list[Path]:
             # cap per repo to avoid extreme monorepos
             break
     return out
-
-
-def scan_repo(url: str, version_hint: str | None = None) -> ScanResult:
-    if not bool(getattr(settings, "dependency_discovery_enabled", True)):
-        return ScanResult(commit=None, dependencies=[])
-
-    repo_path, commit = clone_repo(url, version_hint=version_hint)
-    try:
-        max_bytes = int(
-            getattr(settings, "dependency_discovery_max_file_bytes", 5_000_000)
-            or 5_000_000
-        )
-        deps: list[DiscoveredDependency] = []
-        for lockfile in find_lockfiles(repo_path):
-            deps.extend(parse_lockfile(lockfile, max_bytes=max_bytes))
-        return ScanResult(commit=commit, dependencies=deps)
-    finally:
-        shutil.rmtree(repo_path, ignore_errors=True)

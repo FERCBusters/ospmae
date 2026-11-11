@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 from app.depscan.scan import validate_git_ref_name, validate_repo_url
 from app.security.regex_shape import MAX_PATTERN_CHARS, compile_supplied_pattern
@@ -90,21 +90,25 @@ class AdminUserUpdatePayload(BaseModel):
 
 class AdminGroupCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
     role: str | None = Field(default=None, max_length=50)
 
 
 class AdminGroupUpdatePayload(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=200)
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
     role: str | None = Field(default=None, max_length=50)
 
 
+# Identifier lists are JSON arrays of integers: a string such as "12" is
+# refused rather than read character by character.
 class AdminUserAccessUpdatePayload(BaseModel):
-    group_ids: list[int] | None = None
-    permission_ids: list[int] | None = None
+    group_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
+    permission_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
 
 
 class AdminGroupPermissionsUpdatePayload(BaseModel):
-    permission_ids: list[int] | None = None
+    permission_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
 
 
 # -----------------------------------------------------------------------------

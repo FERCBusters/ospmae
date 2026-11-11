@@ -1,0 +1,77 @@
+{
+  "services/ui/public/app.js": {
+    "no-unsanitized/property": {
+      "count": 2
+    }
+  },
+  "services/ui/public/pages/account.js": {
+    "no-unsanitized/property": {
+      "count": 9
+    }
+  },
+  "services/ui/public/pages/admin.js": {
+    "no-unsanitized/property": {
+      "count": 6
+    }
+  },
+  "services/ui/public/pages/capability.js": {
+    "no-unsanitized/property": {
+      "count": 2
+    }
+  },
+  "services/ui/public/pages/comparisons.js": {
+    "no-unsanitized/property": {
+      "count": 1
+    }
+  },
+  "services/ui/public/pages/dependencies.js": {
+    "no-unsanitized/property": {
+      "count": 4
+    }
+  },
+  "services/ui/public/pages/deps-browser.js": {
+    "no-unsanitized/property": {
+      "count": 1
+    }
+  },
+  "services/ui/public/pages/framework-manage.js": {
+    "no-unsanitized/property": {
+      "count": 2
+    }
+  },
+  "services/ui/public/pages/manifest-builder.js": {
+    "no-unsanitized/property": {
+      "count": 2
+    }
+  },
+  "services/ui/public/pages/preferences.js": {
+    "no-unsanitized/property": {
+      "count": 3
+    }
+  },
+  "services/ui/public/pages/project-edit.js": {
+    "no-unsanitized/property": {
+      "count": 5
+    }
+  },
+  "services/ui/public/pages/project.js": {
+    "no-unsanitized/property": {
+      "count": 5
+    }
+  },
+  "services/ui/public/pages/projects.js": {
+    "no-unsanitized/property": {
+      "count": 2
+    }
+  },
+  "services/ui/public/pages/questions.js": {
+    "no-unsanitized/property": {
+      "count": 1
+    }
+  },
+  "services/ui/public/pages/saved-manifests.js": {
+    "no-unsanitized/property": {
+      "count": 5
+    }
+  }
+}

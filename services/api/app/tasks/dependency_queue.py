@@ -30,15 +30,9 @@ def dispatch_queued_dependency_discoveries(limit: int = 10) -> dict:
             .limit(int(limit or 10))
             .all()
         )
-        from app.tasks.dependency_discovery import discover_project_version_dependencies
+        from app.services.scan_queue import launch_dependency_scan
 
-        launched = 0
-        for pv in queued:
-            try:
-                discover_project_version_dependencies.delay(pv.id)
-                launched += 1
-            except Exception:
-                log.exception("Failed to launch dependency discovery")
+        launched = sum(launch_dependency_scan(pv.id) for pv in queued)
         return {"queued": len(queued), "launched": launched}
     finally:
         db.close()

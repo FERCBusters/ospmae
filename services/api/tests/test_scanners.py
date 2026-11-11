@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from app.core.config import settings
 from app.depscan import grype, syft
+from app.depscan.ecosystems import ecosystem, purl_type
 from app.depscan.grype import VulnFinding
 from app.depscan.parsers import DiscoveredDependency
 
@@ -194,6 +195,5 @@ def test_scanner_timeouts_have_a_floor(monkeypatch, module):
         ("x" * 40, "", "x" * 32),
     ],
 )
-def test_ecosystem_names_match_between_scanners(raw, purl, expected):
-    assert grype._ecosystem(raw, purl) == expected
-    assert syft._ecosystem(raw, None, purl) == expected
+def test_both_scanners_name_ecosystems_alike(raw, purl, expected):
+    assert ecosystem(raw, purl_type(purl)) == expected

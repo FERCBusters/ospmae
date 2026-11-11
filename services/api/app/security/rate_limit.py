@@ -98,17 +98,3 @@ def record_rate_limit_attempt(db: Session, identifier: str) -> None:
     )
     db.add(row)
     db.commit()
-
-
-def cleanup_expired_rate_limits(db: Session) -> int:
-    """Clean up expired rate limit entries. Returns count of deleted entries."""
-    from datetime import datetime, timedelta
-
-    cutoff = datetime.utcnow() - timedelta(hours=1)
-    deleted = (
-        db.query(RateLimitEntry)
-        .filter(RateLimitEntry.timestamp < cutoff)
-        .delete(synchronize_session=False)
-    )
-    db.commit()
-    return deleted

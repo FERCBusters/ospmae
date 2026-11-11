@@ -389,7 +389,7 @@
 
   function clear(message) {
     if (!el.graph) return;
-    el.graph.innerHTML = `<div class="p-3 text-secondary">${(window.OSPMAE?.escapeHtml || ((x) => x))(message || "No data")}</div>`;
+    el.graph.innerHTML = `<div class="p-3 text-secondary">${window.OSPMAE.escapeHtml(message || "No data")}</div>`;
   }
 
   function currentLens() {

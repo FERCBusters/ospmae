@@ -397,16 +397,18 @@ def list_entity_changelogs(
         qry = qry.filter(EntityChangelog.entity_id == int(entity_id))
     if username:
         qry = qry.filter(
-            EntityChangelog.changed_by_username.ilike(f"%{username.strip()}%")
+            EntityChangelog.changed_by_username.icontains(
+                username.strip(), autoescape=True
+            )
         )
     if q:
-        needle = f"%{q.strip()}%"
+        needle = q.strip()
         qry = qry.filter(
             or_(
-                EntityChangelog.entity_ref.ilike(needle),
-                EntityChangelog.entity_title.ilike(needle),
-                EntityChangelog.summary.ilike(needle),
-                EntityChangelog.changed_by_username.ilike(needle),
+                EntityChangelog.entity_ref.icontains(needle, autoescape=True),
+                EntityChangelog.entity_title.icontains(needle, autoescape=True),
+                EntityChangelog.summary.icontains(needle, autoescape=True),
+                EntityChangelog.changed_by_username.icontains(needle, autoescape=True),
             )
         )
 

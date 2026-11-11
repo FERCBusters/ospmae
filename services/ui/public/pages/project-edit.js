@@ -189,7 +189,6 @@
         try {
           // Validate early so users see the issue before the API rejects it.
           // Matching is case-insensitive server-side unless case_sensitive is true.
-          // eslint-disable-next-line no-new
           new RegExp(pattern, "i");
         } catch (err) {
           throw new Error(

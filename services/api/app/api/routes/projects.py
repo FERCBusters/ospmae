@@ -66,7 +66,6 @@ from app.services.branch_tracking import (
     DEFAULT_POLL_INTERVAL_HOURS,
     ensure_branch_version,
     is_tracking,
-    mark_scan_queued,
     scan_in_flight,
 )
 from app.services.entity_changelog import (
@@ -79,6 +78,11 @@ from app.services.mailer import send_manifest_shared_email
 from app.services.notification_recipients import (
     notification_email_for_user,
     notification_emails_for_users,
+)
+from app.services.scan_queue import (
+    launch_dependency_scan,
+    launch_release_discovery,
+    mark_scan_queued,
 )
 from app.services.versioning import (
     is_semantically_newer,
@@ -180,47 +184,21 @@ def _notify_subscribers_published(
     from app.services.mailer import send_project_version_published_email
     from app.tasks.notifications import kick_delivery
 
+    # The version is already saved: a mail failure is logged, never raised.
     url = _public_project_url(project.id)
-    try:
-        for email in _subscriber_emails(db, project_id=project.id):
-            try:
-                send_project_version_published_email(
-                    db=db,
-                    to_email=email,
-                    project_name=project.display_name,
-                    version=version.version,
-                    project_url=url,
-                )
-            except Exception:
-                # Email failures should not break API flows.
-                pass
-    except Exception:
-        pass
-    kick_delivery()
-
-
-def _notify_owners_draft(
-    db: Session, *, project: Project, version: ProjectVersion, source: str
-) -> None:
-    from app.services.mailer import send_project_version_draft_email
-    from app.tasks.notifications import kick_delivery
-
-    url = _public_project_url(project.id)
-    try:
-        for email in _owner_emails(db, project=project):
-            try:
-                send_project_version_draft_email(
-                    db=db,
-                    to_email=email,
-                    project_name=project.display_name,
-                    version=version.version,
-                    project_url=url,
-                    source=source,
-                )
-            except Exception:
-                pass
-    except Exception:
-        pass
+    for email in _subscriber_emails(db, project_id=project.id):
+        try:
+            send_project_version_published_email(
+                db=db,
+                to_email=email,
+                project_name=project.display_name,
+                version=version.version,
+                project_url=url,
+            )
+        except Exception:
+            logger.exception(
+                "Could not queue the release e-mail for project_id=%s", project.id
+            )
     kick_delivery()
 
 
@@ -672,15 +650,19 @@ def _get_project_query(
     if q:
         q_trim = q.strip()
         if q_trim:
-            like = f"%{q_trim}%"
             query = query.filter(
                 or_(
-                    Project.display_name.ilike(like),
-                    Project.machine_name.ilike(like),
-                    Project.organisation.ilike(like),
-                    Project.project_type.ilike(like),
-                    Project.license.ilike(like),
-                    Project.capability.ilike(like),
+                    *(
+                        column.icontains(q_trim, autoescape=True)
+                        for column in (
+                            Project.display_name,
+                            Project.machine_name,
+                            Project.organisation,
+                            Project.project_type,
+                            Project.license,
+                            Project.capability,
+                        )
+                    ),
                 )
             )
 
@@ -1074,17 +1056,7 @@ def _start_branch_scan(
     db.commit()
 
     if launch:
-        try:
-            from app.tasks.dependency_discovery import (
-                discover_project_version_dependencies,
-            )
-
-            discover_project_version_dependencies.delay(version.id)
-        except Exception:
-            # The queued-discovery dispatcher picks it up on its next beat.
-            logger.exception(
-                "Failed to enqueue branch scan for project_id=%s", project.id
-            )
+        launch_dependency_scan(version.id)
 
 
 @router.post("/v1/projects")
@@ -1181,16 +1153,9 @@ def create_project(
 
     if str(payload.release_rss_feed_url or "").strip():
         from app.core.features import is_enabled
-        from app.tasks.release_feed import discover_project_release_feed
 
         if is_enabled("release_feed", db):
-            try:
-                discover_project_release_feed.delay(project.id)
-            except Exception:
-                logger.exception(
-                    "Failed to enqueue initial release discovery for project_id=%s",
-                    project.id,
-                )
+            launch_release_discovery(project.id)
 
     return _serialize_project(project, latest_version=None, capability_paths=[])
 
@@ -1570,16 +1535,9 @@ def update_project(
         and not project.track_branch
     ):
         from app.core.features import is_enabled
-        from app.tasks.release_feed import discover_project_release_feed
 
         if is_enabled("release_feed", db):
-            try:
-                discover_project_release_feed.delay(project.id)
-            except Exception:
-                logger.exception(
-                    "Failed to enqueue initial release discovery for project_id=%s",
-                    project.id,
-                )
+            launch_release_discovery(project.id)
 
     latest = _latest_version(project)
     capability_paths = []
@@ -1782,10 +1740,7 @@ def create_project_version(
         and str(payload.link_to_source_code or "").strip()
     )
     if auto_discovery:
-        version.dependency_discovery_status = "queued"
-        version.dependency_discovery_error = None
-        version.dependency_discovery_started_at = None
-        version.dependency_discovery_finished_at = None
+        mark_scan_queued(version)
         version.dependency_last_commit = None
         version.dependency_count = 0
         version.vulnerability_count = 0
@@ -1844,15 +1799,7 @@ def create_project_version(
         _notify_subscribers_published(db, project=project, version=version)
 
     if auto_discovery:
-        try:
-            from app.tasks.dependency_discovery import (
-                discover_project_version_dependencies,
-            )
-
-            discover_project_version_dependencies.delay(version.id)
-        except Exception:
-            # If the broker is unavailable, Celery beat will dispatch queued jobs later.
-            pass
+        launch_dependency_scan(version.id)
 
     return _serialize_version(version)
 
@@ -1910,10 +1857,7 @@ def update_project_version(
         and new_link != old_link
     )
     if auto_discovery:
-        version.dependency_discovery_status = "queued"
-        version.dependency_discovery_error = None
-        version.dependency_discovery_started_at = None
-        version.dependency_discovery_finished_at = None
+        mark_scan_queued(version)
         version.dependency_last_commit = None
         version.dependency_count = 0
         version.vulnerability_count = 0
@@ -1965,21 +1909,11 @@ def update_project_version(
 
     # If we just published a draft, notify subscribers.
     if old_is_draft and not bool(getattr(version, "is_draft", False)):
-        try:
-            project = _ensure_project(db, version.project_id)
-            _notify_subscribers_published(db, project=project, version=version)
-        except Exception:
-            pass
+        project = _ensure_project(db, version.project_id)
+        _notify_subscribers_published(db, project=project, version=version)
 
     if auto_discovery:
-        try:
-            from app.tasks.dependency_discovery import (
-                discover_project_version_dependencies,
-            )
-
-            discover_project_version_dependencies.delay(version.id)
-        except Exception:
-            pass
+        launch_dependency_scan(version.id)
 
     return _serialize_version(version)
 
