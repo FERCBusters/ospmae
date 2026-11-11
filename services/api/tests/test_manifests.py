@@ -58,7 +58,10 @@ def catalogue():
     )
     record_dependency(alpha_v["id"], "pypi", "idna", "3.0", indirect=True)
 
-    beta = make_project(admin, "beta", display_name="=Beta|Co")
+    # A display name that would run as a spreadsheet formula and break a
+    # Markdown table. It is spelled to sort before "Alpha" under any database
+    # collation, whether punctuation counts (C) or is skipped (en_US).
+    beta = make_project(admin, "beta", display_name="=Aardvark|Co")
     beta_v = make_version(admin, beta["id"], "0.1.0", status="alpha")
     map_nodes(admin, beta_v["id"], fw["id"], [issuer["id"]])
 
@@ -101,7 +104,7 @@ def test_json_export_carries_versions_capabilities_and_findings(catalogue):
         == 'attachment; filename="my-export-.json"'
     )
     items = {row["machine_name"]: row for row in response.json()["items"]}
-    assert list(items) == ["beta", "alpha"]  # ordered by display name: "=Beta|Co"
+    assert list(items) == ["beta", "alpha"]  # ordered by display name: "=Aardvark|Co"
 
     alpha = items["alpha"]
     assert alpha["latest_version"] == "1.2.0"
@@ -175,8 +178,8 @@ def test_markdown_export_has_the_matrix_and_per_dependency_findings(catalogue):
     issuer, storage = catalogue["nodes"]["issuer"], catalogue["nodes"]["storage"]
     assert f"| Alpha | Acme | library | 1.2.0 | {issuer}, {storage} | 2 | 2 |" in lines
     # A pipe in a name is escaped so it cannot break the table.
-    assert f"| =Beta\\|Co | — | — | 0.1.0 | {issuer} | 0 | 0 |" in lines
-    assert "| Capability Path | =Beta\\|Co | Alpha |" in lines
+    assert f"| =Aardvark\\|Co | — | — | 0.1.0 | {issuer} | 0 | 0 |" in lines
+    assert "| Capability Path | =Aardvark\\|Co | Alpha |" in lines
     assert "| Issuer | ✅ | ✅ |" in lines
     assert "| Wallet > Storage | — | ✅ |" in lines
     assert "### Alpha — 1.2.0" in lines
@@ -187,7 +190,7 @@ def test_markdown_export_has_the_matrix_and_per_dependency_findings(catalogue):
         "| 2.0.1 | https://advisories.example/CVE-2026-1 |" in lines
     )
     # Beta has no dependencies and gets no section.
-    assert "### =Beta" not in text
+    assert "### =Aardvark" not in text
 
 
 def test_markdown_export_says_so_when_there_is_nothing_to_tabulate(catalogue):
@@ -244,14 +247,14 @@ def test_spreadsheet_export_fills_every_sheet_and_defuses_formulas(catalogue):
     assert projects["alpha"]["dependency_count"] == 2
     assert projects["alpha"]["supported_profiles"] == "OpenID4VCI"
     # A name starting with "=" would run as a formula; it is stored as text.
-    assert projects["beta"]["display_name"] == "'=Beta|Co"
+    assert projects["beta"]["display_name"] == "'=Aardvark|Co"
     assert {
         (row["project_name"], row["capability_path"])
         for row in rows("CapabilityMappings")
     } == {
         ("Alpha", "Issuer"),
         ("Alpha", "Wallet > Storage"),
-        ("'=Beta|Co", "Issuer"),
+        ("'=Aardvark|Co", "Issuer"),
     }
     assert [row["capability_path"] for row in rows("Capabilities")] == sorted(
         ["Issuer", "Wallet > Storage"],
@@ -279,7 +282,7 @@ def test_csv_export_defuses_formulas_and_unknown_formats_are_refused(catalogue):
     assert response.headers["content-type"].startswith("text/csv")
     parsed = list(csv.reader(io.StringIO(response.text)))
     assert parsed[0] == ["project_id", "machine_name", "display_name", "capabilities"]
-    assert parsed[1][1:] == ["beta", "'=Beta|Co", "Issuer"]
+    assert parsed[1][1:] == ["beta", "'=Aardvark|Co", "Issuer"]
     assert parsed[2][1:] == ["alpha", "Alpha", "Issuer; Wallet > Storage"]
 
     refused = admin.get("/v1/manifests/export", params={"format": "pdf"})
@@ -466,7 +469,7 @@ def test_deleting_the_pinned_version_keeps_the_snapshot_without_findings(catalog
     issuer, storage = catalogue["nodes"]["issuer"], catalogue["nodes"]["storage"]
     assert f"| Alpha | Acme | library | 1.2.0 | {issuer}, {storage} | 0 | 0 |" in lines
     # The matrix is keyed by project, so it lists the projects that remain.
-    assert "| Capability Path | =Beta\\|Co |" in lines
+    assert "| Capability Path | =Aardvark\\|Co |" in lines
 
 
 # ---------------------------------------------------------------------------
