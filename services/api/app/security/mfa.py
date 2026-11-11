@@ -365,48 +365,65 @@ def registered(db, user):
     )
 
 
-factor_alerts = {
-    "enrolled": "An authenticator was added to your account",
-    "removed": "An authenticator was removed from your account",
-    "regenerated": "Your recovery codes were replaced",
-    "cleared": "An authenticator problem ended your verification",
-}
+# KEEN's second-factor actions that also mail the account owner.
+NOTIFIED_ACTIONS = frozenset(
+    {
+        "factor-enrolled",
+        "factor-removed",
+        "recovery-codes-regenerated",
+        "operator-reset",
+        "verified-recovery",
+        "verification-ended",
+    }
+)
 
 
-def security_alert(db, user, event: str, title: str) -> None:
-    """Mail the account owner that their second factor changed.
+def audit(db, user, action: str, *, ip: str | None) -> None:
+    """Record a second-factor action in the audit trail, ported from KEEN.
 
-    Queueing goes through the shared outbox in the caller's transaction; a
-    missing SMTP configuration or recipient skips it the same way every
-    other queued e-mail does.
+    Actions that change or test the account's factors also queue a security
+    notice. Both join the caller's transaction.
     """
-    from app.services.mailer import queue_email
-    from app.services.notification_recipients import notification_email_for_user
-    from app.services.notifications import smtp_configured
+    from app.db.models import AuditLog
 
-    recipient = (notification_email_for_user(db, user=user) or "").strip()
-    if not smtp_configured() or not recipient:
-        return
-    body = (
-        f"{title}.\n\n"
-        f"Account: {user.username}\n"
-        f"OSPMAE installation: {settings.public_base_url}\n"
-        f"Time (UTC): {_now().isoformat(timespec='seconds')}Z\n\n"
-        "If this was you, no action is needed. If you do not recognise this "
-        "activity, open your known OSPMAE address directly, review your "
-        "password and authenticators under Account, and contact your "
-        "administrator if anything looks wrong.\n"
-    )
-    queue_email(
-        db,
-        user_id=user.id,
-        recipient=recipient,
-        subject=f"OSPMAE security: {title}",
-        body=body,
+    if action in NOTIFIED_ACTIONS:
+        from app.services.security_notifications import enqueue
+
+        enqueue(db, user, action, ip=ip)
+    db.add(
+        AuditLog(
+            ts=_now(),
+            username=user.username,
+            method="MFA",
+            path="/v1/auth/mfa/" + action,
+            status_code=200,
+            duration_ms=0,
+            client_ip=ip,
+        )
     )
 
 
-def activate(db, row, user):
+def operator_reset(db, user) -> None:
+    """An operator's recovery of a local account that lost its factors.
+
+    Ported from KEEN's mfa_admin script: every authenticator, recovery code
+    and pending ceremony goes, and the enrolment version moves on, so the
+    account's local sessions end. The caller holds the user row's lock and
+    commits.
+    """
+    for model in (MfaCredential, MfaRecoveryCode, MfaChallenge):
+        db.query(model).filter(model.user_id == user.id).delete(
+            synchronize_session=False
+        )
+    user.mfa_enabled = False
+    user.mfa_totp_secret = None
+    user.mfa_totp_last_step = -1
+    user.mfa_version += 1
+    clear_wrong_codes(user)
+    audit(db, user, "operator-reset", ip=None)
+
+
+def activate(db, row, user, *, ip: str | None):
     first = not user.mfa_enabled
     user.mfa_enabled = True
     bump(db, user, row)
@@ -414,10 +431,8 @@ def activate(db, row, user):
     if row.purpose == "login":
         row.stage = "ready"
     row.data = {}
+    audit(db, user, "factor-enrolled", ip=ip)
     db.commit()
-    if first:
-        security_alert(db, user, "enrolled", factor_alerts["enrolled"])
-        db.commit()
     return {"ok": True, "recovery_codes": codes}
 
 

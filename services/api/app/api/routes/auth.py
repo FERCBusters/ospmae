@@ -457,7 +457,12 @@ def change_password(
     db.query(LoginDevice).filter(LoginDevice.user_id == user_row.id).delete(
         synchronize_session=False
     )
+    notice_queued = security_notifications.enqueue(
+        db, user_row, "password-changed", ip=request_client_address(request)
+    )
     db.commit()
+    if notice_queued:
+        _kick_delivery()
     return Response(status_code=204)
 
 
@@ -563,6 +568,7 @@ def request_password_reset(
 @router.post("/v1/auth/reset-password")
 def reset_password(
     payload: PasswordResetConfirmPayload,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
     if not _local_password_features_enabled():
@@ -606,7 +612,12 @@ def reset_password(
         synchronize_session=False
     )
     throttle.clear_throttle(db, throttle.name_key(user.username))
+    notice_queued = security_notifications.enqueue(
+        db, user, "password-changed", ip=request_client_address(request)
+    )
     db.commit()
+    if notice_queued:
+        _kick_delivery()
 
     return Response(status_code=204)
 

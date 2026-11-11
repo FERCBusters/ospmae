@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.security import mfa
 from app.security.auth import get_current_user, get_current_user_from_request
+from app.security.client_addr import request_client_address
 from app.services import mfa_management as service
 from app.services.mfa_management import Code, Credential, Password, Remove
 
@@ -54,7 +55,9 @@ def state(request: Request, db: Session = Depends(get_db)):
 def verify_code(payload: Code, request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
     mfa.limit(db, request, user.id)
-    return service.verify_code(db, row, user, payload)
+    return service.verify_code(
+        db, row, user, payload, ip=request_client_address(request)
+    )
 
 
 @router.post("/v1/auth/mfa/totp/start")
@@ -68,7 +71,9 @@ def start_totp(request: Request, db: Session = Depends(get_db)):
 def confirm_totp(payload: Code, request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
     mfa.limit(db, request, user.id)
-    return service.confirm_totp(db, row, user, payload)
+    return service.confirm_totp(
+        db, row, user, payload, ip=request_client_address(request)
+    )
 
 
 @router.post("/v1/auth/mfa/webauthn/options")
@@ -84,7 +89,9 @@ def authentication_verify(
 ):
     row, user = mfa.pending(db, request)
     mfa.limit(db, request, user.id)
-    return service.authentication_verify(db, row, user, payload)
+    return service.authentication_verify(
+        db, row, user, payload, ip=request_client_address(request)
+    )
 
 
 @router.post("/v1/auth/mfa/webauthn/register-options")
@@ -100,19 +107,21 @@ def registration_verify(
 ):
     row, user = mfa.pending(db, request)
     mfa.limit(db, request, user.id)
-    return service.registration_verify(db, row, user, payload)
+    return service.registration_verify(
+        db, row, user, payload, ip=request_client_address(request)
+    )
 
 
 @router.post("/v1/auth/mfa/remove")
 def remove(payload: Remove, request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
-    return service.remove(db, row, user, payload)
+    return service.remove(db, row, user, payload, ip=request_client_address(request))
 
 
 @router.post("/v1/auth/mfa/recovery/regenerate")
 def regenerate(request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
-    return service.regenerate(db, row, user)
+    return service.regenerate(db, row, user, ip=request_client_address(request))
 
 
 @router.post("/v1/auth/mfa/finish")

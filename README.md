@@ -71,6 +71,14 @@ finally:
 PY
 ```
 
+### Second-factor recovery
+
+When a local account has lost its authenticators and recovery codes, an operator removes them so the owner can sign in with the password and enrol again; the account's local sessions end and the owner is mailed a security notice:
+
+```bash
+docker compose exec component-api python scripts/mfa_admin.py USERNAME --reset --confirm-username USERNAME
+```
+
 ### Environment settings worth knowing
 
 | Setting | Purpose |

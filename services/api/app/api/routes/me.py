@@ -31,9 +31,11 @@ from app.db.models import (
     Session as SessionRow,
 )
 from app.db.session import get_db
+from app.security.client_addr import request_client_address
 from app.security.oidc import any_sso_enabled, get_sso_provider
 from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
 from app.security.roles import ROLE_PENDING, attach_effective_role
+from app.services.notification_recipients import notification_email_for_user
 
 router = APIRouter()
 
@@ -490,6 +492,46 @@ def list_my_emails(request: Request, db: Session = Depends(get_db)):
     return {"items": [_serialize_user_email(row) for row in rows]}
 
 
+def _address_notice(
+    db: Session,
+    request: Request,
+    user: User,
+    event: str,
+    *,
+    email: str,
+    recipient: str | None = None,
+) -> None:
+    """Mail a security notice about an address change already committed."""
+    from app.services import security_notifications
+    from app.tasks.notifications import commit_and_kick
+
+    if security_notifications.enqueue(
+        db,
+        user,
+        event,
+        ip=request_client_address(request),
+        email=email,
+        recipient=recipient,
+    ):
+        commit_and_kick(db)
+
+
+def _tell_previous_address(
+    db: Session, request: Request, user: User, previous: str | None
+) -> None:
+    """When the account's notice address changed, tell the one it replaced."""
+    current = notification_email_for_user(db, user=user)
+    if previous and current and previous.strip().lower() != current.strip().lower():
+        _address_notice(
+            db,
+            request,
+            user,
+            "notice-address-changed",
+            email=current,
+            recipient=previous,
+        )
+
+
 @router.post("/v1/me/emails")
 def add_my_email(
     payload: UserEmailCreatePayload, request: Request, db: Session = Depends(get_db)
@@ -498,6 +540,7 @@ def add_my_email(
     if not isinstance(user, User):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    previous = notification_email_for_user(db, user=user)
     row = _ensure_user_email_row(
         db,
         user_id=user.id,
@@ -516,6 +559,7 @@ def add_my_email(
         user.email = row.email
         db.add(user)
         db.commit()
+        _tell_previous_address(db, request, user, previous)
 
     _maybe_send_email_verification(db, user, row)
 
@@ -538,6 +582,7 @@ def make_my_email_primary(
     if not row:
         raise HTTPException(status_code=404, detail="Email address not found")
 
+    previous = notification_email_for_user(db, user=user)
     (
         db.query(UserEmail)
         .filter(UserEmail.user_id == user.id, UserEmail.is_primary == True)  # noqa: E712 - SQLAlchemy boolean column predicate
@@ -548,6 +593,7 @@ def make_my_email_primary(
     db.add(row)
     db.add(user)
     db.commit()
+    _tell_previous_address(db, request, user, previous)
     db.refresh(row)
     return _serialize_user_email(row)
 
@@ -566,6 +612,7 @@ def delete_my_email(email_id: int, request: Request, db: Session = Depends(get_d
     if not row:
         raise HTTPException(status_code=404, detail="Email address not found")
 
+    previous = notification_email_for_user(db, user=user)
     was_primary = bool(row.is_primary)
     row_email = row.email
     db.delete(row)
@@ -585,6 +632,11 @@ def delete_my_email(email_id: int, request: Request, db: Session = Depends(get_d
         db.add(user)
         db.commit()
 
+    # The address that received the account's notices until now hears of it,
+    # even when it is the address removed.
+    _address_notice(
+        db, request, user, "email-removed", email=row_email, recipient=previous
+    )
     return {"deleted": True}
 
 
@@ -627,7 +679,9 @@ def my_notifications(request: Request, db: Session = Depends(get_db), limit: int
 
 
 @router.post("/v1/me/emails/verify")
-def verify_my_email(payload: EmailVerifyPayload, db: Session = Depends(get_db)):
+def verify_my_email(
+    payload: EmailVerifyPayload, request: Request, db: Session = Depends(get_db)
+):
     import hashlib
 
     token = (payload.token or "").strip()
@@ -659,6 +713,9 @@ def verify_my_email(payload: EmailVerifyPayload, db: Session = Depends(get_db)):
     db.add(row)
     db.add(email_row)
     db.commit()
+    owner = db.get(User, row.user_id)
+    if owner is not None:
+        _address_notice(db, request, owner, "email-verified", email=email_row.email)
 
     return {"verified": email_row.email}
 

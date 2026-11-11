@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+from typing import Literal
 
 import pyotp
 import qrcode
@@ -35,15 +36,6 @@ from app.core.config import settings
 from app.db.models import MfaCredential, MfaRecoveryCode
 from app.security import mfa
 
-# Factor changes mail the account owner through the shared outbox; the
-# messages mirror Keen's security events so the two apps feel the same.
-factor_alerts = {
-    "enrolled": "An authenticator was added to your account",
-    "removed": "An authenticator was removed from your account",
-    "regenerated": "Your recovery codes were replaced",
-    "cleared": "An authenticator problem ended your verification",
-}
-
 
 class Password(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
@@ -51,7 +43,7 @@ class Password(BaseModel):
 
 class Code(BaseModel):
     code: str = Field(min_length=1, max_length=128)
-    kind: str = "totp"  # "totp" or "recovery"
+    kind: Literal["totp", "recovery"] = "totp"
 
 
 class Credential(BaseModel):
@@ -103,28 +95,29 @@ CODES_REFUSED = (
 )
 
 
-def verify_code(db: Session, row, user, payload: Code):
+def verify_code(db: Session, row, user, payload: Code, *, ip: str | None):
     if row.stage != "verify":
         raise HTTPException(400, "Start a second-factor verification first")
     # The user row is locked for the ceremony, so concurrent guesses are
     # counted in turn, and the count survives a new sign-in.
     if mfa.codes_refused(user):
+        # The owner was told when the allowance was spent; a refusal during
+        # the lockout mails nothing, so guesses cannot flood the mailbox.
         db.delete(row)
-        db.commit()
-        mfa.security_alert(db, user, "cleared", factor_alerts["cleared"])
         db.commit()
         raise HTTPException(401, CODES_REFUSED)
     if not mfa.verify_code(db, user, payload.code.strip(), payload.kind):
         if mfa.record_wrong_code(user):
             db.delete(row)
-            db.commit()
-            mfa.security_alert(db, user, "cleared", factor_alerts["cleared"])
+            mfa.audit(db, user, "verification-ended", ip=ip)
             db.commit()
             raise HTTPException(401, CODES_REFUSED)
+        mfa.audit(db, user, "rejected-" + payload.kind, ip=ip)
         db.commit()
         raise HTTPException(400, "Invalid or already-used code")
     mfa.clear_wrong_codes(user)
     mfa.verified(row)
+    mfa.audit(db, user, "verified-" + payload.kind, ip=ip)
     db.commit()
     return {"ok": True}
 
@@ -152,7 +145,7 @@ def start_totp(db: Session, row, user):
     }
 
 
-def confirm_totp(db: Session, row, user, payload: Code):
+def confirm_totp(db: Session, row, user, payload: Code, *, ip: str | None):
     mfa.management(row)
     secret = row.data.get("totp_secret")
     if not secret or user.mfa_totp_secret:
@@ -163,7 +156,7 @@ def confirm_totp(db: Session, row, user, payload: Code):
     if not mfa.verify_code(db, user, payload.code.strip(), "totp"):
         db.commit()
         raise HTTPException(400, "Invalid authenticator code")
-    return mfa.activate(db, row, user)
+    return mfa.activate(db, row, user, ip=ip)
 
 
 def authentication_options(db: Session, row, user):
@@ -185,7 +178,9 @@ def authentication_options(db: Session, row, user):
     return json.loads(options_to_json(options))
 
 
-def authentication_verify(db: Session, row, user, payload: Credential):
+def authentication_verify(
+    db: Session, row, user, payload: Credential, *, ip: str | None
+):
     if row.stage != "verify":
         raise HTTPException(400, "Start verification first")
     challenge = row.data.get("authenticate")
@@ -226,6 +221,7 @@ def authentication_verify(db: Session, row, user, payload: Credential):
     credential.sign_count = result.new_sign_count
     credential.last_used_at = mfa._now()
     mfa.verified(row)
+    mfa.audit(db, user, "verified-webauthn", ip=ip)
     db.commit()
     return {"ok": True}
 
@@ -256,7 +252,7 @@ def registration_options(db: Session, row, user):
     return json.loads(options_to_json(options))
 
 
-def registration_verify(db: Session, row, user, payload: Credential):
+def registration_verify(db: Session, row, user, payload: Credential, *, ip: str | None):
     mfa.management(row)
     challenge = row.data.get("register")
     row.data = {k: v for k, v in row.data.items() if k != "register"}
@@ -294,10 +290,10 @@ def registration_verify(db: Session, row, user, payload: Credential):
             name=payload.name.strip() or "Security key / passkey",
         )
     )
-    return mfa.activate(db, row, user)
+    return mfa.activate(db, row, user, ip=ip)
 
 
-def remove(db: Session, row, user, payload: Remove):
+def remove(db: Session, row, user, payload: Remove, *, ip: str | None):
     mfa.management(row)
     credentials = mfa.registered(db, user)
     total = len(credentials) + int(bool(user.mfa_totp_secret))
@@ -320,20 +316,18 @@ def remove(db: Session, row, user, payload: Remove):
         )
     mfa.bump(db, user, row)
     row.data = {}
-    db.commit()
-    mfa.security_alert(db, user, "removed", factor_alerts["removed"])
+    mfa.audit(db, user, "factor-removed", ip=ip)
     db.commit()
     return {"ok": True}
 
 
-def regenerate(db: Session, row, user):
+def regenerate(db: Session, row, user, *, ip: str | None):
     mfa.management(row)
     if not user.mfa_enabled:
         raise HTTPException(400, "Enrol an authenticator first")
     codes = mfa.recovery_codes(db, user)
     mfa.bump(db, user, row)
-    db.commit()
-    mfa.security_alert(db, user, "regenerated", factor_alerts["regenerated"])
+    mfa.audit(db, user, "recovery-codes-regenerated", ip=ip)
     db.commit()
     return {"recovery_codes": codes}
 

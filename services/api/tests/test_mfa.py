@@ -733,3 +733,198 @@ def test_an_unfamiliar_address_is_learned_only_after_the_second_factor(
     new = outbox.messages()[len(first) :]
     assert [m.recipient for m in new] == ["mfa-user@example.com"]
     assert "IP address: 198.51.100.77\n" in new[0].body
+
+
+# ---------------------------------------------------------------------------
+# Security notices and audit rows, ported from KEEN's mfa.audit.
+# ---------------------------------------------------------------------------
+
+SIGN_IN_NOTICE = "Sign-in from an unfamiliar IP address"
+
+
+@pytest.fixture()
+def notices(outbox, monkeypatch, user):
+    """Mail on for the MFA user, with the ceremony origin still the public one."""
+    monkeypatch.setattr(settings, "public_base_url", ORIGIN)
+    monkeypatch.setattr(settings, "smtp_from_name", "OSPMAE")
+    with SessionLocal() as s:
+        s.get(User, user.id).email = "mfa-user@example.com"
+        s.commit()
+    return outbox
+
+
+def notice_titles(outbox) -> list[str]:
+    return [
+        m.subject.removeprefix("OSPMAE security: ")
+        for m in outbox.messages()
+        if m.subject.startswith("OSPMAE security: ")
+    ]
+
+
+def mfa_audit(user) -> list[tuple[str, str | None]]:
+    from app.db.models import AuditLog
+
+    with SessionLocal() as s:
+        rows = (
+            s.query(AuditLog.path, AuditLog.client_ip)
+            .filter(AuditLog.method == "MFA", AuditLog.username == user.username)
+            .order_by(AuditLog.ts)
+            .all()
+        )
+    return [(path.removeprefix("/v1/auth/mfa/"), ip) for path, ip in rows]
+
+
+def test_every_factor_change_mails_the_owner(client, db, user, notices):
+    c = sign_in(user)
+    start_manage(c, user)
+    enrol_totp(c)
+    key = FakeKey()
+    options = post_mfa(c, "webauthn/register-options").json()
+    registered = post_mfa(
+        c, "webauthn/register", {"credential": key.registration(options), "name": "Key"}
+    )
+    assert registered.status_code == 200, registered.text
+    assert post_mfa(c, "recovery/regenerate").status_code == 200
+    assert post_mfa(c, "remove", {"id": "totp"}).status_code == 200
+
+    # Each authenticator added is reported, the second as well as the first.
+    assert notice_titles(notices) == [
+        SIGN_IN_NOTICE,
+        "An authenticator was added to your OSPMAE account",
+        "An authenticator was added to your OSPMAE account",
+        "Your OSPMAE recovery codes were replaced",
+        "An authenticator was removed from your OSPMAE account",
+    ]
+    assert all(
+        "IP address: 8.8.8.8\n" in m.body and m.recipient == "mfa-user@example.com"
+        for m in notices.messages()
+    )
+    assert mfa_audit(user) == [
+        ("factor-enrolled", "8.8.8.8"),
+        ("factor-enrolled", "8.8.8.8"),
+        ("recovery-codes-regenerated", "8.8.8.8"),
+        ("factor-removed", "8.8.8.8"),
+    ]
+
+
+def test_signing_in_with_a_recovery_code_mails_the_owner(client, db, user, notices):
+    c = sign_in(user)
+    start_manage(c, user)
+    codes = enrol_totp(c)
+    post_mfa(c, "finish")
+    drop_sessions(user.id, c)
+
+    assert login(c, user.username, PASSWORD).json()["mfa_required"]
+    used = post_mfa(c, "verify-code", {"kind": "recovery", "code": codes[0]})
+    assert outcome(used) == ACCEPTED
+
+    [notice] = [m for m in notices.messages() if "recovery code was used" in m.subject]
+    assert "Each recovery code works once." in notice.body
+    assert mfa_audit(user)[-1] == ("verified-recovery", "8.8.8.8")
+
+
+def test_a_spent_code_allowance_mails_once(client, db, user, notices):
+    c = sign_in(user)
+    start_manage(c, user)
+    enrol_totp(c)
+    for attempt in range(mfa.CODE_ATTEMPTS):
+        drop_sessions(user.id, c)
+        assert login(c, user.username, PASSWORD).json()["mfa_required"]
+        post_mfa(c, "verify-code", {"kind": "totp", "code": f"{attempt}23456"})
+
+    ended = "OSPMAE ended a two-factor verification after repeated incorrect codes"
+    assert notice_titles(notices).count(ended) == 1
+    [notice] = [m for m in notices.messages() if ended in m.subject]
+    assert f"{mfa.CODE_ATTEMPTS} incorrect authenticator or recovery codes" in (
+        notice.body
+    )
+
+    # Guesses during the lockout are refused without another notice, so they
+    # cannot flood the owner's mailbox.
+    for _ in range(3):
+        drop_sessions(user.id, c)
+        assert login(c, user.username, PASSWORD).json()["mfa_required"]
+        refused = post_mfa(c, "verify-code", {"kind": "totp", "code": "123456"})
+        assert outcome(refused) == CODES_REFUSED
+    assert notice_titles(notices).count(ended) == 1
+    actions = [action for action, _ip in mfa_audit(user)]
+    assert actions[1:] == ["rejected-totp"] * (mfa.CODE_ATTEMPTS - 1) + [
+        "verification-ended"
+    ]
+
+
+def test_a_code_kind_is_totp_or_recovery(client, db, user):
+    c = sign_in(user)
+    start_manage(c, user)
+    enrol_totp(c)
+    post_mfa(c, "finish")
+    drop_sessions(user.id, c)
+    assert login(c, user.username, PASSWORD).json()["mfa_required"]
+
+    response = post_mfa(c, "verify-code", {"kind": "sms", "code": "123456"})
+    assert response.status_code == 422
+
+
+def _mfa_admin():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "mfa_admin.py"
+    spec = importlib.util.spec_from_file_location("mfa_admin", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_an_operator_reset_clears_factors_and_mails_the_owner(
+    client, db, user, notices, capsys
+):
+    c = sign_in(user)
+    start_manage(c, user)
+    enrol_totp(c)
+    assert post_mfa(c, "finish").status_code == 200
+    assert c.get("/v1/me").status_code == 200
+
+    script = _mfa_admin()
+    assert (
+        script.main([user.username, "--reset", "--confirm-username", user.username])
+        == 0
+    )
+    assert "local sessions revoked" in capsys.readouterr().out
+
+    with SessionLocal() as s:
+        row = s.get(User, user.id)
+        assert row.mfa_enabled is False and row.mfa_totp_secret is None
+        assert s.query(MfaRecoveryCode).filter_by(user_id=user.id).count() == 0
+    # The enrolment version moved on, so the signed-in session ended.
+    assert c.get("/v1/me").status_code == 401
+
+    title = "Your OSPMAE two-factor authentication was reset by an operator"
+    [notice] = [m for m in notices.messages() if title in m.subject]
+    assert "IP address: Unavailable (operator action or unknown address)" in (
+        notice.body
+    )
+    assert mfa_audit(user)[-1] == ("operator-reset", None)
+
+
+def test_an_operator_reset_needs_the_name_twice(user, capsys):
+    script = _mfa_admin()
+    with pytest.raises(SystemExit):
+        script.main([user.username, "--reset", "--confirm-username", "someone-else"])
+    with pytest.raises(SystemExit):
+        script.main(["nobody", "--reset", "--confirm-username", "nobody"])
+    assert "User not found" in capsys.readouterr().err
+
+
+def test_administrators_find_second_factor_actions_in_the_audit_trail(client, db, user):
+    c = sign_in(user)
+    start_manage(c, user)
+    enrol_totp(c)
+
+    admin, _admin_user = auth_client(role="admin")
+    response = admin.get("/v1/admin/audit", params={"method": "MFA"})
+    assert response.status_code == 200, response.text
+    rows = response.json()["items"]
+    assert [(r["username"], r["path"]) for r in rows] == [
+        (user.username, "/v1/auth/mfa/factor-enrolled")
+    ]
