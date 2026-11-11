@@ -44,6 +44,13 @@ celery_app.conf.update(
     accept_content=["json"],
     worker_prefetch_multiplier=1,
     task_acks_late=False,
+    # Requests hand work to the broker and return; nothing reads a task's
+    # result. Keeping results would make every hand-off reach the result store
+    # too, and an unreachable store held a request for about twenty seconds.
+    task_ignore_result=True,
+    # A hand-off from a request waits at most this long for the broker; the
+    # work stays queued in the database for the beat dispatchers.
+    broker_connection_timeout=3,
 )
 
 

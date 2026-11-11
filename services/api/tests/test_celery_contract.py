@@ -26,3 +26,12 @@ def test_beat_schedule_tasks_are_registered() -> None:
         "beat schedules tasks the worker would discard as unregistered; "
         f"missing from the app registry: {missing}"
     )
+
+
+def test_requests_never_wait_long_on_the_broker():
+    # Nothing reads task results, so a hand-off touches only the broker, and
+    # for at most a few seconds; queued work waits for the beat dispatchers.
+    from app.celery_app import celery_app
+
+    assert celery_app.conf.task_ignore_result is True
+    assert celery_app.conf.broker_connection_timeout <= 3

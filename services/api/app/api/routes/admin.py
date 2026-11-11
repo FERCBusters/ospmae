@@ -45,6 +45,7 @@ from app.services.entity_changelog import (
 )
 from app.services.mailer import send_account_approved_email
 from app.services.notification_recipients import notification_email_for_user
+from app.tasks.notifications import commit_and_kick
 
 logger = logging.getLogger(__name__)
 
@@ -73,17 +74,15 @@ def _notify_if_pending_user_approved(
     if not recipient:
         return
 
-    try:
-        send_account_approved_email(
-            db=db,
-            user_id=user.id,
-            to_email=recipient,
-            username=user.username,
-            login_url=_login_url(),
-        )
-    except Exception:
-        # Notification must never break the admin update path.
-        pass
+    send_account_approved_email(
+        db=db,
+        user_id=user.id,
+        to_email=recipient,
+        username=user.username,
+        login_url=_login_url(),
+    )
+    # The approval was committed before this mail was queued.
+    commit_and_kick(db)
 
 
 def require_audit_access(

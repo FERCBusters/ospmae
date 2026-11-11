@@ -1201,6 +1201,24 @@ class LoginDevice(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
+class UserLoginIP(Base):
+    """An address an account has completed a sign-in from.
+
+    Ported from KEEN: a sign-in from an address not yet listed mails the
+    account a security notice. Rows are kept until the account is deleted.
+    """
+
+    __tablename__ = "user_login_ips"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    address: Mapped[str] = mapped_column(String(45), primary_key=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
 class ManagedConfiguration(Base):
     """Versioned administrator setting, such as the installation features.
 

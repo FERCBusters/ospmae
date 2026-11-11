@@ -695,3 +695,41 @@ def test_policy_blocks_required_signins(client, db, user):
         assert state.json()["required"] is True
     finally:
         settings.mfa_policy = "optional"
+
+
+def test_an_unfamiliar_address_is_learned_only_after_the_second_factor(
+    client, db, user, outbox, monkeypatch
+):
+    """A password alone proves nothing new about the address: the notice and
+    the known-address record wait until the second factor is verified."""
+    from app.db.models import UserLoginIP
+
+    monkeypatch.setattr(settings, "public_base_url", ORIGIN)
+    with SessionLocal() as s:
+        s.get(User, user.id).email = "mfa-user@example.com"
+        s.commit()
+    c = sign_in(user)
+    start_manage(c, user)
+    enrol_totp(c)
+    post_mfa(c, "finish")
+    drop_sessions(user.id, c)
+    first = [m.subject for m in outbox.messages()]
+
+    assert login(c, user.username, PASSWORD, peer="198.51.100.77").json()[
+        "mfa_required"
+    ]
+    with SessionLocal() as s:
+        known = {a for (a,) in s.query(UserLoginIP.address).filter_by(user_id=user.id)}
+    assert "198.51.100.77" not in known
+    assert [m.subject for m in outbox.messages()] == first
+
+    reset_totp_step(user.id)
+    code = pyotp.TOTP(mfa.decrypt(totp_secret(user.id))).now()
+    assert outcome(post_mfa(c, "verify-code", {"kind": "totp", "code": code})) == (
+        ACCEPTED
+    )
+    assert post_mfa(c, "finish").json()["user"] == user.username
+
+    new = outbox.messages()[len(first) :]
+    assert [m.recipient for m in new] == ["mfa-user@example.com"]
+    assert "IP address: 198.51.100.77\n" in new[0].body

@@ -1,4 +1,5 @@
 import {
+  clearCachedMe,
   initNavbar,
   renderTaxonomyPillsBrowser,
   safeExternalHref,
@@ -19,6 +20,9 @@ window.mospUi.renderTaxonomyPillsBrowser = renderTaxonomyPillsBrowser;
 window.mospUi.safeExternalHref = safeExternalHref;
 window.mospUi.applyTheme = applyTheme;
 window.mospUi.THEMES = THEMES;
+// The navbar keeps the signed-in user for a minute per tab; a page that
+// changes what the navbar shows (such as the Features tab) clears it.
+window.mospUi.clearCachedMe = clearCachedMe;
 
 initNavbar().catch((err) => {
   console.error("MOSP navbar init failed", err);

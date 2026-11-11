@@ -77,6 +77,28 @@
     });
   }
 
+  // Run a write from a button: the button is disabled and says what is
+  // happening until the write ends, so a slow save shows progress and cannot
+  // be sent twice.
+  async function runBusy(button, busyLabel, task) {
+    if (!button) return task();
+    if (button.disabled) return undefined;
+    const label = [...button.childNodes];
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    const spinner = document.createElement("span");
+    spinner.className = "spinner-border spinner-border-sm me-1";
+    spinner.setAttribute("aria-hidden", "true");
+    button.replaceChildren(spinner, document.createTextNode(busyLabel));
+    try {
+      return await task();
+    } finally {
+      button.replaceChildren(...label);
+      button.removeAttribute("aria-busy");
+      button.disabled = false;
+    }
+  }
+
   // The Features administration tab applies a saved change to this page.
   function setFeatures(enabled) {
     state.features =
@@ -1488,6 +1510,7 @@
     logout,
     featureOn,
     setFeatures,
+    runBusy,
     gateFeature,
     applyFeatureVisibility,
     startNotifications,

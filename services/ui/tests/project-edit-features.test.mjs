@@ -24,6 +24,8 @@ const PROJECT = {
   release_rss_ignore_patterns: [],
 };
 
+let holdSaves = null;
+
 async function editor(t, features = OFF) {
   const page = await loadPage("project-edit.html", "pages/project-edit.js", {
     url: "https://ospmae.example/project-edit.html?id=1",
@@ -45,8 +47,10 @@ async function editor(t, features = OFF) {
       if (path.startsWith("/v1/frameworks"))
         return [404, { detail: "Feature not available" }];
       if (path === "/v1/projects/1" && method === "GET") return [200, PROJECT];
-      if (path === "/v1/projects/1" && method === "PUT")
+      if (path === "/v1/projects/1" && method === "PUT") {
+        if (holdSaves) await holdSaves;
         return [200, { ...PROJECT, ...body }];
+      }
       if (path === "/v1/projects/1/versions" && method === "POST")
         return [200, { id: 7, project_id: 1, ...body }];
       return [200, {}];
@@ -97,4 +101,27 @@ test("a version saves without capability mappings when frameworks are off", asyn
     .filter(([method]) => method !== "GET")
     .map(([method, path, body]) => [method, path, body?.version]);
   assert.deepEqual(writes, [["POST", "/v1/projects/1/versions", "1.0.0"]]);
+});
+
+test("a slow save shows progress and cannot be sent twice", async (t) => {
+  const page = await editor(t);
+  let release;
+  holdSaves = new Promise((resolve) => (release = resolve));
+  t.after(() => (holdSaves = null));
+  const button = page.document.getElementById("saveProjectBtn");
+  const label = button.textContent;
+  button.click();
+  await page.settle();
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute("aria-busy"), "true");
+  assert.equal(button.textContent, "Saving…");
+  button.click();
+  release();
+  for (let i = 0; i < 20; i += 1) await page.settle();
+  const saves = page.requests.filter(
+    ([method, path]) => method === "PUT" && path === "/v1/projects/1",
+  );
+  assert.equal(saves.length, 1);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, label);
 });

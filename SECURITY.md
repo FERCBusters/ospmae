@@ -76,9 +76,13 @@ OpenID Connect providers configure client id/secret, endpoints, issuer, JWKS, re
 
 `OSPMAE_TRUST_REMOTE_USER=true` hands authentication to the configured identity header, which is honoured only when the socket peer sits inside `OSPMAE_TRUSTED_PROXY_CIDRS`, and only for the single configured header name (default `REMOTE_USER`). The supplied nginx clears the client's copies of every identity header and lets deployments that use upstream authentication supply their own proxy configuration that sets the header from the authenticating layer's output. Auto-provisioned users land `pending`.
 
-### Mobile outbox and notifications
+### Sign-in notices
 
-Outgoing mail is a transactional outbox (`notifications`): senders queue inside their own transaction and the worker drains rows with exponential backoff, recording only the exception class on failure and clearing a sent message's body (verification links are one-time secrets). Bodies of spent rows are deleted after thirty days. An interactive kick sends promptly when the worker is reachable; the beat schedule retries everything, so a missed kick never loses mail.
+Ported from KEEN: every completed sign-in, local or SSO, records its client address against the account (`user_login_ips`, `services/security_notifications.py`), and the first sign-in from an address the account has not used before mails the account's notification address a "Sign-in from an unfamiliar IP address" notice naming the account, time and address. A local sign-in with a second factor counts as completed only once the factor is verified, so a password alone neither alerts nor teaches OSPMAE a new address. The account/address key is unique, so parallel sign-ins from one new address send one notice. Addresses are learned even while mail is not configured, and are kept until the account is deleted. Header-trusted remote-user requests have no sign-in step and send no notice. The table starts empty on upgrade, so each account's first sign-in from each address afterwards sends one notice.
+
+### Mail outbox and notifications
+
+Outgoing mail is a transactional outbox (`notifications`): senders queue inside their own transaction and the worker drains rows with exponential backoff, recording only the exception class on failure and clearing a sent message's body (verification links are one-time secrets). Bodies of spent rows are deleted after thirty days. A request's session discards what it has not committed, so mail commits with the change it reports (a reset link with its token, a new account's administrator notice with the account); a sender that reports a change already committed commits its mail itself (`tasks/notifications.commit_and_kick`). An interactive kick sends promptly when the worker is reachable; the beat schedule retries everything, so a missed kick never loses committed mail.
 
 ### Client addresses
 

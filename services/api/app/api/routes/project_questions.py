@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any
 
@@ -42,9 +41,6 @@ from app.services.notification_recipients import (
 )
 
 router = APIRouter(tags=["project-questions"])
-
-
-logger = logging.getLogger(__name__)
 
 
 def _public_project_url(project_id: int) -> str | None:
@@ -125,29 +121,26 @@ def _notify_discussion_emails(
         return
 
     for email in sorted(recipients):
-        try:
-            if kind == "question":
-                send_project_question_created_email(
-                    db=db,
-                    to_email=email,
-                    project_name=project.display_name,
-                    question_body=body,
-                    project_url=url,
-                )
-            else:
-                send_project_question_replied_email(
-                    db=db,
-                    to_email=email,
-                    project_name=project.display_name,
-                    reply_body=body,
-                    project_url=url,
-                )
-        except Exception:
-            # Email failures should never break the request.
-            logger.exception("Failed to send project question notification email")
-    from app.tasks.notifications import kick_delivery
+        if kind == "question":
+            send_project_question_created_email(
+                db=db,
+                to_email=email,
+                project_name=project.display_name,
+                question_body=body,
+                project_url=url,
+            )
+        else:
+            send_project_question_replied_email(
+                db=db,
+                to_email=email,
+                project_name=project.display_name,
+                reply_body=body,
+                project_url=url,
+            )
+    from app.tasks.notifications import commit_and_kick
 
-    kick_delivery()
+    # The post was committed before this mail was queued.
+    commit_and_kick(db)
 
 
 def _get_user_group_ids(db: Session, user_id: int) -> set[int]:

@@ -57,6 +57,7 @@ Be as comprehensive in any security review of your completed work as you possibl
 - `app/api/routes/` owns HTTP adapters: route declarations, permission dependencies, request parsing, status codes, cookies, headers and redirects. `app/security/` owns authentication, sessions, client addresses, rate limits, URL safety and redaction. `app/db/` owns models and session setup, `app/depscan/` and `app/tasks/` own scanning and background work, `app/realtime/` owns the notification hub.
 - Scans and feeds stay honest about cost: lockfile parsing, feed fetches, clones and grype/syft runs each carry their configured budgets, and the maintenance sweeper reclaims expired rows on a beat schedule.
 - Database migrations follow `alembic/versions/00NN_name.py`; write the model change, the migration, and a test touching both together.
+- A request's session discards whatever it has not committed. Queue mail in the transaction of the change it reports; a sender that reports a change already committed ends with `commit_and_kick(db)`. Tests read mail through the `outbox` fixture, which counts committed rows only.
 
 ## Frontend source and domain boundaries
 

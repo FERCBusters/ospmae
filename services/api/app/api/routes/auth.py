@@ -42,7 +42,7 @@ from app.security.auth import (
     get_user_by_username,
     set_session_cookie,
 )
-from app.security.client_addr import request_allowance_key
+from app.security.client_addr import request_allowance_key, request_client_address
 from app.security.csrf import clear_csrf_cookie, generate_csrf_token, set_csrf_cookie
 from app.security.oidc import (
     any_sso_enabled,
@@ -60,6 +60,7 @@ from app.security.sessions import (
     delete_session,
 )
 from app.security.url_safety import safe_relative_route_path
+from app.services import security_notifications
 from app.services.mailer import send_password_reset_email
 from app.services.notification_recipients import notification_email_for_user
 
@@ -206,6 +207,26 @@ def _limited(retry_after: int) -> JSONResponse:
     )
 
 
+def _record_completed_sign_in(
+    db: Session, request: Request, user: User, *, method: str
+) -> bool:
+    """The audit row and known-address check for a completed sign-in.
+
+    The caller commits. Returns True when an unfamiliar-address notice was
+    queued, so the caller can hand it to the mail worker after committing.
+    """
+    record_sign_in(db, request, method=method, outcome="success", account=user)
+    return security_notifications.record_login(
+        db, user, ip=request_client_address(request)
+    )
+
+
+def _kick_delivery() -> None:
+    from app.tasks.notifications import kick_delivery
+
+    kick_delivery()
+
+
 def complete_local_login(
     db: Session,
     user: User,
@@ -231,8 +252,10 @@ def complete_local_login(
     # Signing in is complete only here, any second factor included.
     user.last_login_at = datetime.utcnow()
     db.add(user)
-    record_sign_in(db, request, method="local", outcome="success", account=user)
+    notice_queued = _record_completed_sign_in(db, request, user, method="local")
     db.commit()
+    if notice_queued:
+        _kick_delivery()
     request.state.user = user
     request.state.audit_username = user.username
 
@@ -311,8 +334,9 @@ async def _complete_sso_callback(
     request.state.audit_username = user.username
 
     delete_all_sessions_for_user(db, user.id)
-    record_sign_in(db, request, method=provider.key, outcome="success", account=user)
+    notice_queued = _record_completed_sign_in(db, request, user, method=provider.key)
 
+    # Creating the session commits the sign-in's records with it.
     sid = create_session(
         db,
         user_id=user.id,
@@ -320,6 +344,8 @@ async def _complete_sso_callback(
         auth_method=provider.key,
         oidc_id_token=id_token,
     )
+    if notice_queued:
+        _kick_delivery()
     csrf_token = generate_csrf_token()
 
     effective_role = attach_effective_role(db, user)
@@ -505,11 +531,8 @@ def request_password_reset(
     base = _derive_public_base_url(request)
     if not base:
         # Without a configured public origin, the link's host would be chosen
-        # the requester's Host header, so no token is issued (fail closed).
+        # by the requester's Host header, so no token is issued (fail closed).
         return Response(status_code=204)
-
-    import secrets
-    from datetime import datetime
 
     token = secrets.token_urlsafe(32)
     token_hash = _hash_reset_token(token)
@@ -522,22 +545,17 @@ def request_password_reset(
         user_id=user.id, token_hash=token_hash, expires_at=expires, used_at=None
     )
     db.add(row)
-    db.commit()
-
-    reset_link = f"{base}/reset-password.html?token={token}"
-
-    # Queue in the caller's transaction; the worker delivers with retries.
+    # The token and its e-mail commit together; the worker delivers with retries.
     send_password_reset_email(
         db=db,
         user_id=user.id,
         to_email=recipient,
         username=user.username,
-        reset_link=reset_link,
+        reset_link=f"{base}/reset-password.html?token={token}",
         expires_minutes=int(getattr(settings, "password_reset_token_ttl_minutes", 60)),
     )
-    from app.tasks.notifications import kick_delivery
-
-    kick_delivery()
+    db.commit()
+    _kick_delivery()
 
     return Response(status_code=204)
 
@@ -556,8 +574,6 @@ def reset_password(
     token = (payload.token or "").strip()
     if not token:
         raise HTTPException(status_code=400, detail="Invalid token")
-
-    from datetime import datetime
 
     token_hash = _hash_reset_token(token)
     row = (

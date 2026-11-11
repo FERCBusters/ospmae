@@ -158,8 +158,8 @@ def test_initial_release_discovery_imports_all_and_marks_latest(
     # Run the discovery task synchronously with the scan enqueue tracked.
     class _ScanTask:
         @staticmethod
-        def delay(version_id):
-            launched.append(int(version_id))
+        def apply_async(args, **_options):
+            launched.append(int(args[0]))
 
     old_discover = None
     try:

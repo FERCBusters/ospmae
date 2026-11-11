@@ -145,25 +145,21 @@ def _auto_provision_remote_user(db: Session, username: str) -> User | None:
         last_login_at=datetime.utcnow(),
     )
     db.add(u)
+
+    from app.services.mailer import send_new_user_admin_notification_email
+
+    # The administrators' notice commits with the account it reports.
+    base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    send_new_user_admin_notification_email(
+        db=db,
+        username=username,
+        email=None,
+        provider_label="trusted remote-user",
+        role=role,
+        admin_url=(f"{base_url}/admin.html" if base_url else None),
+    )
     db.commit()
     db.refresh(u)
-
-    try:
-        from app.services.mailer import send_new_user_admin_notification_email
-
-        base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-        send_new_user_admin_notification_email(
-            db=db,
-            username=u.username,
-            email=getattr(u, "email", None),
-            provider_label="trusted remote-user",
-            role=role,
-            admin_url=(f"{base_url}/admin.html" if base_url else None),
-        )
-    except Exception:
-        # Admin notification failures must not break trusted-SSO login.
-        pass
-
     return u
 
 

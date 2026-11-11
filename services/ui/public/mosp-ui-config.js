@@ -32,6 +32,7 @@
       feature_manifests: featureOn("manifests"),
       feature_dependency_scans: featureOn("dependency_scans"),
       feature_comparisons: featureOn("comparisons"),
+      feature_questions: featureOn("questions"),
       user: String(me?.user || me?.username || "").trim(),
       role,
       is_pending: isPending,
@@ -109,6 +110,9 @@
 
     framework: {
       enabled: true,
+      // Needs mosp-design-system with picker gating; older versions ignore it
+      // and app.js hides the picker instead.
+      requireAll: ["feature_frameworks"],
       label: "Framework",
       queryParam: "framework",
       endpoint: "/v1/frameworks",
@@ -133,6 +137,7 @@
 
     bell: {
       enabled: true,
+      requireAll: ["feature_questions"],
       href: "/questions.html",
       title: "Questions",
       summaryEndpoint: "/v1/questions/unanswered/summary",

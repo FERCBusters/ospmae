@@ -27,8 +27,8 @@ class _ScanTask:
     launched: list[int] = []
 
     @classmethod
-    def delay(cls, version_id):
-        cls.launched.append(int(version_id))
+    def apply_async(cls, args, **_options):
+        cls.launched.append(int(args[0]))
 
 
 @pytest.fixture()
@@ -334,8 +334,8 @@ def test_tracked_project_skips_release_feed_discovery(client, db, monkeypatch):
 
     class _FeedTask:
         @staticmethod
-        def delay(project_id):
-            enqueued.append(int(project_id))
+        def apply_async(args, **_options):
+            enqueued.append(int(args[0]))
 
     real_task = rf.discover_project_release_feed
     monkeypatch.setattr(rf, "discover_project_release_feed", _FeedTask)
@@ -602,8 +602,10 @@ def test_a_refused_hand_over_leaves_the_scan_queued_for_the_dispatcher(
         down = True
 
         @classmethod
-        def delay(cls, version_id):
-            cls.calls.append(version_id)
+        def apply_async(cls, args, **options):
+            # A request makes one attempt and never waits on reconnection.
+            assert options == {"retry": False}
+            cls.calls.append(args[0])
             if cls.down:
                 raise ConnectionError("broker unavailable")
 

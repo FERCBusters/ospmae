@@ -37,7 +37,9 @@ def launch_dependency_scan(version_id: int) -> bool:
     from app.tasks.dependency_discovery import discover_project_version_dependencies
 
     try:
-        discover_project_version_dependencies.delay(version_id)
+        # One attempt: a request never waits on the broker's reconnection
+        # retries, and the dispatcher hands over a scan that stayed queued.
+        discover_project_version_dependencies.apply_async((version_id,), retry=False)
     except Exception:
         logger.exception(
             "Broker refused the dependency scan of project_version_id=%s; "
@@ -57,7 +59,7 @@ def launch_release_discovery(project_id: int) -> bool:
     from app.tasks.release_feed import discover_project_release_feed
 
     try:
-        discover_project_release_feed.delay(project_id)
+        discover_project_release_feed.apply_async((project_id,), retry=False)
     except Exception:
         logger.exception(
             "Broker refused the release discovery of project_id=%s", project_id

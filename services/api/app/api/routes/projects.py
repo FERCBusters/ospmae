@@ -74,7 +74,10 @@ from app.services.entity_changelog import (
     project_version_changelog_state,
     record_entity_changelog,
 )
-from app.services.mailer import send_manifest_shared_email
+from app.services.mailer import (
+    send_manifest_shared_email,
+    send_project_version_published_email,
+)
 from app.services.notification_recipients import (
     notification_email_for_user,
     notification_emails_for_users,
@@ -89,6 +92,7 @@ from app.services.versioning import (
     parse_semanticish_version,
     set_latest_version,
 )
+from app.tasks.notifications import commit_and_kick
 
 router = APIRouter()
 
@@ -181,25 +185,17 @@ def _notify_subscribers_published(
     if bool(getattr(version, "is_draft", False)):
         return
 
-    from app.services.mailer import send_project_version_published_email
-    from app.tasks.notifications import kick_delivery
-
-    # The version is already saved: a mail failure is logged, never raised.
     url = _public_project_url(project.id)
     for email in _subscriber_emails(db, project_id=project.id):
-        try:
-            send_project_version_published_email(
-                db=db,
-                to_email=email,
-                project_name=project.display_name,
-                version=version.version,
-                project_url=url,
-            )
-        except Exception:
-            logger.exception(
-                "Could not queue the release e-mail for project_id=%s", project.id
-            )
-    kick_delivery()
+        send_project_version_published_email(
+            db=db,
+            to_email=email,
+            project_name=project.display_name,
+            version=version.version,
+            project_url=url,
+        )
+    # The version was committed before this mail was queued.
+    commit_and_kick(db)
 
 
 def _normalize_csv_ints(value: str | None) -> list[int]:
@@ -3675,23 +3671,24 @@ def _notify_group_manifest_shared(
         email = notification_email_for_user(db, user=u)
         if not email:
             continue
-        try:
-            send_manifest_shared_email(
-                db=db,
-                user_id=u.id,
-                to_email=email,
-                manifest_name=manifest.name or f"manifest-{manifest.id}",
-                shared_by_username=shared_by.username,
-                group_name=group_name,
-                manifest_url=url,
-            )
-            sent += 1
-        except Exception:
-            logger.exception("Failed to send manifest shared email to %s", email)
+        send_manifest_shared_email(
+            db=db,
+            user_id=u.id,
+            to_email=email,
+            manifest_name=manifest.name or f"manifest-{manifest.id}",
+            shared_by_username=shared_by.username,
+            group_name=group_name,
+            manifest_url=url,
+        )
+        sent += 1
 
     if sent:
+        # The sharing change was committed before this mail was queued.
+        commit_and_kick(db)
         logger.info(
-            "Sent %s manifest share notifications for manifest_id=%s", sent, manifest.id
+            "Queued %s manifest share notifications for manifest_id=%s",
+            sent,
+            manifest.id,
         )
 
 

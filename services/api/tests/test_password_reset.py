@@ -18,10 +18,13 @@ def _smtp_on(monkeypatch):
     monkeypatch.setattr(settings, "smtp_from_email", "noreply@example.com")
     monkeypatch.setattr(settings, "public_base_url", "https://ospmae.example.com")
     monkeypatch.setattr(settings, "local_auth_enabled", True)
-    # The route enqueues a background send; the suite never touches the network.
-    import app.api.routes.auth as auth_routes
+    # The route queues the e-mail and hands it to the worker; the hand-off is
+    # recorded here instead of reaching a broker.
+    from app.tasks import notifications as notification_tasks
 
-    monkeypatch.setattr(auth_routes, "send_password_reset_email", lambda **kw: None)
+    from tests.conftest import _Outbox
+
+    monkeypatch.setattr(notification_tasks, "deliver_notifications", _Outbox())
 
 
 def test_reset_request_answers_204_for_unknown_and_known(client, monkeypatch, db):
@@ -54,6 +57,38 @@ def test_reset_request_answers_204_for_unknown_and_known(client, monkeypatch, db
     for ident in ("rstu@example.com", "RstU", "nobody@example.com", "ghost"):
         r = c.post("/v1/auth/request-password-reset", json={"identifier": ident})
         assert r.status_code == 204, "reset request must not name accounts"
+
+
+def test_the_emailed_reset_link_works_once(client, monkeypatch, outbox):
+    """The reset e-mail commits with its token: the link it carries resets
+    the password once and then never again."""
+    monkeypatch.setattr(settings, "local_auth_enabled", True)
+    make_user("RstMail", "Password1!", role="viewer", email="rstmail@example.com")
+    client.headers["X-Forwarded-For"] = "7.7.7.6"
+
+    r = client.post("/v1/auth/request-password-reset", json={"identifier": "RstMail"})
+    assert r.status_code == 204
+    [mail] = outbox.messages()
+    assert mail.recipient == "rstmail@example.com"
+    prefix = "https://ospmae.example.com/reset-password.html?token="
+    [link] = [line for line in mail.body.splitlines() if line.startswith(prefix)]
+    assert outbox.kicks == [{"retry": False}]
+
+    def reset(password: str):
+        return client.post(
+            "/v1/auth/reset-password",
+            json={
+                "token": link[len(prefix) :],
+                "new_password": password,
+                "confirm_password": password,
+            },
+        )
+
+    assert reset("NewPassword2!").status_code == 204
+    assert reset("OtherPassword3!").status_code == 400
+    from tests.conftest import login
+
+    assert login(client, "RstMail", "NewPassword2!").status_code == 200
 
 
 def test_reset_request_commit_cost_is_equalised(client, monkeypatch, db):

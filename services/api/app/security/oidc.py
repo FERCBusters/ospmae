@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -17,6 +18,8 @@ from app.core.config import settings
 from app.db.models import OidcLoginState, User, UserEmail, UserIdentity
 from app.security.auth import get_password_hash, get_user_by_username
 from app.security.roles import canonicalize_role
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -649,7 +652,15 @@ def _get_or_create_user_for_identity(
                 db.commit()
                 db.refresh(user)
             except Exception:
+                # The sign-in stands on the linked identity; the profile
+                # refresh is best effort, such as a claimed address that
+                # another account already holds.
                 db.rollback()
+                log.warning(
+                    "Could not refresh the SSO profile for user_id=%s",
+                    ident.user_id,
+                    exc_info=True,
+                )
             return user
         raise HTTPException(status_code=403, detail="User is inactive")
 
@@ -699,25 +710,21 @@ def _get_or_create_user_for_identity(
         verified=_email_is_verified(provider, claims),
         primary=True,
     )
+
+    from app.services.mailer import send_new_user_admin_notification_email
+
+    # The administrators' notice commits with the account it reports.
+    base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    send_new_user_admin_notification_email(
+        db=db,
+        username=user.username,
+        email=_claim_email(claims),
+        provider_label=provider.label,
+        role=role,
+        admin_url=(f"{base_url}/admin.html" if base_url else None),
+    )
     db.commit()
     db.refresh(user)
-
-    try:
-        from app.services.mailer import send_new_user_admin_notification_email
-
-        base_url = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-        send_new_user_admin_notification_email(
-            db=db,
-            username=user.username,
-            email=_claim_email(claims),
-            provider_label=provider.label,
-            role=role,
-            admin_url=(f"{base_url}/admin.html" if base_url else None),
-        )
-    except Exception:
-        # Admin notification failures must not break successful SSO login.
-        pass
-
     return user
 
 

@@ -1187,14 +1187,15 @@
     el.repo_token_host?.addEventListener("input", syncRepoAccessFields);
 
     el.saveProjectBtn.addEventListener("click", () => {
-      saveProject().catch((err) =>
+      OSPMAE.runBusy(el.saveProjectBtn, "Saving…", saveProject).catch((err) =>
         OSPMAE.toast(err.message || "Failed to save project", "error"),
       );
     });
 
     el.deleteProjectBtn.addEventListener("click", () => {
-      deleteProject().catch((err) =>
-        OSPMAE.toast(err.message || "Failed to delete project", "error"),
+      OSPMAE.runBusy(el.deleteProjectBtn, "Deleting…", deleteProject).catch(
+        (err) =>
+          OSPMAE.toast(err.message || "Failed to delete project", "error"),
       );
     });
 
@@ -1203,14 +1204,15 @@
     });
 
     el.saveVersionBtn.addEventListener("click", () => {
-      saveVersion().catch((err) =>
+      OSPMAE.runBusy(el.saveVersionBtn, "Saving…", saveVersion).catch((err) =>
         OSPMAE.toast(err.message || "Failed to save version", "error"),
       );
     });
 
     el.deleteVersionBtn.addEventListener("click", () => {
-      deleteVersion().catch((err) =>
-        OSPMAE.toast(err.message || "Failed to delete version", "error"),
+      OSPMAE.runBusy(el.deleteVersionBtn, "Deleting…", deleteVersion).catch(
+        (err) =>
+          OSPMAE.toast(err.message || "Failed to delete version", "error"),
       );
     });
 

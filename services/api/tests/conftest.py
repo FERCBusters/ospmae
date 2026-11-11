@@ -194,3 +194,40 @@ def auth_client(
     # After signing in, requests run from this client's own steady address.
     c.headers["X-Forwarded-For"] = "8.8.8.8"
     return c, user
+
+
+class _Outbox:
+    """The committed e-mail outbox and the delivery hand-offs made."""
+
+    def __init__(self) -> None:
+        self.kicks: list[dict] = []
+
+    def apply_async(self, *args, **options) -> None:
+        self.kicks.append(options)
+
+    def messages(self) -> list:
+        """Committed outbox rows, read from a fresh session: mail a request
+        added but never committed is not counted."""
+        from app.db.models import Notification
+
+        s = SessionLocal()
+        try:
+            rows = s.query(Notification).order_by(Notification.created_at).all()
+            s.expunge_all()
+            return rows
+        finally:
+            s.close()
+
+
+@pytest.fixture()
+def outbox(monkeypatch):
+    """Mail configured, with delivery hand-offs recorded instead of sent."""
+    from app.core.config import settings
+    from app.tasks import notifications as notification_tasks
+
+    monkeypatch.setattr(settings, "smtp_host", "smtp.example.com")
+    monkeypatch.setattr(settings, "smtp_from_email", "noreply@example.com")
+    monkeypatch.setattr(settings, "public_base_url", "https://ospmae.example.com")
+    box = _Outbox()
+    monkeypatch.setattr(notification_tasks, "deliver_notifications", box)
+    return box

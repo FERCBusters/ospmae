@@ -78,6 +78,8 @@
           body: { version: config.version, changes: { [item.key]: checked } },
         });
         OSPMAE.setFeatures?.(config.enabled);
+        // The next page this tab opens draws its navbar from the new state.
+        window.mospUi?.clearCachedMe?.();
         show(
           `${item.label} ${checked ? "enabled" : "disabled"}. Settings saved. Reload the page to refresh navigation.`,
           "success",
