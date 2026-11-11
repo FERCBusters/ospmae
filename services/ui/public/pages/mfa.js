@@ -13,7 +13,7 @@
   function csrfHeader() {
     // The manage ceremony runs with the session cookie attached, so every
     // unsafe write carries the CSRF header like any other page request.
-    const match = document.cookie.match(/(?:^|;\\s*)ospmae_csrf=([^;]*)/);
+    const match = document.cookie.match(/(?:^|;\s*)ospmae_csrf=([^;]*)/);
     return match ? { "X-CSRF-Token": decodeURIComponent(match[1]) } : {};
   }
   async function post(path, body = {}) {

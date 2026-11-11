@@ -356,25 +356,7 @@ function escapeHtml(value) {
 }
 
 function safeHref(url) {
-  const fn =
-    window.mospUi && typeof window.mospUi.safeExternalHref === "function"
-      ? window.mospUi.safeExternalHref
-      : null;
-  if (fn) return fn(url) || "";
-  const raw = String(url ?? "").trim();
-  if (!raw) return "";
-  if (/^(?:javascript|data|vbscript):/i.test(raw)) return "";
-  if (raw.startsWith("//")) return "";
-  if (/[\\\u0000-\u001f\u007f]/.test(raw)) return "";
-  if (raw.startsWith("/")) return raw;
-  try {
-    const u = new URL(raw);
-    const p = String(u.protocol || "").toLowerCase();
-    if (p === "http:" || p === "https:") return u.href;
-  } catch (_) {
-    // ignore
-  }
-  return "";
+  return window.OSPMAE.safeHref(url);
 }
 
 function renderWebsiteCell(url) {

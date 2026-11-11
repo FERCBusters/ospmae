@@ -44,6 +44,17 @@
 
   // ---- Organisations, outbox and release-feed ingestion -----------------
 
+  // A website is linked only when it is safe to link; anything else an
+  // organisation was saved with is shown as text.
+  function websiteHtml(website) {
+    if (!website) return "";
+    const text = OSPMAE.escapeHtml(website);
+    const href = OSPMAE.safeHref(website);
+    return href
+      ? `<a href="${OSPMAE.escapeHtml(href)}" target="_blank" rel="noopener noreferrer" class="small ms-2">${text}</a>`
+      : `<span class="small ms-2">${text}</span>`;
+  }
+
   async function loadOrganisations() {
     if (!el.orgList) return;
     try {
@@ -60,7 +71,7 @@
           ) => `<div class="d-flex align-items-center justify-content-between border-bottom py-2">
           <div><span class="fw-bold">${OSPMAE.escapeHtml(o.name)}</span>
           <span class="text-muted small">· ${o.project_count} project(s)</span>
-          ${o.website ? `<a href="${OSPMAE.escapeHtml(o.website)}" target="_blank" rel="noopener noreferrer" class="small ms-2">${OSPMAE.escapeHtml(o.website)}</a>` : ""}</div>
+          ${websiteHtml(o.website)}</div>
           <div class="d-flex gap-2">
             <button type="button" class="btn btn-sm btn-outline-primary" data-org-edit="${o.id}" data-org-name="${OSPMAE.escapeHtml(o.name)}" data-org-desc="${OSPMAE.escapeHtml(o.description || "")}" data-org-site="${OSPMAE.escapeHtml(o.website || "")}">Edit</button>
           </div></div>`,
@@ -133,7 +144,7 @@
         .map(
           (
             n,
-          ) => `<tr><td class="text-wrap">${OSPMAE.escapeHtml(n.created_at || "")}</td>
+          ) => `<tr><td class="text-wrap">${OSPMAE.escapeHtml(fmtDate(n.created_at))}</td>
           <td>${OSPMAE.escapeHtml(n.recipient)}</td>
           <td>${OSPMAE.escapeHtml(n.subject)}</td>
           <td><span class="badge ${n.status === "sent" ? "text-bg-success" : n.status === "failed" ? "text-bg-danger" : "text-bg-secondary"}">${n.status}</span></td>
@@ -155,7 +166,7 @@
       });
       if (el.feedMsg)
         el.feedMsg.textContent = `Queued ${body.enqueued} release feed discovery task(s); pending outbox rows: ${body.pending_notifications}.`;
-      OSPMAE.toast(`Ingested ${body.enqueued} feed(s).`, "success");
+      OSPMAE.toast(`Queued ${body.enqueued} feed(s).`, "success");
     } catch (err) {
       OSPMAE.toast(err.message || "Discovery failed.", "error");
     } finally {
@@ -325,15 +336,23 @@
     if (nextBtn) nextBtn.disabled = offset + shown >= total || shown === 0;
   }
 
-  async function loadAuditTrail() {
+  // The page asked for becomes the current one once it has loaded, so a
+  // failed request leaves the pager on the page still shown.
+  async function loadAuditTrail(offset = state.audit.offset) {
     if (!el.auditTable) return;
     el.auditTable.innerHTML =
       '<div class="small text-muted">Loading audit trail…</div>';
     const params = paramsFromForm(el.auditFilters, {
       limit: state.audit.limit,
-      offset: state.audit.offset,
+      offset,
     });
-    const data = await OSPMAE.api(`/v1/admin/audit?${params.toString()}`);
+    let data;
+    try {
+      data = await OSPMAE.api(`/v1/admin/audit?${params.toString()}`);
+    } catch (err) {
+      renderAuditTrail();
+      throw err;
+    }
     state.audit = {
       items: Array.isArray(data?.items) ? data.items : [],
       total: Number(data?.total || 0),
@@ -393,23 +412,35 @@
     });
   }
 
-  async function loadAdminEntityChangelog() {
+  async function loadAdminEntityChangelog(
+    offset = state.entityChangelog.offset,
+  ) {
     if (!el.entityChangelogList) return;
     el.entityChangelogList.innerHTML =
       '<div class="small text-muted">Loading changelog…</div>';
     const params = paramsFromForm(el.entityChangelogFilters, {
       limit: state.entityChangelog.limit,
-      offset: state.entityChangelog.offset,
+      offset,
     });
-    const data = await OSPMAE.api(
-      `/v1/admin/entity-changelog?${params.toString()}`,
-    );
+    let data;
+    try {
+      data = await OSPMAE.api(
+        `/v1/admin/entity-changelog?${params.toString()}`,
+      );
+    } catch (err) {
+      renderEntityChangelog();
+      throw err;
+    }
     state.entityChangelog = {
       items: Array.isArray(data?.items) ? data.items : [],
       total: Number(data?.total || 0),
       limit: Number(data?.limit || 50),
       offset: Number(data?.offset || 0),
     };
+    renderEntityChangelog();
+  }
+
+  function renderEntityChangelog() {
     el.entityChangelogList.innerHTML = OSPMAE.entityChangelogHtml(
       state.entityChangelog.items,
       {
@@ -435,8 +466,7 @@
       Number(state.audit.offset || 0) + direction * limit,
     );
     if (nextOffset === state.audit.offset) return;
-    state.audit.offset = nextOffset;
-    await loadAuditTrail();
+    await loadAuditTrail(nextOffset);
   }
 
   async function pageEntityChangelog(direction) {
@@ -446,8 +476,7 @@
       Number(state.entityChangelog.offset || 0) + direction * limit,
     );
     if (nextOffset === state.entityChangelog.offset) return;
-    state.entityChangelog.offset = nextOffset;
-    await loadAdminEntityChangelog();
+    await loadAdminEntityChangelog(nextOffset);
   }
 
   async function loadUsers() {
@@ -918,9 +947,8 @@
 
     el.auditFilters?.addEventListener("submit", async (event) => {
       event.preventDefault();
-      state.audit.offset = 0;
       try {
-        await loadAuditTrail();
+        await loadAuditTrail(0);
       } catch (err) {
         if (el.auditMsg)
           el.auditMsg.textContent =
@@ -960,9 +988,8 @@
 
     el.entityChangelogFilters?.addEventListener("submit", async (event) => {
       event.preventDefault();
-      state.entityChangelog.offset = 0;
       try {
-        await loadAdminEntityChangelog();
+        await loadAdminEntityChangelog(0);
       } catch (err) {
         if (el.entityChangelogMsg)
           el.entityChangelogMsg.textContent =

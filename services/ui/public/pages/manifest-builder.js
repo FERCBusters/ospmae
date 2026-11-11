@@ -9,6 +9,8 @@ const {
   getAutoApplyEnabled,
   saveUserPreferences,
   toast,
+  escapeHtml,
+  canExportManifests,
 } = OSPMAE;
 
 const state = {
@@ -57,22 +59,15 @@ const el = {
   saveManifestBtn: document.getElementById("saveManifestBtn"),
 };
 
-function roleOf(me) {
-  return me?.effective_role || me?.role || "viewer";
+// Requests started by a control report their failure as a toast.
+function reporting(action, fallback) {
+  return Promise.resolve()
+    .then(action)
+    .catch((err) => toast(err?.message || fallback, "error"));
 }
 
-function canUseManifests(me) {
-  const role = roleOf(me);
-  return role === "admin" || role === "architect" || role === "product_owner";
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+function refreshProjects() {
+  return reporting(loadProjects, "Failed to load projects");
 }
 
 function getSelectedLanguages() {
@@ -622,7 +617,7 @@ function resetFilters() {
   state.selectedProjectIds.clear();
   updateActiveFilterSummary();
   state.treemapApi?.reset?.();
-  loadProjects();
+  refreshProjects();
 }
 
 function treemapDimensions() {
@@ -859,7 +854,7 @@ function renderCatalogueTreemap() {
     }
     updateActiveFilterSummary();
     // Treemap interactions are deliberate; always refresh results immediately.
-    loadProjects();
+    refreshProjects();
   }
 
   function zoomTo(newFocus) {
@@ -934,8 +929,8 @@ function renderCatalogueTreemap() {
       .on("click", (event, d) => {
         event.stopPropagation();
         setSelectedFromNode(d);
-        const target = zoomTargetFor(d);
-        if (target) zoomTo(target);
+        // Redrawing the current view moves the selection outline to a leaf.
+        zoomTo(zoomTargetFor(d) || focus);
       });
 
     merged.select("title").text((d) => {
@@ -1045,7 +1040,7 @@ function renderCatalogueTreemap() {
       .on("click", (event, d) => {
         event.stopPropagation();
         setSelectedFromNode(d);
-        if (d.children && d.children.length) zoomTo(d);
+        zoomTo(d.children && d.children.length ? d : focus);
       });
 
     labelsMerged.transition(t).attr("opacity", (d) => {
@@ -1263,7 +1258,7 @@ function renderCatalogueTreemap() {
     updateActiveFilterSummary();
     zoomTo(root);
     updateTreemapDetailsFor(root);
-    loadProjects();
+    refreshProjects();
   }
 
   svg.on("click", () => resetAll());
@@ -1359,20 +1354,20 @@ function wireEvents() {
     if (!autoApplyEnabled()) return;
     if (qTimer) window.clearTimeout(qTimer);
     qTimer = window.setTimeout(() => {
-      loadProjects();
+      refreshProjects();
     }, 250);
   });
 
   el.languageFilter?.addEventListener("change", () => {
     updateActiveFilterSummary();
     if (!autoApplyEnabled()) return;
-    loadProjects();
+    refreshProjects();
   });
 
   el.statusFilter?.addEventListener("change", () => {
     updateActiveFilterSummary();
     if (!autoApplyEnabled()) return;
-    loadProjects();
+    refreshProjects();
   });
 
   // Capability search: press Enter to jump/zoom to the first matching capability.
@@ -1395,7 +1390,7 @@ function wireEvents() {
   });
 
   el.applyFiltersBtn.addEventListener("click", () => {
-    loadProjects();
+    refreshProjects();
   });
 
   el.autoApplyFilters?.addEventListener("change", async () => {
@@ -1426,10 +1421,18 @@ function wireEvents() {
     updateSelectionInfo();
   });
 
-  el.exportJsonBtn?.addEventListener("click", () => exportManifest("json"));
-  el.exportXlsxBtn?.addEventListener("click", () => exportManifest("xlsx"));
-  el.exportMdBtn?.addEventListener("click", () => exportManifest("markdown"));
-  el.saveManifestBtn?.addEventListener("click", () => saveManifest());
+  for (const [button, format] of [
+    [el.exportJsonBtn, "json"],
+    [el.exportXlsxBtn, "xlsx"],
+    [el.exportMdBtn, "markdown"],
+  ]) {
+    button?.addEventListener("click", () =>
+      reporting(() => exportManifest(format), "Failed to export manifest"),
+    );
+  }
+  el.saveManifestBtn?.addEventListener("click", () =>
+    reporting(saveManifest, "Failed to save manifest"),
+  );
 
   window.addEventListener("resize", () => {
     // Re-render treemap on resize (layout uses container size).
@@ -1445,7 +1448,7 @@ async function init() {
     el.autoApplyFilters.checked = getAutoApplyEnabled();
   }
 
-  state.canBuildManifests = canUseManifests(state.me);
+  state.canBuildManifests = canExportManifests();
 
   // Viewers (and other non-privileged roles) should not see the manifest builder at all.
   if (el.manifestBuilderCard && !state.canBuildManifests) {

@@ -14,14 +14,14 @@
     loadFrameworkNodes,
     getUserPreferences,
     saveUserPreferences,
-    nodeColor,
+    defaultNodeColor,
     getNodeColorOverrides,
-    DEFAULT_NODE_COLORS,
     ALLOWED_START_PAGES,
     canAskQuestions,
     featureOn,
     toast,
     api,
+    safeHref,
   } = OSPMAE;
 
   // Theme palettes come from the shared design system; the server may narrow
@@ -203,28 +203,6 @@
     } finally {
       if (button) button.disabled = false;
     }
-  }
-
-  function safeHref(url) {
-    const fn =
-      window.mospUi && typeof window.mospUi.safeExternalHref === "function"
-        ? window.mospUi.safeExternalHref
-        : null;
-    if (fn) return fn(url) || "";
-    const raw = String(url ?? "").trim();
-    if (!raw) return "";
-    if (/^(?:javascript|data|vbscript):/i.test(raw)) return "";
-    if (raw.startsWith("//")) return "";
-    if (/[\\\u0000-\u001f\u007f]/.test(raw)) return "";
-    if (raw.startsWith("/")) return raw;
-    try {
-      const u = new URL(raw);
-      const p = String(u.protocol || "").toLowerCase();
-      if (p === "http:" || p === "https:") return u.href;
-    } catch (_) {
-      // ignore
-    }
-    return "";
   }
 
   function renderSubscriptions() {
@@ -409,20 +387,6 @@
     el.prefTheme.value = getTheme();
   }
 
-  async function saveStartPage() {
-    const payload = {
-      ...state.prefs,
-      default_start_page:
-        el.defaultStartPage?.value ||
-        state.prefs?.default_start_page ||
-        "/index.html",
-      node_colors: state.overrides,
-    };
-    const saved = await saveUserPreferences(payload);
-    state.prefs = saved;
-    toast("Preferences saved.");
-  }
-
   function renderStartPageSelect() {
     if (!el.defaultStartPage) return;
     const options = buildStartPageOptions(state.me);
@@ -489,9 +453,10 @@
     el.colorRows.innerHTML = state.paletteNodes
       .map((node) => {
         const fullKey = fullKeyFor(node);
-        const effective = nodeColor(fullKey);
+        // The row shows what this form holds: a colour picked here, or the
+        // default once a custom colour has been reset and is yet to be saved.
         const explicit = overrides[fullKey];
-        const defaultColor = DEFAULT_NODE_COLORS?.[fullKey] || effective;
+        const defaultColor = defaultNodeColor(fullKey);
         const badge = explicit
           ? '<span class="badge text-bg-primary">custom</span>'
           : '<span class="badge text-bg-light">default</span>';
@@ -502,7 +467,7 @@
               <div class="small text-muted">Key: <code>${esc(fullKey)}</code>${defaultColor ? ` <span class="ms-2 text-muted">(default ${esc(defaultColor)})</span>` : ""}</div>
             </div>
             <div class="d-flex gap-2 align-items-center">
-              <input type="color" class="form-control form-control-color" value="${esc(explicit || effective || "#64748b")}" data-color-input="1" aria-label="Colour" />
+              <input type="color" class="form-control form-control-color" value="${esc(explicit || defaultColor)}" data-color-input="1" aria-label="Colour" />
               <button type="button" class="btn btn-sm btn-outline-secondary" data-action="reset">Reset</button>
               ${badge}
             </div>
@@ -634,16 +599,15 @@
   async function addShortcut() {
     const name = (el.shortcutName?.value || "").trim();
     const url = (el.shortcutUrl?.value || "").trim();
-    const safe = safeHref(url);
-    if (!safe) {
+    if (!name || !url) {
+      toast("Please provide both a name and a URL.", "error");
+      return;
+    }
+    if (!safeHref(url)) {
       toast(
         "Invalid or unsafe URL. Use an http(s) URL or a same-site path (starting with /).",
         "error",
       );
-      return;
-    }
-    if (!name || !url) {
-      toast("Please provide both a name and a URL.", "error");
       return;
     }
     await api("/v1/me/shortcuts", { method: "POST", body: { name, url } });
@@ -811,7 +775,7 @@
     });
 
     el.defaultStartPage?.addEventListener("change", () => {
-      saveStartPage().catch((err) =>
+      savePreferences().catch((err) =>
         toast(err?.message || "Failed to save preferences", "error"),
       );
     });
@@ -838,10 +802,12 @@
       }
     });
 
-    el.frameworkSelect?.addEventListener("change", async () => {
+    el.frameworkSelect?.addEventListener("change", () => {
       const machine = el.frameworkSelect.value;
       state.activeFramework = setActiveFrameworkByMachineName(machine);
-      await refreshPaletteForFramework();
+      refreshPaletteForFramework().catch((err) =>
+        toast(err?.message || "Failed to load framework categories", "error"),
+      );
     });
 
     el.saveColorsBtn?.addEventListener("click", () => {

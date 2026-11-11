@@ -1460,6 +1460,31 @@
     }
   });
 
+  // The address to link to, or "" when it is not safe to link: http(s)
+  // addresses and same-site paths pass, script and data addresses do not.
+  // The design system's check is used when the shell has loaded it.
+  function safeHref(url) {
+    const fn =
+      window.mospUi && typeof window.mospUi.safeExternalHref === "function"
+        ? window.mospUi.safeExternalHref
+        : null;
+    if (fn) return fn(url) || "";
+    const raw = String(url ?? "").trim();
+    if (!raw) return "";
+    if (/^(?:javascript|data|vbscript):/i.test(raw)) return "";
+    if (raw.startsWith("//")) return "";
+    if (/[\\\u0000-\u001f\u007f]/.test(raw)) return "";
+    if (raw.startsWith("/")) return raw;
+    try {
+      const u = new URL(raw);
+      const p = String(u.protocol || "").toLowerCase();
+      if (p === "http:" || p === "https:") return u.href;
+    } catch (_) {
+      // ignore
+    }
+    return "";
+  }
+
   window.escapeHtml = escapeHtml;
   window.parseError = parseError;
   window.apiRequest = apiRequest;
@@ -1504,6 +1529,7 @@
     parseTimestamp,
     formatTimestamp,
     escapeHtml,
+    safeHref,
     csvCell,
     isAdmin,
     canMaintainProjects,
@@ -1534,6 +1560,7 @@
     clearNodeColor,
     resetNodeColors,
     nodeColor,
+    defaultNodeColor: _defaultColorForKey,
     normalizeHexColor,
     normalizeStartPage,
     loadUserPreferences,

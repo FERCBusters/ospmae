@@ -24,6 +24,7 @@ export async function loadPage(
   });
   const { window } = dom;
   const requests = [];
+  const requestHeaders = [];
   const context = dom.getInternalVMContext();
   async function run(path) {
     const fileUrl = new URL(path, publicRoot);
@@ -37,18 +38,21 @@ export async function loadPage(
       filename: library.href,
     }).runInContext(context);
   }
-  if (withApp) {
-    // The real app.js, with only the network replaced: `api(method, path,
-    // body)` answers each request as [status, body].
+  if (api) {
+    // Only the network is replaced: `api(method, path, body)` answers each
+    // request as [status, body]; a fourth argument carries the query. The headers each request carried are kept.
     window.fetch = async (input, init = {}) => {
       const target = new URL(String(input), window.location.href);
       const method = String(init.method || "GET").toUpperCase();
       const body = init.body ? JSON.parse(init.body) : undefined;
       requests.push([method, target.pathname + target.search, body]);
-      const [status, payload] = (await api(method, target.pathname, body)) || [
-        200,
-        {},
-      ];
+      requestHeaders.push(init.headers || {});
+      const [status, payload] = (await api(
+        method,
+        target.pathname,
+        body,
+        target.searchParams,
+      )) || [200, {}];
       // A string answer is a download body; anything else is JSON.
       const raw = typeof payload === "string";
       const text =
@@ -71,6 +75,9 @@ export async function loadPage(
       };
       return response;
     };
+  }
+  if (withApp) {
+    // The real app.js.
     await run("app.js");
   } else {
     window.OSPMAE = {
@@ -95,6 +102,7 @@ export async function loadPage(
     window.document.dispatchEvent(new window.Event("DOMContentLoaded"));
   return {
     requests,
+    requestHeaders,
     window,
     document: window.document,
     errors,

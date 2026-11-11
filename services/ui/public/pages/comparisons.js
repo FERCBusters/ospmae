@@ -408,11 +408,13 @@
       const requested = String(params.get("lens") || "")
         .toLowerCase()
         .trim();
-      if (
-        requested === "dependencies" ||
-        requested === "capabilities" ||
-        requested === "licenses"
-      ) {
+      // Only a lens this reader is offered: the dependency lens is removed
+      // for everyone but administrators, and a link naming it must not
+      // leave the page asking for a graph the API refuses.
+      const offered = Array.from(el.lens.options).some(
+        (option) => option.value === requested,
+      );
+      if (offered) {
         el.lens.value = requested;
         return;
       }

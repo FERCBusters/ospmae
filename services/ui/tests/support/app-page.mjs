@@ -222,7 +222,8 @@ export function installBrowser(window, record, options) {
 // Options:
 //   me        the signed-in account (default an administrator)
 //   query, hash   the address after the page name
-//   api       (method, path, body) => [status, body] for the page's requests;
+//   api       (method, path, body, query) => [status, body] for the page's
+//             requests;
 //             return nothing to fall through to the defaults
 //   d3        false leaves the chart library out
 //   setup     runs on the window before any script
@@ -250,8 +251,8 @@ export async function appPage(t, htmlName, scripts, options = {}) {
       };
       options.setup?.(window);
     },
-    api: async (method, path, body) => {
-      const custom = await options.api?.(method, path, body);
+    api: async (method, path, body, query) => {
+      const custom = await options.api?.(method, path, body, query);
       if (custom) return custom;
       if (path === "/v1/me")
         return me ? [200, me] : [401, { detail: "Not authenticated" }];

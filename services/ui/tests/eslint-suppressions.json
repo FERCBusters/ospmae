@@ -44,11 +44,6 @@
       "count": 2
     }
   },
-  "services/ui/public/pages/preferences.js": {
-    "no-unsanitized/property": {
-      "count": 3
-    }
-  },
   "services/ui/public/pages/project-edit.js": {
     "no-unsanitized/property": {
       "count": 5
