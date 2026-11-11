@@ -88,6 +88,62 @@ def validate_repo_url(url: str) -> None:
     raise ValueError("Unsupported repository URL scheme")
 
 
+# The path segment that separates a repository from its releases on the forges
+# the scanner clones from: /owner/repo/releases/tag/v1 (GitHub, Forgejo, Gitea,
+# Codeberg), /group/sub/project/-/releases/v1 and /-/tags (GitLab), and the
+# feed addresses themselves (/owner/repo/releases.rss, .atom).
+_RELEASE_PATH_MARKERS = frozenset(
+    {
+        "releases",
+        "releases.rss",
+        "releases.atom",
+        "tags",
+        "tags.rss",
+        "tags.atom",
+    }
+)
+
+
+def repository_url_for_release_link(link: str | None) -> str | None:
+    """The repository a release link belongs to, when its host may be cloned.
+
+    The repository is the part of the path before the releases segment. A
+    feed entry drives later git clones, so the derived link passes the same
+    repo-URL validation as operator-supplied ones: no embedded credentials
+    and a host on OSPMAE_DEPENDENCY_DISCOVERY_ALLOWED_HOSTS. Anything else
+    yields None.
+    """
+
+    if not link:
+        return None
+    try:
+        parsed = urlparse(link)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return None
+        parts = [x for x in parsed.path.split("/") if x]
+        marker = next(
+            (i for i, part in enumerate(parts) if part in _RELEASE_PATH_MARKERS),
+            None,
+        )
+        if marker is not None:
+            repo_parts = parts[:marker]
+            if repo_parts and repo_parts[-1] == "-":
+                repo_parts = repo_parts[:-1]
+        elif parsed.hostname.lower() == "github.com":
+            # A bare GitHub repository link.
+            repo_parts = parts[:2]
+        else:
+            return None
+        if len(repo_parts) < 2:
+            return None
+        # netloc keeps a port, and any credentials for validation to refuse.
+        candidate = f"https://{parsed.netloc.lower()}/{'/'.join(repo_parts)}"
+        validate_repo_url(candidate)
+        return candidate
+    except ValueError:
+        return None
+
+
 def validate_git_ref_name(name: str) -> str:
     """Return a branch or tag name that git and ls-remote take literally.
 

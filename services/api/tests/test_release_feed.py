@@ -11,6 +11,7 @@ import pytest
 from app.core.config import settings
 from app.db.models import Project, ProjectVersion
 from app.db.session import SessionLocal
+from app.depscan.scan import repository_url_for_release_link
 from app.tasks import release_feed as rf
 
 from tests.support import (
@@ -715,7 +716,7 @@ def test_the_version_label_comes_from_the_title_or_the_tag_link(title, link, exp
     ],
 )
 def test_a_release_link_yields_its_repository_on_an_allowed_host(link, expected):
-    assert rf._guess_source_code_url_from_release_link(link) == expected
+    assert repository_url_for_release_link(link) == expected
 
 
 # A Forgejo releases feed, in the shape git.mig5.net serves.
@@ -794,6 +795,35 @@ def test_a_self_hosted_forge_feed_is_scanned_once_its_host_is_allowed(
         )
     )
     assert scans == [latest.id, rows["0.1.2"].id]
+
+
+def test_asking_for_a_scan_repairs_a_release_imported_before_its_host_was_allowed(
+    upstream, scans, discoveries, owner, monkeypatch
+):
+    client, _ = owner
+    upstream.serve(FORGEJO_FEED_URL, FORGEJO_FEED)
+    pid = make_project(client, "heckle", release_rss_feed_url=FORGEJO_FEED_URL)["id"]
+    discoveries.run(pid)
+    version = versions(pid)["0.1.3"]
+    assert version.link_to_source_code is None
+    path = f"/v1/project-versions/{version.id}/dependency-discovery"
+
+    # While the host is not allowed the scan is refused, and says what to check.
+    refused = client.post(path, headers=csrf(client))
+    assert refused.status_code == 400
+    assert "OSPMAE_DEPENDENCY_DISCOVERY_ALLOWED_HOSTS" in refused.json()["detail"]
+    assert versions(pid)["0.1.3"].link_to_source_code is None
+    assert scans == []
+
+    # Once it is, the Run scan button works without importing the feed again.
+    monkeypatch.setattr(
+        settings, "dependency_discovery_allowed_hosts", "github.com,git.mig5.net"
+    )
+    assert ok(client.post(path, headers=csrf(client)))["launched"] is True
+    repaired = versions(pid)["0.1.3"]
+    assert repaired.link_to_source_code == FORGEJO_REPO
+    assert repaired.dependency_discovery_status == "queued"
+    assert scans == [version.id]
 
 
 def test_an_allowed_forge_feed_is_scanned_on_first_discovery(

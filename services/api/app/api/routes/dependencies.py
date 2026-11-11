@@ -25,6 +25,7 @@ from app.db.models import (
     UserGroup,
 )
 from app.db.session import get_db
+from app.depscan.scan import repository_url_for_release_link
 from app.security.auth import get_current_user
 from app.security.roles import ROLE_ADMIN, attach_effective_role
 from app.services.scan_queue import launch_dependency_scan, mark_scan_queued
@@ -474,10 +475,21 @@ def enqueue_dependency_discovery(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     _require_admin_or_project_owner(db, user, project)
-    if not pv.link_to_source_code:
-        raise HTTPException(
-            status_code=400, detail="Project version has no link_to_source_code"
-        )
+    if not (pv.link_to_source_code or "").strip():
+        # A release imported while its repository's host was not yet allowed
+        # has no source URL. The project's release feed names the repository,
+        # so the scan the owner asks for repairs the version first.
+        derived = repository_url_for_release_link(project.release_rss_feed_url)
+        if derived is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This version has no source code URL. Set one on the version, "
+                    "or check that the repository's host is listed in "
+                    "OSPMAE_DEPENDENCY_DISCOVERY_ALLOWED_HOSTS."
+                ),
+            )
+        pv.link_to_source_code = derived
 
     mark_scan_queued(pv)
     pv.dependency_last_commit = None

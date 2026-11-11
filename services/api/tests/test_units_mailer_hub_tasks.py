@@ -368,22 +368,6 @@ def test_sweep_removes_expired_rows(db):
     assert db.query(AuditLog).count() == 0
 
 
-def test_release_feed_url_validation_unit():
-    from app.tasks.release_feed import _guess_source_code_url_from_release_link
-
-    assert (
-        _guess_source_code_url_from_release_link(
-            "https://github.com/owner/repo/releases/tag/v1"
-        )
-        == "https://github.com/owner/repo"
-    )
-    assert (
-        _guess_source_code_url_from_release_link("https://evil.example/releases/tag/v1")
-        is None
-    )
-    assert _guess_source_code_url_from_release_link(None) is None
-
-
 def test_release_feed_datetime_parsing():
     from app.tasks.release_feed import _parse_datetime
 

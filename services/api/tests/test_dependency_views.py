@@ -264,7 +264,8 @@ def test_only_owners_start_scans_and_only_where_there_is_source(
 
     no_source = owner.post(path, headers=csrf(owner))
     assert no_source.status_code == 400
-    assert "link_to_source_code" in no_source.json()["detail"]
+    assert "no source code URL" in no_source.json()["detail"]
+    assert "OSPMAE_DEPENDENCY_DISCOVERY_ALLOWED_HOSTS" in no_source.json()["detail"]
     set_scan_state(version["id"], "not_run", link_to_source_code=SOURCE)
 
     stranger, _ = signed_in("maintainer")
