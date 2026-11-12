@@ -16,7 +16,7 @@ from app.security import sign_in_throttle as throttle
 
 from tests.conftest import auth_client, login, make_user
 
-PASSWORD = "Password1!"
+PASSWORD = "Test-passphrase-1!"
 
 
 @pytest.fixture(autouse=True)
@@ -26,10 +26,10 @@ def _local_accounts(monkeypatch):
 
 
 def _csrf(client) -> dict[str, str]:
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf") or ""}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf") or ""}
 
 
-def _change(client, current: str, new: str = "NewPass2!"):
+def _change(client, current: str, new: str = "New-passphrase-two-2!"):
     return client.post(
         "/v1/auth/change-password",
         json={
@@ -61,7 +61,10 @@ def test_a_new_password_signs_every_browser_out(client, outbox):
 
     client.headers["X-Forwarded-For"] = "5.5.5.5"
     assert login(client, "ChgU", PASSWORD, peer="5.5.5.5").status_code == 401
-    assert login(client, "ChgU", "NewPass2!", peer="5.5.5.5").status_code == 200
+    assert (
+        login(client, "ChgU", "New-passphrase-two-2!", peer="5.5.5.5").status_code
+        == 200
+    )
 
     [notice] = [m for m in outbox.messages() if "password was changed" in m.subject]
     assert notice.recipient == "chgu@x.test"
@@ -126,7 +129,7 @@ def test_an_administrator_resets_a_password(client, outbox):
 
     response = admin.post(
         f"/v1/admin/users/{user.id}/password",
-        json={"new_password": "Fresh-pass-9!"},
+        json={"new_password": "Fresh-passphrase-9!"},
         headers=_csrf(admin),
     )
     assert response.json() == {"ok": True}
@@ -134,7 +137,7 @@ def test_an_administrator_resets_a_password(client, outbox):
     assert _devices(user.id) == 0
     with SessionLocal() as s:
         assert s.query(LoginThrottle).count() == 0
-    assert login(client, "forgetful", "Fresh-pass-9!").status_code == 200
+    assert login(client, "forgetful", "Fresh-passphrase-9!").status_code == 200
 
     [notice] = [m for m in outbox.messages() if "administrator" in m.subject]
     assert notice.recipient == "f@x.test"
@@ -148,14 +151,14 @@ def test_only_administrators_reset_passwords(client):
     user = make_user("target", PASSWORD, role="viewer")
     response = viewer.post(
         f"/v1/admin/users/{user.id}/password",
-        json={"new_password": "Fresh-pass-9!"},
+        json={"new_password": "Fresh-passphrase-9!"},
         headers=_csrf(viewer),
     )
     assert response.status_code == 403
     admin, _ = auth_client("reset-admin-2", PASSWORD, role="admin")
     missing = admin.post(
         "/v1/admin/users/999999/password",
-        json={"new_password": "Fresh-pass-9!"},
+        json={"new_password": "Fresh-passphrase-9!"},
         headers=_csrf(admin),
     )
     assert missing.status_code == 404

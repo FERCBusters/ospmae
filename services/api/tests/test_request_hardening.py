@@ -144,7 +144,9 @@ def test_an_oversized_write_changes_nothing():
     c, _ = auth_client(role="admin")
     big = {"name": "huge", "description": "x" * (2 * 1024 * 1024)}
     response = c.post(
-        "/v1/projects", json=big, headers={"X-CSRF-Token": c.cookies["ospmae_csrf"]}
+        "/v1/projects",
+        json=big,
+        headers={"X-CSRF-Token": c.cookies["__Host-ospmae_csrf"]},
     )
     assert outcome(response) == TOO_LARGE
     with SessionLocal() as db:
@@ -215,7 +217,7 @@ def test_a_refused_json_write_changes_nothing():
         "/v1/projects",
         content=b'{"name": "a\\u0000b"}',
         headers={
-            "X-CSRF-Token": c.cookies["ospmae_csrf"],
+            "X-CSRF-Token": c.cookies["__Host-ospmae_csrf"],
             "Content-Type": "application/json",
         },
     )
@@ -267,7 +269,7 @@ def test_validation_errors_do_not_echo_submitted_values(client):
 
 
 def test_sign_in_from_a_foreign_origin_is_refused_before_any_state_changes(client):
-    make_user("origin-user", "Secret-pass-1!")
+    make_user("origin-user", "Secret-passphrase-1!")
     for headers in (
         {"Origin": "https://evil.example"},
         {"Origin": "null"},
@@ -285,7 +287,7 @@ def test_sign_in_from_a_foreign_origin_is_refused_before_any_state_changes(clien
     for headers in ({"Origin": "https://testserver"}, {}):
         response = client.post(
             "/v1/auth/login",
-            json={"username": "origin-user", "password": "Secret-pass-1!"},
+            json={"username": "origin-user", "password": "Secret-passphrase-1!"},
             headers=headers,
         )
         assert response.status_code == 200
@@ -302,12 +304,12 @@ def test_password_reset_requests_need_the_application_origin(client):
 
 def test_the_public_base_url_is_the_one_accepted_origin(client, monkeypatch):
     monkeypatch.setattr(settings, "public_base_url", "https://ospmae.example")
-    make_user("base-user", "Secret-pass-1!")
+    make_user("base-user", "Secret-passphrase-1!")
 
     def attempt(origin):
         return client.post(
             "/v1/auth/login",
-            json={"username": "base-user", "password": "Secret-pass-1!"},
+            json={"username": "base-user", "password": "Secret-passphrase-1!"},
             headers={"Origin": origin},
         )
 
@@ -329,7 +331,7 @@ def test_signed_in_writes_from_a_foreign_origin_are_refused_with_a_valid_token()
         "/v1/me/shortcuts",
         json={"name": "x", "url": "/projects.html"},
         headers={
-            "X-CSRF-Token": c.cookies["ospmae_csrf"],
+            "X-CSRF-Token": c.cookies["__Host-ospmae_csrf"],
             "Origin": "https://evil.example",
         },
     )
@@ -341,7 +343,8 @@ def test_signed_in_writes_from_a_foreign_origin_are_refused_with_a_valid_token()
 @pytest.fixture()
 def header_signed_in(monkeypatch):
     monkeypatch.setattr(settings, "trust_remote_user", True)
-    make_user("proxied", "Secret-pass-1!", role="admin")
+    monkeypatch.setattr(settings, "remote_user_trusted_cidrs", "127.0.0.1/32")
+    make_user("proxied", "Secret-passphrase-1!", role="admin")
     from app.main import app
 
     c = TestClient(peer_wrapper(app), base_url="https://testserver")
@@ -354,18 +357,18 @@ def test_header_signed_in_writes_need_the_csrf_token(header_signed_in):
     me = c.get("/v1/me")
     assert me.status_code == 200
     # No sign-in response carried the token, so this one does.
-    token = me.cookies.get("ospmae_csrf")
+    token = me.cookies.get("__Host-ospmae_csrf")
     assert token
     shortcut = {"name": "x", "url": "/projects.html"}
     c.cookies.clear()
     assert outcome(c.post("/v1/me/shortcuts", json=shortcut)) == CSRF_REFUSED
-    c.cookies.set("ospmae_csrf", token, domain="testserver.local")
+    c.cookies.set("__Host-ospmae_csrf", token, domain="testserver.local")
     response = c.post(
         "/v1/me/shortcuts", json=shortcut, headers={"X-CSRF-Token": token}
     )
     assert response.status_code == 200, response.text
     # A browser that already holds the token is not issued another.
-    assert "ospmae_csrf" not in c.get("/v1/me").cookies
+    assert "__Host-ospmae_csrf" not in c.get("/v1/me").cookies
 
 
 # --- The signed-in account in routes ----------------------------------------
@@ -380,10 +383,10 @@ def test_routes_can_change_the_signed_in_account(monkeypatch):
         "/v1/auth/change-password",
         json={
             "current_password": "Old-password-1!",
-            "new_password": "New-password-2!",
-            "confirm_password": "New-password-2!",
+            "new_password": "New-passphrase-two-2!",
+            "confirm_password": "New-passphrase-two-2!",
         },
-        headers={"X-CSRF-Token": c.cookies["ospmae_csrf"]},
+        headers={"X-CSRF-Token": c.cookies["__Host-ospmae_csrf"]},
     )
     assert response.status_code == 204, response.text
     with SessionLocal() as db:
@@ -626,10 +629,10 @@ def test_every_per_address_allowance_counts_one_ipv6_network(client, monkeypatch
             "/v1/auth/change-password",
             json={
                 "current_password": "wrong-password",
-                "new_password": "New-password-2!",
-                "confirm_password": "New-password-2!",
+                "new_password": "New-passphrase-two-2!",
+                "confirm_password": "New-passphrase-two-2!",
             },
-            headers={"X-CSRF-Token": signed_in.cookies["ospmae_csrf"]},
+            headers={"X-CSRF-Token": signed_in.cookies["__Host-ospmae_csrf"]},
         )
         client.get("/v1/auth/sso/nope/start")
         client.post(

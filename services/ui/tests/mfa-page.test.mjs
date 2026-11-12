@@ -212,6 +212,19 @@ test("every write carries the CSRF token, wherever its cookie sits", async (t) =
   assert.equal("X-CSRF-Token" in none.requestHeaders[0], false);
 });
 
+test("the host-bound CSRF cookie is read ahead of one a sibling site could plant", async (t) => {
+  const page = await mfa(t, { cookies: "ospmae_csrf=planted" });
+  page.window.document.cookie = "__Host-ospmae_csrf=iss%3Dued; Secure; Path=/";
+  assert.match(page.window.document.cookie, /ospmae_csrf=planted/);
+  page.$("code").value = "123456";
+  await page.submit("codeForm");
+  const headers = page.requestHeaders[page.requestHeaders.length - 1];
+  assert.equal(headers["X-CSRF-Token"], "iss=ued");
+  // A cookie whose name only ends with the expected one gives no token.
+  const other = await mfa(t, { cookies: "my_ospmae_csrf=other" });
+  assert.equal("X-CSRF-Token" in other.requestHeaders[0], false);
+});
+
 test("a wrong code offers the other methods", async (t) => {
   const page = await mfa(t, {
     state: { credentials: [{ id: "cred-1", name: "YubiKey" }] },

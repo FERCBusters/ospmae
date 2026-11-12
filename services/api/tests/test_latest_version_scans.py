@@ -17,7 +17,7 @@ SOURCE = "https://github.com/example/repo"
 
 
 def _csrf(client):
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf")}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf")}
 
 
 class _ScanTask:

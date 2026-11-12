@@ -30,4 +30,6 @@ echo "[component-api] running migrations..."
 alembic upgrade head
 
 echo "[component-api] starting uvicorn..."
-exec uvicorn app.main:app --host "${OSPMAE_API_HOST:-0.0.0.0}" --port "${OSPMAE_API_PORT:-8080}"
+# Forwarded headers are read by the application, from OSPMAE_TRUSTED_PROXY_CIDRS
+# only (app/security/client_addr.py); the server's own rewriting stays off.
+exec uvicorn app.main:app --host "${OSPMAE_API_HOST:-0.0.0.0}" --port "${OSPMAE_API_PORT:-8080}" --no-proxy-headers

@@ -1,5 +1,16 @@
+"""Database-backed browser sessions.
+
+The browser holds the session identifier; the database holds only its
+SHA-256 digest, as KEEN's session store does, so a copy of the table, a
+backup or a database reader sees no identifier a browser could present.
+Every lookup by a presented identifier goes through ``session_row``.
+"""
+
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import secrets
 from datetime import datetime, timedelta
 
@@ -12,6 +23,40 @@ from app.db.models import User
 
 def _now() -> datetime:
     return datetime.utcnow()
+
+
+def stored_session_id(session_id: str) -> str:
+    """The form in which a session identifier is stored: its SHA-256 digest."""
+
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
+def csrf_token_for(session_id: str) -> str:
+    """The CSRF token that belongs to a session.
+
+    It is derived from the identifier the browser holds in its HttpOnly
+    cookie, which the database never stores, so only that session's own
+    responses can carry it: a cookie planted from a sibling subdomain, or
+    another account's token, is not this one.
+    """
+
+    digest = hmac.new(
+        session_id.encode("utf-8"), b"ospmae-csrf-token", hashlib.sha256
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def session_row(db: Session, session_id: str | None) -> SessionRow | None:
+    """The stored row for an identifier a browser presented, whatever its age."""
+
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    return (
+        db.query(SessionRow)
+        .filter(SessionRow.session_id == stored_session_id(sid))
+        .one_or_none()
+    )
 
 
 def _absolute_cutoff(row: SessionRow) -> datetime:
@@ -35,7 +80,7 @@ def create_session(
 ) -> str:
     sid = secrets.token_urlsafe(32)
     row = SessionRow(
-        session_id=sid,
+        session_id=stored_session_id(sid),
         user_id=user_id,
         expires_at=_now() + timedelta(seconds=int(ttl_seconds)),
         auth_method=(auth_method or "local")[:20],
@@ -51,10 +96,7 @@ def create_session(
 
 
 def get_session(db: Session, session_id: str) -> SessionRow | None:
-    sid = (session_id or "").strip()
-    if not sid:
-        return None
-    row = db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
+    row = session_row(db, session_id)
     if not row:
         return None
     now = _now()
@@ -71,22 +113,21 @@ def get_session(db: Session, session_id: str) -> SessionRow | None:
     return row
 
 
-def refresh_session(db: Session, session_row: SessionRow, ttl_seconds: int) -> None:
+def refresh_session(db: Session, row: SessionRow, ttl_seconds: int) -> None:
     new_expiry = _now() + timedelta(seconds=int(ttl_seconds))
     # Rolling expiry never pushes a session past its absolute lifetime.
-    hard_end = _absolute_cutoff(session_row)
-    if session_row.created_at and new_expiry > hard_end:
+    hard_end = _absolute_cutoff(row)
+    if row.created_at and new_expiry > hard_end:
         new_expiry = hard_end
-    session_row.expires_at = new_expiry
-    db.add(session_row)
+    row.expires_at = new_expiry
+    db.add(row)
     db.commit()
 
 
 def delete_session(db: Session, session_id: str) -> None:
-    sid = (session_id or "").strip()
-    if not sid:
-        return
-    row = db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
+    """End the session a browser presented."""
+
+    row = session_row(db, session_id)
     if row:
         db.delete(row)
         db.commit()

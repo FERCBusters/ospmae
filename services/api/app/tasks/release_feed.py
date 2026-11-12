@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -24,10 +25,11 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal
 from app.depscan.scan import repository_url_for_release_link
+from app.security.outbound import public_client
 from app.security.regex_shape import compile_supplied_pattern
 from app.security.url_safety import (
     contains_xml_dtd_or_entity,
-    validate_public_http_url_resolved,
+    validate_public_https_url,
 )
 from app.services.entity_changelog import (
     project_version_changelog_state,
@@ -56,24 +58,34 @@ log = get_task_logger(__name__)
 # Ignore patterns search at most this much of each feed entry's text.
 _MATCH_WINDOW_CHARS = 1024
 
+# One feed, redirects included, is given this long in all, so a host that
+# answers a few bytes at a time cannot hold a worker; each read waits at most
+# _READ_SECONDS.
+FEED_FETCH_SECONDS = 60
+_READ_SECONDS = 20
+
 
 def _safe_fetch_feed(
     client: httpx.Client, url: str, headers: dict[str, str]
 ) -> tuple[httpx.Response, bytes | None, str]:
     """Fetch a release feed safely.
 
-    - Validates the URL (http/https only, blocks localhost/private IP literals).
-    - Disables automatic redirects; follows a small, validated redirect chain.
-    - Streams the response and enforces a maximum size.
+    - Fetches public HTTPS addresses only; the client (public_client) connects
+      to the addresses each URL was validated against.
+    - Disables automatic redirects; follows a small chain, validating each hop.
+    - Streams the response and enforces a maximum size and a total time.
 
     Returns (response, content_bytes_or_None, final_url).
     """
     max_bytes = int(getattr(settings, "release_feed_max_bytes", 2_000_000) or 2_000_000)
     max_redirects = int(getattr(settings, "release_feed_max_redirects", 3) or 3)
+    deadline = time.monotonic() + FEED_FETCH_SECONDS
 
-    current = validate_public_http_url_resolved(url)
+    current = validate_public_https_url(url)
 
     for _hop in range(max_redirects + 1):
+        if time.monotonic() > deadline:
+            raise ValueError("Release feed took too long")
         with client.stream(
             "GET", current, headers=headers, follow_redirects=False
         ) as resp:
@@ -81,7 +93,7 @@ def _safe_fetch_feed(
                 loc = (resp.headers.get("location") or "").strip()
                 if not loc:
                     return resp, None, current
-                current = validate_public_http_url_resolved(urljoin(current, loc))
+                current = validate_public_https_url(urljoin(current, loc))
                 continue
 
             if resp.status_code in {304}:
@@ -97,6 +109,8 @@ def _safe_fetch_feed(
                 buf.extend(chunk)
                 if len(buf) > max_bytes:
                     raise ValueError("Release feed response too large")
+                if time.monotonic() > deadline:
+                    raise ValueError("Release feed took too long")
             return resp, bytes(buf), current
 
     raise ValueError("Too many redirects while fetching release feed")
@@ -542,7 +556,7 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
             .all()
         )
 
-        with httpx.Client(timeout=20, follow_redirects=False) as client:
+        with public_client(timeout=_READ_SECONDS) as client:
             for project in projects:
                 url = str(project.release_rss_feed_url or "").strip()
                 if not url:
@@ -897,7 +911,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             }
 
         url = str(project.release_rss_feed_url or "").strip()
-        with httpx.Client(timeout=20, follow_redirects=False) as client:
+        with public_client(timeout=_READ_SECONDS) as client:
             resp, content, final_url = _safe_fetch_feed(client, url, {})
 
         if resp.status_code != 200 or not content:

@@ -120,6 +120,15 @@
     return null;
   }
 
+  // The CSRF token the API issued this browser. Where cookies are Secure and
+  // host-only the API sets it as __Host-ospmae_csrf, a name a browser accepts
+  // only from this host, so a site on a sibling subdomain cannot set it; that
+  // cookie is read first. The bare name serves an installation reached over
+  // plain HTTP or one with a cookie domain.
+  function csrfCookie() {
+    return getCookie("__Host-ospmae_csrf") || getCookie("ospmae_csrf");
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -187,7 +196,7 @@
     // Prefer the current cookie token over any cached value. This prevents
     // intermittent CSRF failures when the cookie value changes (e.g. multiple
     // tabs, re-login flows, etc.).
-    const cookieCsrf = getCookie("ospmae_csrf");
+    const cookieCsrf = csrfCookie();
     const csrfToken = cookieCsrf || state.csrfToken;
     if (csrfToken) state.csrfToken = csrfToken;
     if (["POST", "PUT", "PATCH", "DELETE"].includes(method) && csrfToken) {
@@ -916,7 +925,7 @@
         }
 
         state.me = me;
-        state.csrfToken = me.csrf_token || getCookie("ospmae_csrf");
+        state.csrfToken = me.csrf_token || csrfCookie();
 
         // Load installation feature switches once; optional pages gate
         // themselves on them.
@@ -983,7 +992,7 @@
     state.activeFramework = null;
     state.frameworkNodesById = new Map();
     state.frameworkTreesById = new Map();
-    const csrf = getCookie("ospmae_csrf") || "";
+    const csrf = csrfCookie() || "";
     window.location.href = "/v1/auth/logout?csrf=" + encodeURIComponent(csrf);
   }
 

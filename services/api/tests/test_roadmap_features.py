@@ -20,7 +20,7 @@ CSRF = {"X-CSRF-Token": None}
 
 
 def _csrf(client):
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf")}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf")}
 
 
 def test_project_type_vocabulary_is_enforced(client, db):
@@ -351,7 +351,7 @@ def test_factor_change_mails_the_account_owner(client, db):
             json={"password": PASSWORD},
             headers={
                 "Origin": "https://testserver",
-                "X-CSRF-Token": c.cookies.get("ospmae_csrf"),
+                "X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf"),
             },
         )
 
@@ -360,7 +360,7 @@ def test_factor_change_mails_the_account_owner(client, db):
             "/v1/auth/mfa/totp/start",
             headers={
                 "Origin": "https://testserver",
-                "X-CSRF-Token": c.cookies.get("ospmae_csrf"),
+                "X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf"),
             },
         )
         assert start.status_code == 200, start.text
@@ -372,7 +372,7 @@ def test_factor_change_mails_the_account_owner(client, db):
             json={"code": code},
             headers={
                 "Origin": "https://testserver",
-                "X-CSRF-Token": c.cookies.get("ospmae_csrf"),
+                "X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf"),
             },
         )
         assert confirm.status_code == 200, confirm.text

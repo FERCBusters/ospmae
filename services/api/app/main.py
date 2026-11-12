@@ -30,6 +30,7 @@ from app.security.csrf import (
     generate_csrf_token,
     get_csrf_token_from_request,
     request_origin_allowed,
+    session_csrf_token,
     set_csrf_cookie,
 )
 from app.security.local_allowance import LocalAllowance
@@ -41,9 +42,15 @@ from app.security.request_limits import (
 )
 from app.security.roles import attach_effective_role
 
+# The interactive API pages and the schema they read describe every route to
+# whoever can reach the API, and the pages load their scripts from another
+# site, so the application serves none of them.
 app = FastAPI(
     title=settings.app_title,
     exception_handlers={RequestValidationError: validation_error_response},
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 _MAX_NOTIFICATION_SOCKETS_PER_USER = 8
@@ -145,10 +152,13 @@ async def load_user_and_enforce_csrf(request: Request, call_next):
 
     # Browsers signed in by a trusted proxy get no OSPMAE sign-in response to
     # carry the CSRF cookie, and a browser may lose the cookie before its
-    # session ends; either receives a token with this response.
+    # session ends; either receives a token with this response: the session's
+    # own where there is a session.
     if user is not None and not get_csrf_token_from_request(request):
         try:
-            set_csrf_cookie(response, generate_csrf_token())
+            set_csrf_cookie(
+                response, session_csrf_token(request) or generate_csrf_token()
+            )
         except Exception:
             pass
     return response

@@ -10,7 +10,7 @@ from tests.conftest import auth_client
 
 
 def _h(c):
-    return {"X-CSRF-Token": c.cookies.get("ospmae_csrf") or ""}
+    return {"X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf") or ""}
 
 
 @pytest.fixture()

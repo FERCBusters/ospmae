@@ -21,14 +21,13 @@ from app.db.models import (
     UserPreference,
     UserShortcut,
 )
-from app.db.models import (
-    Session as SessionRow,
-)
 from app.db.session import get_db
-from app.security.auth import get_current_user
+from app.security.auth import get_current_user, session_cookie_name
 from app.security.client_addr import request_client_address
+from app.security.csrf import get_csrf_token_from_request, session_csrf_token
 from app.security.oidc import any_sso_enabled, get_sso_provider
 from app.security.roles import attach_effective_role
+from app.security.sessions import session_row
 from app.services import sso_emails
 
 router = APIRouter()
@@ -55,11 +54,8 @@ def _password_features_enabled() -> bool:
 
 
 def _session_auth_method(request: Request, db: Session) -> str:
-    sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
-    if not sid:
-        return ""
-    row = db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
-    return str(getattr(row, "auth_method", "") or "") if row else ""
+    row = session_row(db, request.cookies.get(session_cookie_name()))
+    return row.auth_method if row else ""
 
 
 def _normalize_color(value: str | None) -> str | None:
@@ -252,7 +248,11 @@ def me(request: Request, db: Session = Depends(get_db)):
     pref = (
         db.query(UserPreference).filter(UserPreference.user_id == user.id).one_or_none()
     )
-    csrf_token = (request.cookies.get(settings.csrf_cookie_name) or "").strip() or None
+    # The session's own token; a browser signed in by a trusted proxy has no
+    # session and repeats its cookie.
+    csrf_token = (
+        session_csrf_token(request) or get_csrf_token_from_request(request) or None
+    )
 
     # Logout helpers consumed by the shared MOSP navbar.
     # If the current session is an OIDC session and an end-session endpoint is
@@ -306,7 +306,7 @@ def request_sso_email(
         ip=request_client_address(request),
         user=user,
         db=db,
-        session_id=request.cookies.get(settings.session_cookie_name, ""),
+        session_id=request.cookies.get(session_cookie_name(), ""),
     )
 
 
@@ -334,7 +334,7 @@ def remove_sso_email(
         ip=request_client_address(request),
         user=user,
         db=db,
-        session_id=request.cookies.get(settings.session_cookie_name, ""),
+        session_id=request.cookies.get(session_cookie_name(), ""),
     )
 
 

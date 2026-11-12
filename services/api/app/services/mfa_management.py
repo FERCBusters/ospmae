@@ -66,10 +66,20 @@ def _factors(db: Session, user):
     ]
 
 
+def _has_totp(user) -> bool:
+    """Whether the account holds a proven authenticator.
+
+    An authenticator is proven when its first code is confirmed, which also
+    turns the enrolment on; a secret on an account that is not enrolled was
+    never proven and counts for nothing.
+    """
+    return bool(user.mfa_enabled and user.mfa_totp_secret)
+
+
 def status(db: Session, user):
     return {
         "enabled": user.mfa_enabled,
-        "totp": bool(user.mfa_totp_secret),
+        "totp": _has_totp(user),
         "credentials": _factors(db, user),
         "recovery_codes_remaining": _recovery_state(db, user),
         "policy": settings.mfa_policy,
@@ -83,7 +93,7 @@ def state(db: Session, row, user):
         "stage": row.stage,
         "purpose": row.purpose,
         "username": user.username,
-        "totp": bool(user.mfa_totp_secret),
+        "totp": _has_totp(user),
         "required": mfa.required(db, user),
         "credentials": _factors(db, user),
         "recovery_codes_remaining": _recovery_state(db, user),
@@ -124,7 +134,7 @@ def verify_code(db: Session, row, user, payload: Code, *, ip: str | None):
 
 def start_totp(db: Session, row, user):
     mfa.management(row)
-    if user.mfa_totp_secret:
+    if _has_totp(user):
         raise HTTPException(
             409, "Remove the existing authenticator before adding another"
         )
@@ -148,13 +158,15 @@ def start_totp(db: Session, row, user):
 def confirm_totp(db: Session, row, user, payload: Code, *, ip: str | None):
     mfa.management(row)
     secret = row.data.get("totp_secret")
-    if not secret or user.mfa_totp_secret:
+    if not secret or _has_totp(user):
         raise HTTPException(400, "Start authenticator setup first")
-    # Assignment is rolled back on invalid proof; enabling happens after proof.
+    # The secret joins the account only with its proof: a wrong code leaves
+    # the account as it was, and the request's session discards the
+    # assignment made here for the check.
     user.mfa_totp_secret = secret
     user.mfa_totp_last_step = -1
     if not mfa.verify_code(db, user, payload.code.strip(), "totp"):
-        db.commit()
+        db.rollback()
         raise HTTPException(400, "Invalid authenticator code")
     return mfa.activate(db, row, user, ip=ip)
 
@@ -281,6 +293,11 @@ def registration_verify(db: Session, row, user, payload: Credential, *, ip: str 
     ):
         db.commit()
         raise HTTPException(409, "This credential is already registered")
+    if not user.mfa_enabled:
+        # Enrolment starts here, so the account holds no proven authenticator:
+        # a secret left on it was never confirmed and must not become a factor.
+        user.mfa_totp_secret = None
+        user.mfa_totp_last_step = -1
     db.add(
         MfaCredential(
             user_id=user.id,
@@ -296,12 +313,12 @@ def registration_verify(db: Session, row, user, payload: Credential, *, ip: str 
 def remove(db: Session, row, user, payload: Remove, *, ip: str | None):
     mfa.management(row)
     credentials = mfa.registered(db, user)
-    total = len(credentials) + int(bool(user.mfa_totp_secret))
+    total = len(credentials) + int(_has_totp(user))
     if total <= 1 and mfa.required(db, user):
         raise HTTPException(
             400, "Register a replacement before removing your last required factor"
         )
-    if payload.id == "totp" and user.mfa_totp_secret:
+    if payload.id == "totp" and _has_totp(user):
         user.mfa_totp_secret = None
         user.mfa_totp_last_step = -1
     else:

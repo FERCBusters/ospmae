@@ -58,6 +58,8 @@
       accountHref: "/account.html",
     },
 
+    // The name without a prefix: the design system reads __Host-ospmae_csrf
+    // first, which is how the API sets it where cookies are host-bound.
     csrf: { cookieName: "ospmae_csrf" },
 
     // Keep the navbar unified across apps; Account is provided by the shared UI.

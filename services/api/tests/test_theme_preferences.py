@@ -6,15 +6,15 @@ from tests.conftest import login, make_user
 
 
 def _signed_in(client, username: str, role: str = "viewer"):
-    make_user(username, "Password1!", role=role)
-    r = login(client, username, "Password1!")
+    make_user(username, "Test-passphrase-1!", role=role)
+    r = login(client, username, "Test-passphrase-1!")
     assert r.status_code == 200
-    return client.cookies.get("ospmae_csrf") or ""
+    return client.cookies.get("__Host-ospmae_csrf") or ""
 
 
 def test_me_payload_names_available_themes(client):
-    make_user("ThemeMe", "Password1!", role="viewer")
-    login(client, "ThemeMe", "Password1!")
+    make_user("ThemeMe", "Test-passphrase-1!", role="viewer")
+    login(client, "ThemeMe", "Test-passphrase-1!")
     body = client.get("/v1/me").json()
     themes = body.get("available_themes")
     assert themes and themes[0] == {"id": "ink", "name": "Ink"}

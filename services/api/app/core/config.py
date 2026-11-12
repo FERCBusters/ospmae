@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+import ipaddress
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -73,6 +75,19 @@ class Settings(BaseSettings):
         if value not in {"optional", "admins", "all"}:
             raise ValueError("MFA policy must be optional, admins or all")
         return value
+
+    # Characters a new local password needs, as in KEEN. NIST SP 800-63B-4
+    # asks for 15 where a password can be an account's only factor, and allows
+    # as few as eight where every account also uses a second factor.
+    password_min_length: int = Field(default=15, ge=8, le=128)
+
+    @model_validator(mode="after")
+    def _validate_password_min_length(self) -> "Settings":
+        if self.password_min_length < 15 and self.mfa_policy != "all":
+            raise ValueError(
+                "OSPMAE_PASSWORD_MIN_LENGTH below 15 requires OSPMAE_MFA_POLICY=all"
+            )
+        return self
 
     # ---------------------------------------------------------------------
     # Post-login redirect allowlist
@@ -162,6 +177,29 @@ class Settings(BaseSettings):
     # Optional trusted remote user (for Vouch / SSO proxy mode)
     trust_remote_user: bool = Field(default=False)
     remote_user_header_name: str = Field(default="REMOTE_USER")
+    # The authenticating proxies whose identity header OSPMAE accepts, as
+    # comma-separated addresses or CIDRs. A separate list from
+    # OSPMAE_TRUSTED_PROXY_CIDRS: a hop trusted to forward client addresses
+    # is not thereby trusted to name the signed-in account. Required while
+    # OSPMAE_TRUST_REMOTE_USER is on; there is no default.
+    remote_user_trusted_cidrs: str = Field(default="")
+
+    @field_validator("remote_user_trusted_cidrs")
+    @classmethod
+    def _validate_remote_user_proxies(cls, value: str) -> str:
+        for entry in value.split(","):
+            if entry.strip():
+                ipaddress.ip_network(entry.strip(), strict=False)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_remote_user_trust(self) -> "Settings":
+        if self.trust_remote_user and not self.remote_user_trusted_cidrs.strip(", "):
+            raise ValueError(
+                "OSPMAE_TRUST_REMOTE_USER requires OSPMAE_REMOTE_USER_TRUSTED_CIDRS: "
+                "the addresses of the proxies that authenticate users"
+            )
+        return self
 
     # ---------------------------------------------------------------------
     # SMTP (account security and notification emails)

@@ -22,7 +22,7 @@ def _signed_in(
     r = login(client, username, password)
     assert r.status_code == 200, r.text
     client.headers["X-Forwarded-For"] = "8.8.8.8"
-    return client, user, client.cookies.get("ospmae_csrf") or ""
+    return client, user, client.cookies.get("__Host-ospmae_csrf") or ""
 
 
 def _project(client, csrf: str, name: str = "alpha"):
@@ -80,11 +80,13 @@ def test_ownership_constrains_every_non_admin_role(client):
     from app.db.session import SessionLocal
     from app.security.permissions import seed_default_permissions
 
-    owner_c, owner, owner_csrf = _signed_in(client, "OwnB", password="Password1!")
+    owner_c, owner, owner_csrf = _signed_in(
+        client, "OwnB", password="Test-passphrase-1!"
+    )
     _project(client, owner_csrf, "beta")
 
     # A separate engineer account with a direct project.write grant.
-    make_user("OtherB", "Password1!", role="engineer")
+    make_user("OtherB", "Test-passphrase-1!", role="engineer")
     seed_db = SessionLocal()
     try:
         seed_default_permissions(seed_db)
@@ -105,9 +107,9 @@ def test_ownership_constrains_every_non_admin_role(client):
         seed_db.close()
 
     # Sign the engineer in on the same fixture client.
-    r = login(client, "OtherB", "Password1!")
+    r = login(client, "OtherB", "Test-passphrase-1!")
     assert r.status_code == 200
-    eng_csrf = client.cookies.get("ospmae_csrf") or ""
+    eng_csrf = client.cookies.get("__Host-ospmae_csrf") or ""
     r = client.put(
         "/v1/projects/1",
         json={"display_name": "hijacked"},
@@ -118,8 +120,8 @@ def test_ownership_constrains_every_non_admin_role(client):
     assert r.status_code == 403
 
     # The owner still manages their own project.
-    r = login(client, "OwnB", "Password1!")
-    owner_csrf = client.cookies.get("ospmae_csrf") or ""
+    r = login(client, "OwnB", "Test-passphrase-1!")
+    owner_csrf = client.cookies.get("__Host-ospmae_csrf") or ""
     r = client.put(
         "/v1/projects/1",
         json={"display_name": "renamed"},
@@ -129,9 +131,9 @@ def test_ownership_constrains_every_non_admin_role(client):
 
 
 def test_admin_bypasses_object_scope(client):
-    make_user("PlainU", "Password1!", role="viewer")
-    r = login(client, "PlainU", "Password1!")
-    plain_csrf = client.cookies.get("ospmae_csrf") or ""
+    make_user("PlainU", "Test-passphrase-1!", role="viewer")
+    r = login(client, "PlainU", "Test-passphrase-1!")
+    plain_csrf = client.cookies.get("__Host-ospmae_csrf") or ""
     r = client.post(
         "/v1/projects",
         json={"machine_name": "gamma", "display_name": "Gamma"},
@@ -139,10 +141,10 @@ def test_admin_bypasses_object_scope(client):
     )
     assert r.status_code in (403, 422), "viewer cannot create projects"
 
-    make_user("AdminBypass", "AdminPass1!", role="admin")
-    r = login(client, "AdminBypass", "AdminPass1!")
+    make_user("AdminBypass", "Admin-passphrase-1!", role="admin")
+    r = login(client, "AdminBypass", "Admin-passphrase-1!")
     assert r.status_code == 200
-    admin_csrf = client.cookies.get("ospmae_csrf") or ""
+    admin_csrf = client.cookies.get("__Host-ospmae_csrf") or ""
     r = client.post(
         "/v1/projects",
         json={"machine_name": "gamma", "display_name": "Gamma"},
@@ -169,14 +171,14 @@ def test_draft_versions_are_invisible_to_plain_viewers(client):
     assert r.status_code == 200, r.text
     version_id = r.json().get("id") or r.json().get("version_id")
 
-    make_user("DraftViewer", "RealPass1!", role="viewer")
-    r = login(client, "DraftViewer", "RealPass1!")
+    make_user("DraftViewer", "Real-passphrase-1!", role="viewer")
+    r = login(client, "DraftViewer", "Real-passphrase-1!")
     assert r.status_code == 200
     r = client.get(f"/v1/project-versions/{version_id}/changelog")
     assert r.status_code == 403, "drafts stay invisible outside owners/admin"
 
-    make_user("DraftAdmin2", "AdminPass1!", role="admin")
-    r = login(client, "DraftAdmin2", "AdminPass1!")
+    make_user("DraftAdmin2", "Admin-passphrase-1!", role="admin")
+    r = login(client, "DraftAdmin2", "Admin-passphrase-1!")
     assert r.status_code == 200
     assert client.get(f"/v1/project-versions/{version_id}/changelog").status_code == 200
 
@@ -196,16 +198,16 @@ def test_compare_excludes_drafts_for_viewers(client):
         headers={"X-CSRF-Token": csrf},
     )
     assert r.status_code == 200
-    make_user("CmpV", "ViewerPass1!", role="viewer")
-    r = login(client, "CmpV", "ViewerPass1!")
+    make_user("CmpV", "Viewer-passphrase-1!", role="viewer")
+    r = login(client, "CmpV", "Viewer-passphrase-1!")
     assert r.status_code == 200
     r = client.get("/v1/projects/compare?left_project_id=1&right_project_id=1")
     assert r.status_code in (200, 403, 404)
     if r.status_code == 200:
         assert "SECRET-DRAFT-BODY-42" not in r.text, "compare must not leak drafts"
 
-    make_user("CmpAdmin", "AdminPass1!", role="admin")
-    r = login(client, "CmpAdmin", "AdminPass1!")
+    make_user("CmpAdmin", "Admin-passphrase-1!", role="admin")
+    r = login(client, "CmpAdmin", "Admin-passphrase-1!")
     r = client.get("/v1/projects/compare?left_project_id=1&right_project_id=1")
     assert r.status_code == 200
     assert "1.0.0" in r.text

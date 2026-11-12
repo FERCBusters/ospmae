@@ -49,7 +49,7 @@ def _sign_in(provider, subject: str = "subject-1", claims: dict | None = None):
 
 
 def _with_linking_address(username: str, email: str = "person@corp.test") -> User:
-    user = make_user(username, "Linked-pass-1!", role="viewer")
+    user = make_user(username, "Synthetic-passphrase-4!", role="viewer")
     with SessionLocal() as s:
         s.add(UserSsoEmail(email=email, user_id=user.id))
         s.commit()
@@ -90,7 +90,9 @@ def test_linking_needs_both_proofs(client, claims, detail):
 def test_the_account_email_alone_does_not_link(client):
     """Only addresses proved by mailbox link; an administrator-set account
     email does not, as in KEEN."""
-    make_user("emailed", "Emailed-pass-1!", role="viewer", email="person@corp.test")
+    make_user(
+        "emailed", "Synthetic-passphrase-1!", role="viewer", email="person@corp.test"
+    )
     with pytest.raises(HTTPException) as refused:
         _sign_in(_provider())
     assert "No active OSPMAE account matches" in refused.value.detail
@@ -152,7 +154,7 @@ def test_a_deactivated_linked_account_is_refused(client):
 def test_a_refused_sso_sign_in_is_audited_against_its_account(client, monkeypatch):
     import app.api.routes.auth as auth_routes
 
-    user = make_user("refused-person", "Refused-pass-1!", role="viewer")
+    user = make_user("refused-person", "Synthetic-passphrase-7!", role="viewer")
 
     async def refuse(request, db, *, provider_key):
         request.state.sso_provider = provider_key
@@ -173,6 +175,7 @@ def test_a_trusted_header_names_an_existing_account_only(monkeypatch):
     from app.main import app
 
     monkeypatch.setattr(settings, "trust_remote_user", True)
+    monkeypatch.setattr(settings, "remote_user_trusted_cidrs", "127.0.0.1/32")
     c = TestClient(peer_wrapper(app), base_url="https://testserver")
     c.headers.update({"X-Test-Peer": "127.0.0.1", "REMOTE_USER": "newcomer"})
 
@@ -180,5 +183,5 @@ def test_a_trusted_header_names_an_existing_account_only(monkeypatch):
     with SessionLocal() as s:
         assert s.query(User).count() == 0
 
-    make_user("newcomer", "Newcomer-pass-1!", role="viewer")
+    make_user("newcomer", "Synthetic-passphrase-6!", role="viewer")
     assert c.get("/v1/me").json()["username"] == "newcomer"

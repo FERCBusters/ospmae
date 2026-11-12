@@ -6,7 +6,9 @@ OWASP device-cookie protocol:
 * A browser that has proved an account's password holds a device cookie for
   that account. Its attempts skip the per-address allowance and the account's
   throttle, and draw on their own allowance: five wrong passwords in a row
-  revoke the cookie, after which the browser counts as unrecognised.
+  revoke the cookie, after which the browser counts as unrecognised. Each
+  attempt is counted before its password is judged, so attempts sent together
+  share the five.
 * Attempts from any other browser draw on the account's throttle. The first
   five consecutive failures are free; each later attempt opens a wait, 30
   seconds doubling to an hour, before the next one is heard, and after 100
@@ -136,18 +138,22 @@ def _token_hash(token: str) -> str:
 
 def recognised_device(
     db: Session, token: str | None, key: str, now: datetime
-) -> LoginDevice | None:
-    """The device record a presented cookie holds for this username."""
+) -> int | None:
+    """The device record a presented cookie holds for this username.
+
+    Its id is returned, never the row: the record can be ended by another
+    request at any moment, and every later step names it by id.
+    """
 
     raw = (token or "").strip()
     if not raw or len(raw) > _DEVICE_TOKEN_MAX_LENGTH:
         return None
     return (
-        db.query(LoginDevice)
+        db.query(LoginDevice.id)
         .filter(LoginDevice.token_hash == _token_hash(raw))
         .filter(LoginDevice.name_key == key)
         .filter(LoginDevice.expires_at > now)
-        .one_or_none()
+        .scalar()
     )
 
 
@@ -196,18 +202,39 @@ def clear_throttle(db: Session, key: str) -> None:
     db.execute(delete(LoginThrottle).where(LoginThrottle.name_key == key))
 
 
-def device_failed(db: Session, device: LoginDevice) -> None:
-    """Count a wrong password from a recognised browser; the fifth in a row
-    revokes its recognition."""
+def reserve_device_attempt(db: Session, device: int) -> bool:
+    """Count one attempt from a recognised browser before its password is
+    judged, or end its recognition.
+
+    The count is taken first, in one statement, so attempts sent together
+    cannot each be judged against an allowance none of them has spent yet. A
+    correct password replaces the device record, which clears the count. The
+    attempt after the fifth wrong password in a row ends the browser's
+    recognition and is heard as any other browser's.
+    """
 
     failures = db.execute(
         update(LoginDevice)
-        .where(LoginDevice.id == device.id)
+        .where(LoginDevice.id == device)
         .values(failures=LoginDevice.failures + 1)
         .returning(LoginDevice.failures)
     ).scalar()
-    if failures is not None and failures >= DEVICE_FAILURES:
-        db.execute(delete(LoginDevice).where(LoginDevice.id == device.id))
+    admitted = failures is not None and failures <= DEVICE_FAILURES
+    if not admitted:
+        db.execute(delete(LoginDevice).where(LoginDevice.id == device))
+    db.commit()
+    return admitted
+
+
+def device_failed(db: Session, device: int) -> None:
+    """A wrong password from a recognised browser; the fifth in a row ends
+    its recognition. The attempt was counted when it was admitted."""
+
+    db.execute(
+        delete(LoginDevice).where(
+            LoginDevice.id == device, LoginDevice.failures >= DEVICE_FAILURES
+        )
+    )
     db.commit()
 
 
@@ -217,7 +244,7 @@ def issue_device(
     user_id: int,
     key: str,
     now: datetime,
-    replaces: LoginDevice | None = None,
+    replaces: int | None = None,
 ) -> str:
     """Record a recognised browser for this account and return its token.
 
@@ -226,7 +253,7 @@ def issue_device(
     """
 
     if replaces is not None:
-        db.execute(delete(LoginDevice).where(LoginDevice.id == replaces.id))
+        db.execute(delete(LoginDevice).where(LoginDevice.id == replaces))
     token = secrets.token_urlsafe(32)
     db.add(
         LoginDevice(

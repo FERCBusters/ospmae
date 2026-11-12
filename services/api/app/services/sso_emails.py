@@ -23,9 +23,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.email_address import single_mailbox
-from app.db.models import Session as SessionRow
 from app.db.models import SsoEmailChallenge, User, UserSsoEmail
-from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
+from app.security.rate_limit import take_rate_limit
+from app.security.sessions import session_row
 from app.services import security_notifications
 from app.services.mailer import queue_email, smtp_configured
 
@@ -75,11 +75,7 @@ def lock_user(db: Session, user: User) -> User:
 def recent_signin(db: Session, session_id: str, user: User) -> None:
     """The request's session belongs to the account and began in the last
     five minutes."""
-    row = (
-        db.query(SessionRow).filter(SessionRow.session_id == session_id).one_or_none()
-        if session_id
-        else None
-    )
+    row = session_row(db, session_id)
     age = (
         (_now() - row.created_at).total_seconds()
         if row is not None and row.created_at is not None
@@ -92,14 +88,12 @@ def recent_signin(db: Session, session_id: str, user: User) -> None:
         )
 
 
-def limit(db: Session, user: User) -> None:
-    key = f"sso_email:{user.id}"
-    allowed, _info = check_rate_limit(
-        db, key, max_attempts=REQUESTS_PER_HOUR, window_seconds=3600
+def limit(user: User) -> None:
+    allowed, _retry = take_rate_limit(
+        f"sso_email:{user.id}", max_attempts=REQUESTS_PER_HOUR, window_seconds=3600
     )
     if not allowed:
         raise HTTPException(429, "Too many verification requests; try again later")
-    record_rate_limit_attempt(db, key)
 
 
 def claimed_elsewhere(db: Session, user: User, email: str) -> bool:
@@ -145,7 +139,7 @@ def request_address(
             503, "An HTTPS OSPMAE_PUBLIC_BASE_URL is required for verification emails"
         )
     recent_signin(db, session_id, user)
-    limit(db, user)
+    limit(user)
     user = lock_user(db, user)
     email = clean_email(payload.email)
     own = db.get(UserSsoEmail, email)

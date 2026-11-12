@@ -36,7 +36,7 @@ def encryption_key(monkeypatch):
 
 
 def _csrf(client):
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf")}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf")}
 
 
 def _body(**overrides):

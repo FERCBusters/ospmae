@@ -236,7 +236,12 @@ def set_user_password_route(
     )
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    target.password_hash = get_password_hash(payload.new_password)
+    try:
+        target.password_hash = get_password_hash(
+            payload.new_password, username=target.username
+        )
+    except ValueError as problem:
+        raise HTTPException(status_code=400, detail=str(problem)) from problem
     target.mfa_version += 1
     db.query(LoginDevice).filter(LoginDevice.user_id == target.id).delete(
         synchronize_session=False

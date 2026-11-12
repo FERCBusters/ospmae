@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.db.models import Project, ProjectVersion
 from app.db.session import SessionLocal
 from app.depscan.scan import repository_url_for_release_link
+from app.security import outbound
 from app.tasks import release_feed as rf
 
 from tests.support import (
@@ -65,13 +66,21 @@ class Upstream:
     def __init__(self) -> None:
         self.routes: dict[str, object] = {}
         self.requests: list[httpx.Request] = []
+        # The address each request connected to.
+        self.connections: list[str] = []
 
     def serve(self, url: str, body: bytes = b"", status: int = 200, headers=None):
         self.routes[url] = httpx.Response(status, content=body, headers=headers or {})
 
     def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        answer = self.routes.get(str(request.url))
+        # The connection arrives at an address; the Host header names the
+        # site, as on a real server.
+        url = f"https://{request.headers['host']}{request.url.raw_path.decode()}"
+        self.connections.append(request.url.host)
+        self.requests.append(
+            httpx.Request(request.method, url, headers=request.headers)
+        )
+        answer = self.routes.get(url)
         if answer is None:
             return httpx.Response(404)
         if isinstance(answer, Exception):
@@ -84,12 +93,11 @@ class Upstream:
 @pytest.fixture()
 def upstream(monkeypatch):
     server = Upstream()
-    real_client = httpx.Client
-
-    def client(**kwargs):
-        return real_client(transport=httpx.MockTransport(server.handler), **kwargs)
-
-    monkeypatch.setattr(rf.httpx, "Client", client)
+    # The network is the one thing replaced: OSPMAE's own client, address
+    # validation and connection pinning all run.
+    monkeypatch.setattr(
+        outbound, "_connect", lambda: httpx.MockTransport(server.handler)
+    )
     # Every feed host resolves to one public address; the internal ones below
     # resolve where their names say.
     addresses = {"internal.example.org": "10.0.0.5"}
@@ -601,6 +609,147 @@ def test_feeds_on_internal_or_unknown_hosts_are_never_fetched(upstream, scans, o
         }
         assert feed_state(pid).release_rss_last_checked_at is not None
     assert upstream.requests == []
+
+
+def test_a_feed_is_fetched_from_the_address_it_was_validated_against(
+    upstream, scans, owner, monkeypatch
+):
+    """DNS rebinding: a feed host answers the validation with a public
+    address and the connection's own lookup with an internal one. The
+    connection goes to the validated address and the name is never looked up
+    a second time."""
+    client, _ = owner
+    pid = make_project(client, "feeder", release_rss_feed_url=FEED)["id"]
+    upstream.serve(FEED, atom(atom_entry("v1.0.0", 1)))
+    lookups: list[str] = []
+
+    def rebinding(host, *_args, **_kwargs):
+        lookups.append(host)
+        ip = "93.184.216.34" if len(lookups) == 1 else "10.0.0.5"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", rebinding)
+    assert rf.discover_project_release_feed.run(pid)["created"] == 1
+
+    assert lookups == ["feeds.example.org"]
+    assert upstream.connections == ["93.184.216.34"]
+    [request] = upstream.requests
+    # The site is still named to the server, and to TLS for its certificate.
+    assert request.headers["host"] == "feeds.example.org"
+    assert str(request.url) == FEED
+
+
+def test_a_pinned_request_names_its_host_to_tls(monkeypatch):
+    seen: list[httpx.Request] = []
+
+    def network(request):
+        seen.append(request)
+        return httpx.Response(200)
+
+    monkeypatch.setattr(outbound, "_connect", lambda: httpx.MockTransport(network))
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
+        ],
+    )
+    with outbound.public_client(timeout=5) as client:
+        assert client.get("https://feeds.example.org:8443/x?y=1").status_code == 200
+    [request] = seen
+    assert str(request.url) == "https://93.184.216.34:8443/x?y=1"
+    assert request.headers["host"] == "feeds.example.org:8443"
+    assert request.extensions["sni_hostname"] == "feeds.example.org"
+
+
+@pytest.mark.parametrize(
+    "addresses",
+    [
+        ["10.0.0.5"],
+        ["93.184.216.34", "10.0.0.5"],
+        ["127.0.0.1"],
+        ["169.254.169.254"],
+        ["100.64.0.1"],
+        ["::1"],
+        ["fd00::1"],
+        ["::ffff:10.0.0.5"],
+    ],
+    ids=[
+        "private",
+        "public-and-private",
+        "loopback",
+        "link-local",
+        "shared-address-space",
+        "ipv6-loopback",
+        "ipv6-unique-local",
+        "ipv4-mapped-private",
+    ],
+)
+def test_a_host_with_any_internal_address_is_never_connected_to(
+    upstream, addresses, monkeypatch
+):
+    def resolve(host, *_args, **_kwargs):
+        return [
+            (
+                socket.AF_INET6 if ":" in ip else socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                (ip, 0),
+            )
+            for ip in addresses
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    with outbound.public_client(timeout=5) as client:
+        with pytest.raises(ValueError, match="private"):
+            client.get(FEED)
+    assert upstream.connections == []
+
+
+def test_feeds_are_fetched_over_https_only(upstream, scans, owner):
+    client, _ = owner
+    refused = client.post(
+        "/v1/projects",
+        json={
+            "machine_name": "plain",
+            "display_name": "Plain",
+            "release_rss_feed_url": "http://feeds.example.org/releases.atom",
+        },
+        headers=csrf(client),
+    )
+    assert refused.status_code == 422
+    # A feed saved before, or a redirect, towards plain HTTP is not followed.
+    pid = make_project(client, "feeder", release_rss_feed_url=FEED)["id"]
+    upstream.serve(
+        FEED, status=302, headers={"Location": "http://feeds.example.org/plain.atom"}
+    )
+    with pytest.raises(ValueError, match="Only https URLs are fetched"):
+        rf.discover_project_release_feed.run(pid)
+    assert [str(r.url) for r in upstream.requests] == [FEED]
+    with SessionLocal() as s:
+        s.get(Project, pid).release_rss_feed_url = "http://feeds.example.org/old.atom"
+        s.commit()
+    with pytest.raises(ValueError, match="Only https URLs are fetched"):
+        rf.discover_project_release_feed.run(pid)
+    assert len(upstream.requests) == 1
+
+
+def test_a_feed_that_takes_too_long_is_abandoned(upstream, scans, owner, monkeypatch):
+    """A host that answers a little at a time is given a total, so it cannot
+    hold a worker and, with it, every other feed, scan and outgoing mail."""
+    client, _ = owner
+    pid = make_project(client, "feeder", release_rss_feed_url=FEED)["id"]
+    upstream.serve(FEED, atom(atom_entry("v1.0.0", 1)))
+    clock = iter([0.0, 1.0] + [rf.FEED_FETCH_SECONDS + 2.0] * 50)
+    monkeypatch.setattr(rf.time, "monotonic", lambda: next(clock))
+    with pytest.raises(ValueError, match="took too long"):
+        rf.discover_project_release_feed.run(pid)
+    assert versions(pid) == {}
+    # The poll records the attempt and carries on with the other feeds.
+    clock = iter([0.0, 1.0] + [rf.FEED_FETCH_SECONDS + 2.0] * 50)
+    assert rf.poll_release_feeds.run()["created"] == 0
+    assert feed_state(pid).release_rss_last_checked_at is not None
 
 
 def test_an_oversized_feed_is_abandoned(upstream, scans, owner, monkeypatch):

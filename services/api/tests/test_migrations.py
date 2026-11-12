@@ -653,3 +653,58 @@ def test_keen_account_model_retires_pending_sign_up_and_old_addresses() -> None:
         assert [tuple(row) for row in linking] == [("proved@x.test", viewer)]
     finally:
         _drop_chain()
+
+
+def test_stored_session_identifiers_and_unconfirmed_secrets_are_removed() -> None:
+    """0040: the sessions table holds digests from here on, so rows holding
+    identifiers go; and a secret on an account that is not enrolled, which
+    was never confirmed, goes too."""
+    cfg = _alembic_config()
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        command.upgrade(cfg, "0039_release_auto_publish")
+        with engine.begin() as conn:
+
+            def account(name: str, enrolled: bool, secret: str | None) -> int:
+                return conn.execute(
+                    text(
+                        "INSERT INTO users (username, password_hash, role, is_active, "
+                        "created_at, mfa_enabled, mfa_totp_secret, mfa_totp_last_step) "
+                        "VALUES (:u, 'x', 'viewer', true, now(), :e, :s, 7) RETURNING id"
+                    ),
+                    {"u": name, "e": enrolled, "s": secret},
+                ).scalar_one()
+
+            holder = account("enrolled", True, "confirmed-secret")
+            account("unconfirmed", False, "planted-secret")
+            account("plain", False, None)
+            conn.execute(
+                text(
+                    "INSERT INTO sessions (session_id, user_id, created_at, "
+                    "expires_at, auth_method, mfa_verified, mfa_version) VALUES "
+                    "('an-identifier-a-browser-holds', :u, now(), "
+                    "now() + interval '1 hour', 'local', false, 0)"
+                ),
+                {"u": holder},
+            )
+        command.upgrade(cfg, "head")
+        with engine.begin() as conn:
+            sessions = conn.execute(text("SELECT count(*) FROM sessions")).scalar_one()
+            secrets_kept = dict(
+                conn.execute(
+                    text(
+                        "SELECT username, coalesce(mfa_totp_secret, '') || ':' || "
+                        "mfa_totp_last_step FROM users"
+                    )
+                ).all()
+            )
+        assert sessions == 0
+        assert secrets_kept == {
+            "enrolled": "confirmed-secret:7",
+            "unconfirmed": ":-1",
+            "plain": ":7",
+        }
+    finally:
+        _drop_chain()

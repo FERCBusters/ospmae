@@ -125,6 +125,35 @@ test("signing out closes the socket and leaves through the server with the CSRF 
   assert.equal(page.app.getUserPreferences().theme, "ink");
 });
 
+test("the host-bound CSRF cookie is read ahead of one a sibling site could plant", async (t) => {
+  // A site under the same parent domain can set ospmae_csrf for the whole
+  // domain; a browser lets only this host set the __Host- name.
+  const page = await shell(t, {
+    setup(window) {
+      window.document.cookie = "ospmae_csrf=planted";
+      window.document.cookie = "__Host-ospmae_csrf=issued; Secure; Path=/";
+      window.document.cookie = "theme=ink";
+    },
+  });
+  assert.match(page.window.document.cookie, /ospmae_csrf=planted/);
+  await page.app.api("/v1/thing", { method: "POST", body: { a: 1 } });
+  await page.app.api("/v1/thing", { method: "DELETE" });
+  const [post, remove] = page.requestHeaders.slice(-2);
+  assert.equal(post["X-CSRF-Token"], "issued");
+  assert.equal(remove["X-CSRF-Token"], "issued");
+});
+
+test("the bare CSRF cookie serves an installation that sets no prefix", async (t) => {
+  const page = await shell(t, {
+    setup(window) {
+      window.document.cookie = "my_ospmae_csrf=other";
+      window.document.cookie = "ospmae_csrf=plain";
+    },
+  });
+  await page.app.api("/v1/thing", { method: "PUT", body: {} });
+  assert.equal(page.requestHeaders.at(-1)["X-CSRF-Token"], "plain");
+});
+
 test("unsafe requests carry the CSRF cookie in preference to the cached token", async (t) => {
   const page = await shell(t, {
     setup(window) {

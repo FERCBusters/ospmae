@@ -25,7 +25,7 @@ SOURCE = "https://github.com/example/repo"
 
 
 def csrf(client) -> dict[str, str]:
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf") or ""}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf") or ""}
 
 
 def signed_in(role: str = "admin", *, email: str | None = None):

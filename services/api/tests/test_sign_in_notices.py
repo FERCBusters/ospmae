@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import login, make_user, peer_wrapper
 
-PASSWORD = "Pass-notices1!"
+PASSWORD = "Pass-notices-long1!"
 SUBJECT = "OSPMAE security: Sign-in from an unfamiliar IP address"
 
 

@@ -10,7 +10,7 @@ from tests.conftest import auth_client, make_user
 
 
 def _h(c):
-    return {"X-CSRF-Token": c.cookies.get("ospmae_csrf") or ""}
+    return {"X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf") or ""}
 
 
 @pytest.fixture()
@@ -102,7 +102,7 @@ def test_group_bodies_are_typed(admin, body):
 
 
 def test_user_access_is_replaced_as_a_whole(admin):
-    user = make_user("accessed", "Secret-pass-1!", role="viewer")
+    user = make_user("accessed", "Secret-passphrase-1!", role="viewer")
     g1, g2 = _group(admin, "One"), _group(admin, "Two")
     p1, p2 = _permission_ids()
     url = f"/v1/admin/users/{user.id}/access"
@@ -143,7 +143,7 @@ def test_user_access_is_replaced_as_a_whole(admin):
     ],
 )
 def test_user_access_bodies_hold_integer_lists(admin, body):
-    user = make_user("typed", "Secret-pass-1!", role="viewer")
+    user = make_user("typed", "Secret-passphrase-1!", role="viewer")
     _group(admin, "One")
     response = admin.put(
         f"/v1/admin/users/{user.id}/access", json=body, headers=_h(admin)
@@ -154,7 +154,7 @@ def test_user_access_bodies_hold_integer_lists(admin, body):
 
 
 def test_unknown_groups_and_permissions_are_refused(admin):
-    user = make_user("unknowns", "Secret-pass-1!", role="viewer")
+    user = make_user("unknowns", "Secret-passphrase-1!", role="viewer")
     url = f"/v1/admin/users/{user.id}/access"
     assert (
         admin.put(url, json={"group_ids": [999999]}, headers=_h(admin)).status_code

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import secrets
 from datetime import datetime
 
 from fastapi import (
@@ -22,9 +21,6 @@ from app.db.models import (
     LoginDevice,
     User,
 )
-from app.db.models import (
-    Session as SessionRow,
-)
 from app.db.session import get_db
 from app.security import sign_in_throttle as throttle
 from app.security.audit import record_sign_in
@@ -35,26 +31,36 @@ from app.security.auth import (
     get_current_user,
     get_password_hash,
     get_user_by_username,
+    session_cookie_name,
     set_session_cookie,
 )
 from app.security.client_addr import request_allowance_key, request_client_address
-from app.security.csrf import clear_csrf_cookie, generate_csrf_token, set_csrf_cookie
+from app.security.csrf import (
+    clear_csrf_cookie,
+    get_csrf_token_from_request,
+    set_csrf_cookie,
+    tokens_match,
+)
 from app.security.oidc import (
     any_sso_enabled,
     build_authorize_redirect,
+    clear_sso_binding,
     configured_sso_providers,
     get_sso_provider,
     handle_callback,
     linked_account,
+    set_sso_binding,
     sso_attempt,
 )
 from app.security.passwords import verify_password
-from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
+from app.security.rate_limit import take_rate_limit
 from app.security.roles import attach_effective_role
 from app.security.sessions import (
     create_session,
+    csrf_token_for,
     delete_all_sessions_for_user,
     delete_session,
+    session_row,
 )
 from app.security.url_safety import safe_relative_route_path
 from app.services import security_notifications
@@ -133,17 +139,17 @@ def login(
         db, request.cookies.get(throttle.device_cookie_name()), key, now
     )
 
+    if device is not None and not throttle.reserve_device_attempt(db, device):
+        # Its allowance is spent, so it is heard as any other browser.
+        device = None
     if device is None:
-        address_id = request_allowance_key("login", request)
-        allowed, info = check_rate_limit(
-            db,
-            address_id,
+        allowed, retry = take_rate_limit(
+            request_allowance_key("login", request),
             max_attempts=throttle.ADDRESS_ATTEMPTS,
             window_seconds=throttle.ADDRESS_WINDOW_SECONDS,
         )
         if not allowed:
-            return _limited(int(info["retry_after"]) // 1000)
-        record_rate_limit_attempt(db, address_id)
+            return _limited(retry)
 
         admitted, retry = throttle.reserve_unrecognised_attempt(db, key, now)
         if not admitted:
@@ -245,7 +251,7 @@ def complete_local_login(
     request.state.audit_username = user.username
 
     eff = attach_effective_role(db, user)
-    csrf_token = generate_csrf_token()
+    csrf_token = csrf_token_for(sid)
 
     resp = JSONResponse(
         {
@@ -261,28 +267,39 @@ def complete_local_login(
     return resp
 
 
-def _limit_sso_start(db: Session, request: Request) -> bool:
+# Sign-in starts each address may make in SSO_START_WINDOW_SECONDS.
+SSO_STARTS_PER_ADDRESS = 20
+SSO_START_WINDOW_SECONDS = 300
+
+
+def _limit_sso_start(request: Request) -> bool:
     """A small per-address allowance on SSO starts: each writes a login-state
     row, so an unauthenticated flood must not churn the database."""
-    allowed, _info = check_rate_limit(
-        db,
+    allowed, _retry = take_rate_limit(
         request_allowance_key("sso_start", request),
-        max_attempts=20,
-        window_seconds=300,
+        max_attempts=SSO_STARTS_PER_ADDRESS,
+        window_seconds=SSO_START_WINDOW_SECONDS,
     )
     return allowed
+
+
+async def _start_sso(request: Request, db: Session, *, provider_key: str) -> Response:
+    if not _limit_sso_start(request):
+        raise HTTPException(status_code=429, detail="Too many requests")
+    url = await build_authorize_redirect(
+        request,
+        db,
+        next_url=request.query_params.get("next"),
+        provider_key=provider_key,
+    )
+    # The browser that starts a sign-in is the only one that can finish it.
+    return set_sso_binding(RedirectResponse(url, status_code=302), request)
 
 
 @router.get("/v1/auth/oidc/start")
 async def oidc_start(request: Request, db: Session = Depends(get_db)):
     # Stable URL alias for the generic OpenID Connect provider.
-    if not _limit_sso_start(db, request):
-        raise HTTPException(status_code=429, detail="Too many requests")
-    next_url = request.query_params.get("next")
-    url = await build_authorize_redirect(
-        request, db, next_url=next_url, provider_key="oidc"
-    )
-    return RedirectResponse(url, status_code=302)
+    return await _start_sso(request, db, provider_key="oidc")
 
 
 @router.get("/v1/auth/oidc/callback")
@@ -293,13 +310,7 @@ async def oidc_callback(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/v1/auth/sso/{provider_key}/start")
 async def sso_start(provider_key: str, request: Request, db: Session = Depends(get_db)):
-    if not _limit_sso_start(db, request):
-        raise HTTPException(status_code=429, detail="Too many requests")
-    next_url = request.query_params.get("next")
-    url = await build_authorize_redirect(
-        request, db, next_url=next_url, provider_key=provider_key
-    )
-    return RedirectResponse(url, status_code=302)
+    return await _start_sso(request, db, provider_key=provider_key)
 
 
 @router.get("/v1/auth/sso/{provider_key}/callback")
@@ -347,17 +358,17 @@ async def _complete_sso_callback(
     )
     if notice_queued:
         _kick_delivery()
-    csrf_token = generate_csrf_token()
 
     resp = RedirectResponse(next_url or "/index.html", status_code=302)
     set_session_cookie(resp, sid)
-    set_csrf_cookie(resp, csrf_token)
+    set_csrf_cookie(resp, csrf_token_for(sid))
+    clear_sso_binding(resp)
     return resp
 
 
 @router.post("/v1/auth/logout")
 def logout(request: Request, db: Session = Depends(get_db)) -> Response:
-    sid = request.cookies.get(settings.session_cookie_name) or ""
+    sid = request.cookies.get(session_cookie_name()) or ""
     if sid:
         delete_session(db, sid)
 
@@ -403,10 +414,9 @@ def change_password(
     # one address or by spreading attempts across addresses.
     for attempt_id, allowance in (
         (request_allowance_key("password_change", request), throttle.ADDRESS_ATTEMPTS),
-        (f"pw_change:{int(me.id)}", PASSWORD_CHANGES_PER_ACCOUNT),
+        (f"pw_change:{me.id}", PASSWORD_CHANGES_PER_ACCOUNT),
     ):
-        allowed, _info = check_rate_limit(
-            db,
+        allowed, _retry = take_rate_limit(
             attempt_id,
             max_attempts=allowance,
             window_seconds=throttle.ADDRESS_WINDOW_SECONDS,
@@ -416,20 +426,10 @@ def change_password(
                 status_code=429,
                 detail="Too many password change attempts. Please try again later.",
             )
-    for attempt_id in (
-        request_allowance_key("password_change", request),
-        f"pw_change:{int(me.id)}",
-    ):
-        record_rate_limit_attempt(db, attempt_id)
 
     # Only allow password change for local sessions.
-    sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
-    row = (
-        db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
-        if sid
-        else None
-    )
-    if row and str(getattr(row, "auth_method", "") or "") != "local":
+    row = session_row(db, request.cookies.get(session_cookie_name()))
+    if row and row.auth_method != "local":
         raise HTTPException(
             status_code=400,
             detail="Password changes are not available for SSO sessions",
@@ -450,7 +450,12 @@ def change_password(
     if not verify_password(payload.current_password, user_row.password_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    user_row.password_hash = get_password_hash(payload.new_password)
+    try:
+        user_row.password_hash = get_password_hash(
+            payload.new_password, username=user_row.username
+        )
+    except ValueError as problem:
+        raise HTTPException(status_code=400, detail=str(problem)) from problem
     # As in KEEN, the new password ends every local session of the account,
     # this one included, and every browser's recognition: each signs in again.
     user_row.mfa_version += 1
@@ -499,13 +504,14 @@ def logout_redirect(request: Request, db: Session = Depends(get_db)) -> Response
       provider.
     """
 
-    sid = (request.cookies.get(settings.session_cookie_name) or "").strip()
-    csrf_cookie = (request.cookies.get(settings.csrf_cookie_name) or "").strip()
+    sid = (request.cookies.get(session_cookie_name()) or "").strip()
+    supplied = (request.query_params.get("csrf") or "").strip()
+    csrf_cookie = get_csrf_token_from_request(request)
+    # The parameter repeats the cookie and is the session's own token.
     csrf_ok = bool(
         csrf_cookie
-        and secrets.compare_digest(
-            (request.query_params.get("csrf") or "").strip(), csrf_cookie
-        )
+        and tokens_match(supplied, csrf_cookie)
+        and (not sid or tokens_match(supplied, csrf_token_for(sid)))
     )
     if sid and not csrf_ok:
         # Leave authentication state untouched and land somewhere harmless.
@@ -515,10 +521,10 @@ def logout_redirect(request: Request, db: Session = Depends(get_db)) -> Response
     oidc_id_token = ""
 
     if sid:
-        row = db.query(SessionRow).filter(SessionRow.session_id == sid).one_or_none()
+        row = session_row(db, sid)
         if row:
-            auth_method = str(getattr(row, "auth_method", "") or "")
-            oidc_id_token = str(getattr(row, "oidc_id_token", "") or "")
+            auth_method = row.auth_method
+            oidc_id_token = row.oidc_id_token or ""
             try:
                 db.delete(row)
                 db.commit()

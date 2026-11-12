@@ -1,100 +1,51 @@
+"""Database-backed allowances: so many attempts per identifier in a window.
+
+An attempt is counted when it is admitted, in one step, so attempts made
+together cannot share one opening, and it stays counted whatever the caller's
+own transaction goes on to do: the ledger has its own short transaction, and
+takes for one identifier are serialised by an advisory lock held for it.
+"""
+
 from __future__ import annotations
 
-import time
-from typing import Any
+import math
+from datetime import datetime, timedelta
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
 
 from app.db.models import RateLimitEntry
+from app.db.session import SessionLocal
 
 
-def _now() -> float:
-    return time.time()
+def take_rate_limit(
+    identifier: str, *, max_attempts: int, window_seconds: int
+) -> tuple[bool, int]:
+    """Admit and count one attempt, or refuse it.
 
-
-def check_rate_limit(
-    db: Session,
-    identifier: str,
-    max_attempts: int = 5,
-    window_seconds: int = 300,
-) -> tuple[bool, dict[str, Any]]:
-    """Check if an identifier has exceeded rate limit.
-
-    Args:
-        db: Database session
-        identifier: Unique identifier (e.g., IP address, username)
-        max_attempts: Maximum attempts allowed in window
-        window_seconds: Time window in seconds
-
-    Returns:
-        Tuple of (allowed, info_dict)
-        info_dict contains: remaining, reset_at, retry_after
+    Returns ``(allowed, retry_after_seconds)``; the wait is zero for an
+    admitted attempt, and otherwise lasts until the oldest counted attempt
+    leaves the window.
     """
-    from datetime import datetime, timedelta
 
-    # Clean up old entries
-    cutoff = datetime.utcnow() - timedelta(seconds=window_seconds)
-    db.query(RateLimitEntry).filter(
-        RateLimitEntry.identifier == identifier, RateLimitEntry.timestamp < cutoff
-    ).delete(synchronize_session=False)
-
-    # Count attempts in window
-    count = (
-        db.query(RateLimitEntry)
-        .filter(
-            RateLimitEntry.identifier == identifier, RateLimitEntry.timestamp >= cutoff
+    with SessionLocal() as ledger:
+        ledger.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(identifier, 0)))
         )
-        .count()
-    )
-
-    remaining = max(0, max_attempts - count)
-    reset_at = datetime.utcnow() + timedelta(seconds=window_seconds)
-
-    if count >= max_attempts:
-        oldest = (
-            db.query(RateLimitEntry)
-            .filter(
+        now = datetime.utcnow()
+        cutoff = now - timedelta(seconds=window_seconds)
+        ledger.query(RateLimitEntry).filter(
+            RateLimitEntry.identifier == identifier, RateLimitEntry.timestamp < cutoff
+        ).delete(synchronize_session=False)
+        count, oldest = ledger.execute(
+            select(func.count(), func.min(RateLimitEntry.timestamp)).where(
                 RateLimitEntry.identifier == identifier,
                 RateLimitEntry.timestamp >= cutoff,
             )
-            .order_by(RateLimitEntry.timestamp.asc())
-            .first()
-        )
-
-        retry_after = window_seconds
-        if oldest is not None:
-            retry_after = int(
-                (
-                    oldest.timestamp
-                    + timedelta(seconds=window_seconds)
-                    - datetime.utcnow()
-                ).total_seconds()
-                * 1000
-            )
-        retry_after = max(1, int(retry_after))
-
-        return False, {
-            "remaining": 0,
-            "reset_at": reset_at.isoformat(),
-            "retry_after": retry_after,
-            "limit": max_attempts,
-        }
-
-    return True, {
-        "remaining": remaining,
-        "reset_at": reset_at.isoformat(),
-        "retry_after": 0,
-        "limit": max_attempts,
-    }
-
-
-def record_rate_limit_attempt(db: Session, identifier: str) -> None:
-    """Record a rate limit attempt for an identifier."""
-    from datetime import datetime
-
-    row = RateLimitEntry(
-        identifier=identifier,
-        timestamp=datetime.utcnow(),
-    )
-    db.add(row)
-    db.commit()
+        ).one()
+        if count >= max_attempts:
+            ledger.commit()
+            wait = (oldest + timedelta(seconds=window_seconds) - now).total_seconds()
+            return False, max(1, math.ceil(wait))
+        ledger.add(RateLimitEntry(identifier=identifier, timestamp=now))
+        ledger.commit()
+        return True, 0

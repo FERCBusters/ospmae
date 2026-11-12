@@ -12,7 +12,14 @@ from app.core.config import settings
 from app.core.email_address import single_mailbox
 from app.db.models import User
 from app.db.session import get_db
-from app.security.passwords import hash_password, verify_password
+from app.security.client_addr import remote_user_peer_trusted
+from app.security.csrf import host_bound_cookie_name
+from app.security.passwords import (
+    derive_password_hash,
+    hash_password,
+    needs_rehash,
+    verify_password,
+)
 from app.security.roles import (
     ROLE_ADMIN,
     ROLE_ARCHITECT,
@@ -27,7 +34,7 @@ from app.security.roles import (
     canonicalize_role,
 )
 from app.security.sessions import (
-    delete_session,
+    csrf_token_for,
     get_session,
     refresh_session,
 )
@@ -47,11 +54,12 @@ ALLOWED_USER_ROLES = {
 # Every rejected sign-in pays one full password verification against this
 # hash, whether or not the username names an account, so response timing
 # cannot tell an attacker whether a username exists (or is active).
-_DUMMY_PASSWORD_HASH = hash_password("ospmae-timing-equaliser-0" * 4)
+_DUMMY_PASSWORD_HASH = derive_password_hash("ospmae-timing-equaliser-0" * 4)
 
 
-def get_password_hash(password: str) -> str:
-    return hash_password(password)
+def get_password_hash(password: str, *, username: str = "") -> str:
+    """Hash a new password for ``username`` under the rules for new passwords."""
+    return hash_password(password, username=username)
 
 
 def get_user_by_username(db: Session, username: str) -> User | None:
@@ -79,7 +87,30 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
         return None
     if not verify_password(password, user.password_hash):
         return None
+    if needs_rehash(user.password_hash):
+        _raise_work_factor(db, user, password)
     return user
+
+
+def _raise_work_factor(db: Session, user: User, password: str) -> None:
+    """Store the proven password at the current work factor, as KEEN does.
+
+    The hash is replaced only if it is still the one that was verified, so a
+    password changed meanwhile is never undone. A pending second-factor
+    ceremony made against the previous hash ends with it.
+    """
+    verified = user.password_hash
+    replaced = (
+        db.query(User)
+        .filter(User.id == user.id, User.password_hash == verified)
+        .update(
+            {User.password_hash: derive_password_hash(password)},
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    if replaced:
+        db.refresh(user)
 
 
 def _remote_user_from_headers(
@@ -94,12 +125,15 @@ def _remote_user_from_headers(
     alone, and that the proxy sets (or clears) the header on every route.
     """
 
-    if not bool(settings.trust_remote_user):
+    if not settings.trust_remote_user:
         return None
 
-    from app.security.client_addr import socket_peer_trusted
-
-    if not socket_peer_trusted(socket_peer):
+    # The identity header is believed only from the authenticating proxies
+    # named for it (OSPMAE_REMOTE_USER_TRUSTED_CIDRS). Proxies trusted to
+    # forward client addresses are a separate list: the Compose default there
+    # includes the network gateway, which every process on the Docker host
+    # connects through.
+    if not remote_user_peer_trusted(socket_peer):
         return None
 
     configured = (settings.remote_user_header_name or "").strip() or "REMOTE_USER"
@@ -136,7 +170,7 @@ def get_current_user_from_headers_cookies(
             return user
         return None
 
-    session_cookie = cookies.get(settings.session_cookie_name)
+    session_cookie = cookies.get(session_cookie_name())
     if not session_cookie:
         return None
 
@@ -157,10 +191,14 @@ def get_current_user_from_headers_cookies(
     from app.security.mfa import local_session_allowed
 
     if not local_session_allowed(db, user, session_row):
-        delete_session(db, session_row.session_id)
+        db.delete(session_row)
+        db.commit()
         return None
 
     refresh_session(db, session_row, settings.session_ttl_seconds)
+    # The token this session's writes must carry (security/csrf.py), held on
+    # the instance beside effective_role.
+    setattr(user, "session_csrf", csrf_token_for(session_cookie.strip()))
     return user
 
 
@@ -192,28 +230,37 @@ def require_admin(
     return user
 
 
+def session_cookie_name() -> str:
+    """The session cookie's name: host-bound (``__Host-``) where cookies are
+    Secure and no cookie domain is set, as the device cookie is."""
+
+    return host_bound_cookie_name(settings.session_cookie_name)
+
+
 def set_session_cookie(response: Response, session_id: str) -> None:
     samesite = (settings.cookie_samesite or "lax").lower()
     if samesite not in ("lax", "strict", "none"):
         samesite = "lax"
 
     response.set_cookie(
-        key=settings.session_cookie_name,
+        key=session_cookie_name(),
         value=session_id,
         httponly=True,
-        secure=bool(settings.cookie_secure),
-        samesite=samesite,  # type: ignore[arg-type]
-        domain=(settings.cookie_domain or "").strip() or None,
+        secure=settings.cookie_secure,
+        samesite=samesite,  # type: ignore[arg-type]  # validated above
+        domain=settings.cookie_domain.strip() or None,
         path="/",
-        max_age=int(settings.session_ttl_seconds),
+        max_age=settings.session_ttl_seconds,
     )
 
 
 def clear_session_cookie(response: Response) -> None:
+    # Browsers refuse a __Host- cookie, even an expiring one, without Secure.
     response.delete_cookie(
-        key=settings.session_cookie_name,
-        domain=(settings.cookie_domain or "").strip() or None,
+        key=session_cookie_name(),
+        domain=settings.cookie_domain.strip() or None,
         path="/",
+        secure=settings.cookie_secure,
     )
 
 
@@ -246,9 +293,6 @@ def create_user(
             raise ValueError("Invalid email address")
         if get_user_by_email(db, email_norm):
             raise ValueError("email already exists")
-    if not password or len(password) < 8:
-        raise ValueError("password must be at least 8 chars")
-
     normalized = canonicalize_role(role) if (role or "").strip() else ROLE_VIEWER
     if normalized not in ALLOWED_USER_ROLES:
         raise ValueError(
@@ -258,7 +302,7 @@ def create_user(
     u = User(
         username=uname,
         email=email_norm,
-        password_hash=get_password_hash(password),
+        password_hash=get_password_hash(password, username=uname),
         role=normalized,
         is_active=bool(is_active),
     )

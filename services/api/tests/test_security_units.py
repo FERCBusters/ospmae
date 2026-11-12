@@ -87,7 +87,7 @@ def test_normalize_next_helper():
 def test_pop_login_state_single_use(db):
     s = SessionLocal()
     try:
-        row = create_login_state(s, next_url="/index.html")
+        row = create_login_state(s, next_url="/index.html", state="s" * 64)
         first = pop_login_state(s, state=row.state)
         assert first is not None
         assert pop_login_state(s, state=row.state) is None
@@ -130,7 +130,9 @@ def test_roles_and_canonicalization(db):
     try:
         from app.security.auth import create_user
 
-        u = create_user(s, username="RoleU", password="Password1!", role="admin")
+        u = create_user(
+            s, username="RoleU", password="Test-passphrase-1!", role="admin"
+        )
         assert attach_effective_role(s, u) == ROLE_ADMIN
         u.role = "inherit"
         assert attach_effective_role(s, u) == ROLE_VIEWER

@@ -10,11 +10,19 @@
     $("message").className =
       "alert " + (error ? "alert-danger" : "alert-success");
   }
+  function cookie(name) {
+    const match = document.cookie.match(
+      new RegExp("(?:^|;\\s*)" + name + "=([^;]*)"),
+    );
+    return match ? decodeURIComponent(match[1]) : "";
+  }
   function csrfHeader() {
     // The manage ceremony runs with the session cookie attached, so every
-    // unsafe write carries the CSRF header like any other page request.
-    const match = document.cookie.match(/(?:^|;\s*)ospmae_csrf=([^;]*)/);
-    return match ? { "X-CSRF-Token": decodeURIComponent(match[1]) } : {};
+    // unsafe write carries the CSRF header like any other page request. The
+    // host-bound cookie (__Host-ospmae_csrf) is read first, as in app.js: a
+    // site on a sibling subdomain cannot set that name.
+    const token = cookie("__Host-ospmae_csrf") || cookie("ospmae_csrf");
+    return token ? { "X-CSRF-Token": token } : {};
   }
   async function post(path, body = {}) {
     const response = await fetch("/v1/auth/mfa/" + path, {

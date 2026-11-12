@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 from app.depscan.scan import validate_git_ref_name, validate_repo_url
+from app.security.passwords import MAX_PASSWORD_LENGTH
 from app.security.regex_shape import MAX_PATTERN_CHARS, compile_supplied_pattern
 from app.security.repo_credentials import (
     MAX_TOKEN_CHARS,
@@ -14,7 +15,7 @@ from app.security.repo_credentials import (
     clean_token,
     clean_username,
 )
-from app.security.url_safety import validate_public_http_url, validate_safe_href
+from app.security.url_safety import validate_public_https_url, validate_safe_href
 from app.services.branch_tracking import (
     MAX_POLL_INTERVAL_HOURS,
     MIN_POLL_INTERVAL_HOURS,
@@ -56,23 +57,23 @@ def _clean_tag_list(values: list[str]) -> list[str]:
 
 class LoginPayload(BaseModel):
     username: str = Field(min_length=1, max_length=160)
-    password: str = Field(min_length=8, max_length=200)
+    password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
 
 
 class ChangePasswordPayload(BaseModel):
-    current_password: str = Field(min_length=8, max_length=200)
-    new_password: str = Field(min_length=8, max_length=200)
-    confirm_password: str = Field(min_length=8, max_length=200)
+    current_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
+    confirm_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
 
 
 class AdminSetPasswordPayload(BaseModel):
-    new_password: str = Field(min_length=8, max_length=200)
+    new_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
 
 
 class AdminUserCreatePayload(BaseModel):
     username: str = Field(min_length=1, max_length=160)
     email: str | None = Field(default=None, max_length=255)
-    password: str = Field(min_length=8, max_length=200)
+    password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
     role: str = Field(min_length=1, max_length=50)
 
 
@@ -319,8 +320,9 @@ class ProjectCreatePayload(BaseModel):
         s = str(v or "").strip()
         if not s:
             return None
-        # This URL is fetched server-side by the release feed poller; keep it public.
-        return validate_public_http_url(s)
+        # This URL is fetched server-side by the release feed poller: a public
+        # HTTPS address.
+        return validate_public_https_url(s)
 
     @field_validator("tracked_repo_url", mode="before")
     @classmethod

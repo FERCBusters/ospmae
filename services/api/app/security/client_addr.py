@@ -5,14 +5,7 @@ import ipaddress
 from app.core.config import settings
 
 
-def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
-    # Unset falls back to loopback only: membership of a private network is
-    # privilege, and nobody attains proxy trust by default. Compose sets the
-    # compose network explicitly; every other deployment configures its own
-    # proxies.
-    raw = (
-        getattr(settings, "trusted_proxy_cidrs", "") or ""
-    ).strip() or "127.0.0.1,::1"
+def _networks(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     for item in raw.split(","):
         item = item.strip()
@@ -23,6 +16,14 @@ def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
         except ValueError:
             continue
     return networks
+
+
+def _trusted_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    # Unset falls back to loopback only: membership of a private network is
+    # privilege, and nobody attains proxy trust by default. Compose sets the
+    # compose network explicitly; every other deployment configures its own
+    # proxies.
+    return _networks(settings.trusted_proxy_cidrs.strip() or "127.0.0.1,::1")
 
 
 def _as_ip(value: str | None) -> str | None:
@@ -98,13 +99,26 @@ def socket_peer_trusted(socket_peer: str | None) -> bool:
     return _in_trusted(socket_peer, _trusted_networks())
 
 
+def remote_user_peer_trusted(socket_peer: str | None) -> bool:
+    """Whether the socket peer is an authenticating proxy whose identity
+    header OSPMAE accepts (OSPMAE_REMOTE_USER_TRUSTED_CIDRS).
+
+    The list has no default: a hop trusted to forward client addresses is
+    not thereby trusted to name the signed-in account.
+    """
+
+    return _in_trusted(socket_peer, _networks(settings.remote_user_trusted_cidrs))
+
+
 def request_client_address(request) -> str | None:
     """The client address of an HTTP request or WebSocket handshake."""
 
     client = getattr(request, "client", None)
-    return public_client_address(
-        getattr(client, "host", None), request.headers.get("x-forwarded-for")
-    )
+    # Repeated field lines form one list in order (RFC 9110 section 5.3): a
+    # proxy that appends its own line after the client's is still the
+    # nearest hop.
+    forwarded = ",".join(request.headers.getlist("x-forwarded-for"))
+    return public_client_address(getattr(client, "host", None), forwarded)
 
 
 def request_allowance_key(prefix: str, request) -> str:

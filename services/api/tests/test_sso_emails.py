@@ -28,7 +28,7 @@ def _named_sender(monkeypatch):
 
 
 def _csrf(client) -> dict[str, str]:
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf") or ""}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf") or ""}
 
 
 def _account(email: str = "owner@x.test"):
@@ -140,7 +140,7 @@ def test_an_account_keeps_at_most_ten_addresses(outbox):
 
 
 def test_another_accounts_address_gets_the_same_answer_and_no_mail(outbox):
-    make_user("holder", "Holder-pass-1!", role="viewer", email="taken@x.test")
+    make_user("holder", "Synthetic-passphrase-2!", role="viewer", email="taken@x.test")
     client, user = _account()
 
     assert _request(client, "taken@x.test").json() == {"ok": True}
@@ -199,7 +199,7 @@ def test_an_address_claimed_meanwhile_is_refused(outbox):
     client, user = _account()
     _request(client, "work@x.test")
     token = _link(outbox, "work@x.test")
-    make_user("late", "Late-pass-123!", role="viewer", email="work@x.test")
+    make_user("late", "Synthetic-passphrase-3!", role="viewer", email="work@x.test")
 
     response = _confirm(client, token)
     assert response.status_code == 409
@@ -242,7 +242,7 @@ def test_account_mail_goes_to_the_account_email_only(outbox, db):
     """Proved linking addresses are never mailed."""
     from app.services.notification_recipients import notification_email_for_user
 
-    user = make_user("mailee", "Mailee-pass-1!", role="viewer")
+    user = make_user("mailee", "Synthetic-passphrase-5!", role="viewer")
     with SessionLocal() as s:
         s.add(UserSsoEmail(email="linked@x.test", user_id=user.id))
         s.commit()

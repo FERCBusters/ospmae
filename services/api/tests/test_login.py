@@ -9,6 +9,7 @@ refused attempt never reaches password verification.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import pytest
@@ -17,12 +18,12 @@ from app.db.models import Session as SessionRow
 from app.db.session import SessionLocal
 from app.security import sign_in_throttle as throttle
 from app.security.auth import authenticate_user
-from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
+from app.security.rate_limit import take_rate_limit
 from fastapi.testclient import TestClient
 
 from tests.conftest import auth_client, make_user, peer_wrapper
 
-PASSWORD = "Password1!"
+PASSWORD = "Test-passphrase-1!"
 WRONG = "BadPass1!"
 
 
@@ -161,6 +162,71 @@ def test_a_recognised_browser_loses_recognition_after_five_wrong_passwords(clien
     # The browser now counts as unrecognised, and draws on the account.
     assert attempt(owner, "Gina", WRONG).status_code == 401
     assert _throttle_row("Gina").failures == 1
+
+
+def test_a_recognised_attempt_is_counted_before_its_password_is_judged(
+    client, monkeypatch
+):
+    """Counting only after a wrong password would let attempts sent together
+    all be judged against an allowance none of them has spent yet."""
+    import app.security.auth as auth_mod
+
+    make_user("Gail", PASSWORD, role="viewer")
+    owner = browser("8.8.8.8")
+    assert attempt(owner, "Gail", PASSWORD).status_code == 200
+    counted: list[int] = []
+    real = auth_mod.verify_password
+
+    def judging(password, hashed):
+        with SessionLocal() as s:
+            counted.append(s.query(LoginDevice.failures).scalar())
+        return real(password, hashed)
+
+    monkeypatch.setattr(auth_mod, "verify_password", judging)
+    assert attempt(owner, "Gail", WRONG).status_code == 401
+    assert attempt(owner, "Gail", WRONG).status_code == 401
+    assert counted == [1, 2]
+    # A correct password is counted too, and then starts the browser afresh.
+    assert attempt(owner, "Gail", PASSWORD).status_code == 200
+    assert counted == [1, 2, 3]
+    with SessionLocal() as s:
+        assert s.query(LoginDevice.failures).scalar() == 0
+
+
+def test_attempts_sent_together_share_a_recognised_browsers_allowance(
+    client, verifications
+):
+    """Thirty wrong passwords at once from a browser holding a device cookie
+    (a stolen one, say): the cookie is good for five, and the rest are heard
+    as any other browser's, on the account's own throttle."""
+    make_user("Hope", PASSWORD, role="viewer")
+    owner = browser("8.8.8.8")
+    assert attempt(owner, "Hope", PASSWORD).status_code == 200
+    cookie = owner.cookies.get(throttle.device_cookie_name())
+    verifications.clear()
+    gate = threading.Barrier(30)
+
+    def guess(n):
+        thief = browser("9.9.7.1")
+        thief.cookies.set(
+            throttle.device_cookie_name(), cookie, domain="testserver.local"
+        )
+        gate.wait()
+        return attempt(thief, "Hope", f"{WRONG}-{n}").status_code
+
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        answers = list(pool.map(guess, range(30)))
+
+    # Five on the cookie, then the account's own throttle: its five free
+    # failures and the attempt that opens the first wait. Everything else is
+    # held without its password being judged.
+    heard_as_unrecognised = throttle.FREE_FAILURES + 1
+    assert len(verifications) == throttle.DEVICE_FAILURES + heard_as_unrecognised
+    assert answers.count(401) == len(verifications)
+    assert answers.count(429) == 30 - len(verifications)
+    with SessionLocal() as s:
+        assert s.query(LoginDevice).count() == 0
+    assert _throttle_row("Hope").failures == heard_as_unrecognised
 
 
 def test_device_cookie_shape_and_rotation(client):
@@ -313,8 +379,8 @@ def test_an_administrators_reset_clears_the_throttle_and_ends_sessions_and_devic
     admin, _ = auth_client("kim-admin", PASSWORD, role="admin")
     reset = admin.post(
         f"/v1/admin/users/{kim}/password",
-        json={"new_password": "NewPassword2!"},
-        headers={"X-CSRF-Token": admin.cookies.get("ospmae_csrf")},
+        json={"new_password": "New-passphrase-two-2!"},
+        headers={"X-CSRF-Token": admin.cookies.get("__Host-ospmae_csrf")},
     )
     assert reset.status_code == 200, reset.text
     assert owner.get("/v1/auth/check").status_code == 401
@@ -322,7 +388,9 @@ def test_an_administrators_reset_clears_the_throttle_and_ends_sessions_and_devic
         assert s.query(LoginDevice).filter_by(user_id=kim).count() == 0
     assert _throttle_row("Kim") is None
     # Any browser now signs in with the new password straight away.
-    assert attempt(browser("9.4.1.2"), "Kim", "NewPassword2!").status_code == 200
+    assert (
+        attempt(browser("9.4.1.2"), "Kim", "New-passphrase-two-2!").status_code == 200
+    )
 
 
 def test_password_change_ends_every_session_and_every_recognition(client):
@@ -338,16 +406,16 @@ def test_password_change_ends_every_session_and_every_recognition(client):
     lee = user_id("Lee")
     with SessionLocal() as s:
         other_sid = create_session(s, user_id=lee, ttl_seconds=600)
-    elsewhere.cookies.set("ospmae_session", other_sid, domain="testserver.local")
+    elsewhere.cookies.set("__Host-ospmae_session", other_sid, domain="testserver.local")
     assert elsewhere.get("/v1/auth/check").status_code == 204
     changed = here.post(
         "/v1/auth/change-password",
         json={
             "current_password": PASSWORD,
-            "new_password": "NewPassword2!",
-            "confirm_password": "NewPassword2!",
+            "new_password": "New-passphrase-two-2!",
+            "confirm_password": "New-passphrase-two-2!",
         },
-        headers={"X-CSRF-Token": here.cookies.get("ospmae_csrf")},
+        headers={"X-CSRF-Token": here.cookies.get("__Host-ospmae_csrf")},
     )
     assert changed.status_code == 204, changed.text
     with SessionLocal() as s:
@@ -487,22 +555,41 @@ def test_the_ledger_stores_digests_never_names_or_passwords(client, db):
 # ------------------------------------------------------------ rate limiter --
 
 
-def test_check_rate_limit_counts_and_blocks(db):
-    for _ in range(5):
-        record_rate_limit_attempt(db, "unit")
-    allowed, info = check_rate_limit(db, "unit", max_attempts=5, window_seconds=300)
-    assert allowed is False
-    assert info["limit"] == 5
-    assert 1 <= info["retry_after"] <= 300_000
+def test_an_allowance_admits_its_attempts_and_then_says_how_long_to_wait(db):
+    taken = [
+        take_rate_limit("unit", max_attempts=5, window_seconds=300) for _ in range(5)
+    ]
+    assert taken == [(True, 0)] * 5
+    allowed, retry = take_rate_limit("unit", max_attempts=5, window_seconds=300)
+    assert allowed is False and 1 <= retry <= 300
+    # A refused attempt is not counted, and other identifiers are untouched.
+    assert db.query(RateLimitEntry).filter_by(identifier="unit").count() == 5
+    assert take_rate_limit("other", max_attempts=5, window_seconds=300) == (True, 0)
 
 
-def test_check_rate_limit_prunes_expired(db):
+def test_attempts_outside_the_window_are_forgotten(db):
     db.add(
         RateLimitEntry(
             identifier="old", timestamp=datetime.utcnow() - timedelta(hours=2)
         )
     )
     db.commit()
-    allowed, _info = check_rate_limit(db, "old", max_attempts=1, window_seconds=60)
-    assert allowed is True
-    assert db.query(RateLimitEntry).filter_by(identifier="old").count() == 0
+    assert take_rate_limit("old", max_attempts=1, window_seconds=60) == (True, 0)
+    db.expire_all()
+    rows = db.query(RateLimitEntry).filter_by(identifier="old").all()
+    assert len(rows) == 1 and datetime.utcnow() - rows[0].timestamp < timedelta(60)
+
+
+def test_attempts_made_together_cannot_share_one_opening(db):
+    """Twenty attempts at once on an allowance of five: exactly five are
+    admitted. Counting and recording in two steps would admit them all."""
+    start = threading.Barrier(20)
+
+    def take(_n):
+        start.wait()
+        return take_rate_limit("burst", max_attempts=5, window_seconds=300)[0]
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        admitted = list(pool.map(take, range(20)))
+    assert admitted.count(True) == 5
+    assert db.query(RateLimitEntry).filter_by(identifier="burst").count() == 5

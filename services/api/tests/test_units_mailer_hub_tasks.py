@@ -333,7 +333,7 @@ def test_sweep_removes_expired_rows(db):
 
     past = datetime.utcnow() - timedelta(days=1)
     old_audit = datetime.utcnow() - timedelta(days=400)
-    owner = make_user("SweepOwner", "Password1!", role="viewer")
+    owner = make_user("SweepOwner", "Test-passphrase-1!", role="viewer")
     db.add(OidcLoginState(state="s", nonce="n", code_verifier="v", expires_at=past))
     db.add(
         SsoEmailChallenge(

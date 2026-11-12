@@ -37,7 +37,7 @@ def start_management(
     user = get_current_user_from_request(request, db)
     if not user:
         raise HTTPException(401, "Sign in before managing local account security")
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     from app.security.passwords import verify_password
 
     if not verify_password(payload.password, user.password_hash):
@@ -54,7 +54,7 @@ def state(request: Request, db: Session = Depends(get_db)):
 @router.post("/v1/auth/mfa/verify-code")
 def verify_code(payload: Code, request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     return service.verify_code(
         db, row, user, payload, ip=request_client_address(request)
     )
@@ -63,14 +63,14 @@ def verify_code(payload: Code, request: Request, db: Session = Depends(get_db)):
 @router.post("/v1/auth/mfa/totp/start")
 def start_totp(request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     return service.start_totp(db, row, user)
 
 
 @router.post("/v1/auth/mfa/totp/confirm")
 def confirm_totp(payload: Code, request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     return service.confirm_totp(
         db, row, user, payload, ip=request_client_address(request)
     )
@@ -79,7 +79,7 @@ def confirm_totp(payload: Code, request: Request, db: Session = Depends(get_db))
 @router.post("/v1/auth/mfa/webauthn/options")
 def authentication_options(request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     return service.authentication_options(db, row, user)
 
 
@@ -88,7 +88,7 @@ def authentication_verify(
     payload: Credential, request: Request, db: Session = Depends(get_db)
 ):
     row, user = mfa.pending(db, request)
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     return service.authentication_verify(
         db, row, user, payload, ip=request_client_address(request)
     )
@@ -97,7 +97,7 @@ def authentication_verify(
 @router.post("/v1/auth/mfa/webauthn/register-options")
 def registration_options(request: Request, db: Session = Depends(get_db)):
     row, user = mfa.pending(db, request)
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     return service.registration_options(db, row, user)
 
 
@@ -106,7 +106,7 @@ def registration_verify(
     payload: Credential, request: Request, db: Session = Depends(get_db)
 ):
     row, user = mfa.pending(db, request)
-    mfa.limit(db, request, user.id)
+    mfa.limit(request, user.id)
     return service.registration_verify(
         db, row, user, payload, ip=request_client_address(request)
     )

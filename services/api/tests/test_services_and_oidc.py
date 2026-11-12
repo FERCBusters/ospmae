@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.core.config import settings
 
 
@@ -139,9 +141,11 @@ def test_oidc_authorize_redirect_builds_url(client, monkeypatch):
         try:
             import asyncio
 
+            # The request carries the browser's secret to the response.
+            request = SimpleNamespace(state=SimpleNamespace())
             url = asyncio.run(
                 oidc_mod.build_authorize_redirect(
-                    client,
+                    request,
                     s,
                     "/index.html",
                     "oidc",

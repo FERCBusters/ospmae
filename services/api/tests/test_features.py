@@ -35,7 +35,7 @@ def test_frameworks_off_404s_framework_routes(client):
     try:
         c, _u = auth_client("FeatF")
         assert c.get("/v1/frameworks").status_code == 404
-        csrf = c.cookies.get("ospmae_csrf")
+        csrf = c.cookies.get("__Host-ospmae_csrf")
         assert (
             c.post(
                 "/v1/frameworks", json={}, headers={"X-CSRF-Token": csrf or ""}
@@ -53,7 +53,7 @@ def test_manifests_off_404s_manifest_routes(client):
     saved = _toggle_off("manifests")
     try:
         c, _u = auth_client("FeatM")
-        csrf = c.cookies.get("ospmae_csrf")
+        csrf = c.cookies.get("__Host-ospmae_csrf")
         assert c.get("/v1/manifests").status_code == 404
         assert (
             c.post(
@@ -88,7 +88,7 @@ def test_questions_off_404s_question_routes(client):
     saved = _toggle_off("questions")
     try:
         c, _u = auth_client("FeatQ")
-        csrf = c.cookies.get("ospmae_csrf")
+        csrf = c.cookies.get("__Host-ospmae_csrf")
         assert c.get("/v1/questions/unanswered").status_code == 404
         assert (
             c.post(
@@ -130,7 +130,7 @@ def _admin_put(c, version, changes):
     return c.put(
         "/v1/admin/features",
         json={"version": version, "changes": changes},
-        headers={"X-CSRF-Token": c.cookies.get("ospmae_csrf") or ""},
+        headers={"X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf") or ""},
     )
 
 
@@ -207,7 +207,7 @@ def test_malformed_saves_are_refused(client, body):
     response = c.put(
         "/v1/admin/features",
         json=body,
-        headers={"X-CSRF-Token": c.cookies.get("ospmae_csrf") or ""},
+        headers={"X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf") or ""},
     )
     assert response.status_code == 422
     assert c.get("/v1/admin/features").json()["version"] == 0

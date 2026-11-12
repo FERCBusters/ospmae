@@ -23,7 +23,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.db.models import MfaChallenge, MfaCredential, MfaRecoveryCode, User
 from app.security.client_addr import request_allowance_key
-from app.security.rate_limit import check_rate_limit
+from app.security.rate_limit import take_rate_limit
 
 COOKIE = "ospmae_mfa_pending"
 
@@ -56,6 +56,9 @@ TTL = 300
 CODE_ATTEMPTS = 5
 CODE_LOCKOUT = timedelta(hours=1)
 _MFA_WINDOW_SECONDS = 300
+# Ceremony steps each address and each account may make in that window.
+ADDRESS_STEPS = 40
+ACCOUNT_STEPS = 15
 
 
 def digest(value):
@@ -130,26 +133,30 @@ def local_session_allowed(db, user, session):
     return True
 
 
-def limit(db, request, user_id=None):
-    """Database-backed allowances for every ceremony step.
+def limit(request, user_id=None):
+    """Count one ceremony step against its allowances, or refuse it.
 
+    Each address makes ADDRESS_STEPS and each account ACCOUNT_STEPS in
+    _MFA_WINDOW_SECONDS, and a step is counted whether or not it succeeds.
     Fail-closed on limiter errors: without a working ledger no second-factor
     state changes.
     """
     try:
-        allowed, _ = check_rate_limit(
-            db, request_allowance_key("mfa_addr", request), 40, _MFA_WINDOW_SECONDS
+        allowed, _ = take_rate_limit(
+            request_allowance_key("mfa_addr", request),
+            max_attempts=ADDRESS_STEPS,
+            window_seconds=_MFA_WINDOW_SECONDS,
         )
         if allowed and user_id is not None:
-            allowed, _ = check_rate_limit(
-                db, f"mfa_user:{int(user_id)}", 15, _MFA_WINDOW_SECONDS
+            allowed, _ = take_rate_limit(
+                f"mfa_user:{int(user_id)}",
+                max_attempts=ACCOUNT_STEPS,
+                window_seconds=_MFA_WINDOW_SECONDS,
             )
-        if not allowed:
-            raise HTTPException(429, "Too many verification attempts; try again later")
-    except HTTPException:
-        raise
     except Exception:
         raise HTTPException(503, "Authentication rate limiter unavailable")
+    if not allowed:
+        raise HTTPException(429, "Too many verification attempts; try again later")
 
 
 def _code_failures_current(user) -> bool:

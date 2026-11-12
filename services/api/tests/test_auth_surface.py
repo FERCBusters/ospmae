@@ -6,12 +6,12 @@ from tests.conftest import auth_client, login, make_user
 
 
 def test_login_sets_secure_session_and_csrf_cookies(client):
-    make_user("CookieU", "Password1!", role="viewer")
+    make_user("CookieU", "Test-passphrase-1!", role="viewer")
     c = client
-    r = login(c, "CookieU", "Password1!")
+    r = login(c, "CookieU", "Test-passphrase-1!")
     assert r.status_code == 200
-    assert c.cookies.get("ospmae_session")
-    assert c.cookies.get("ospmae_csrf")
+    assert c.cookies.get("__Host-ospmae_session")
+    assert c.cookies.get("__Host-ospmae_csrf")
 
 
 def test_cookie_authenticates_and_check_names_the_account(client):
@@ -30,7 +30,7 @@ def test_unauthenticated_check_is_401(client):
 
 def test_unsafe_write_without_csrf_token_is_refused(client):
     c, _user = auth_client("CsrfU")
-    csrf = c.cookies.get("ospmae_csrf")
+    csrf = c.cookies.get("__Host-ospmae_csrf")
     r = c.post(
         "/v1/auth/change-password",
         json={
@@ -52,7 +52,7 @@ def test_logout_get_without_proof_keeps_the_session(client):
 
 def test_logout_get_with_csrf_proof_destroys_the_session(client):
     c, user = auth_client("LogoutV")
-    token = c.cookies.get("ospmae_csrf")
+    token = c.cookies.get("__Host-ospmae_csrf")
     r = c.get(f"/v1/auth/logout?csrf={token}", follow_redirects=False)
     assert r.status_code == 302
     assert c.get("/v1/auth/check").status_code == 401
@@ -62,7 +62,7 @@ def test_logout_post_destroys_the_session_and_all_others(client, db):
     from app.db.models import Session as SessionRow
 
     c, user = auth_client("LogoutW")
-    csrf = c.cookies.get("ospmae_csrf")
+    csrf = c.cookies.get("__Host-ospmae_csrf")
     # A second device holds another session of the same account.
     from app.security.sessions import create_session
 
@@ -77,8 +77,8 @@ def test_logout_post_destroys_the_session_and_all_others(client, db):
 
 def test_login_exemption_is_exactly_login(client, db):
     """POST logout must still require the CSRF proof only login is exempt."""
-    make_user("ExemptU", "Password1!", role="viewer")
-    r = login(client, "ExemptU", "Password1!")
+    make_user("ExemptU", "Test-passphrase-1!", role="viewer")
+    r = login(client, "ExemptU", "Test-passphrase-1!")
     assert r.status_code == 200
     # No CSRF header: the middleware refuses the unsafe write.
     r = client.post("/v1/auth/logout")

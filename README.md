@@ -18,7 +18,7 @@ Applications in the same family share a design system and conventions: **KEEN** 
 - **Questions and notifications** - account-threaded questions on project versions with role-based answer permissions, e-mail notifications, and realtime browser notification over a bounded WebSocket channel.
 - **Organisations and dashboards** - organisations are first-class records that projects belong to (created from the free-text name on first use), with admin-managed user/group membership, a global dependency dashboard with per-project unfixed-finding summaries and organisation filters, and a searchable dependency browser keyed by UUID.
 - **E-mail delivery** - outgoing mail is a transactional outbox: senders queue inside their own transaction and a worker delivers with exponential backoff, recording each attempt so a broken SMTP configuration is visible in the admin's E-mail outbox view (and users can see their own delivery history under Account).
-- **Authentication** - local accounts (PBKDF2/260k) with a second factor (TOTP authenticator apps, WebAuthn security keys/passkeys and single-use recovery codes), OpenID Connect with per-provider configuration, optional trusted header identity from an authenticating proxy, database-backed sessions with rolling and absolute lifetimes, and CSRF-protected unsafe writes. The second factor applies to local sign-in under the `OSPMAE_MFA_POLICY` setting (`optional`, `admins`, or `all`); an account's enrolment change invalidates its existing local sessions, a five-minute browser ceremony runs outside the session cookie, and WebAuthn requires an HTTPS `OSPMAE_PUBLIC_BASE_URL`.
+- **Authentication** - local accounts (PBKDF2/600k, with KEEN's rules for new passwords) with a second factor (TOTP authenticator apps, WebAuthn security keys/passkeys and single-use recovery codes), OpenID Connect with per-provider configuration, optional trusted header identity from an authenticating proxy, database-backed sessions with rolling and absolute lifetimes, and CSRF-protected unsafe writes. The second factor applies to local sign-in under the `OSPMAE_MFA_POLICY` setting (`optional`, `admins`, or `all`); an account's enrolment change invalidates its existing local sessions, a five-minute browser ceremony runs outside the session cookie, and WebAuthn requires an HTTPS `OSPMAE_PUBLIC_BASE_URL`.
 
 ## Installation feature switches
 
@@ -44,7 +44,7 @@ cp .env.example .env                # then edit the required values
 docker compose up --build
 ```
 
-`.env.example` documents every setting. Set the `:?`-guarded values (`POSTGRES_PASSWORD` and `REDIS_PASSWORD`) before the first `docker compose up`; compose refuses to start a deployment with either one missing.
+`.env.example` documents every setting and ships every credential empty. Set the `:?`-guarded values (`POSTGRES_PASSWORD` and `REDIS_PASSWORD`, for example each from `openssl rand -hex 32`) before the first `docker compose up`; compose refuses to start a deployment with either one missing.
 
 The services:
 
@@ -56,10 +56,11 @@ Third-party container images are pinned by digest; `tools/docker_image_pins.py c
 
 ### Initial user creation
 
-Run the following to create the initial (admin) user:
+Run the following to create the initial (admin) user. It asks for the password, so none is written into the command or the shell history; choose one of 15 characters or more that is hard to guess (the rules are in `SECURITY.md`):
 
 ```bash
-docker compose exec -T component-api python - <<'PY'
+docker compose exec component-api python -c '
+import getpass
 from app.db.session import SessionLocal
 from app.security.auth import create_user
 db = SessionLocal()
@@ -67,13 +68,13 @@ try:
     create_user(
         db,
         username="admin",            # 1-64 chars: letters, digits, _ - .
-        password="SomethingStrongHere!",  # >= 8 chars
+        password=getpass.getpass("Password for the first administrator: "),
         email="admin@example.com",   # optional: account and security mail
         role="admin",
     )
 finally:
     db.close()
-PY
+'
 ```
 
 ### Second-factor recovery
@@ -93,8 +94,9 @@ docker compose exec component-api python scripts/mfa_admin.py USERNAME --reset -
 | `OSPMAE_LOCAL_AUTH_ENABLED` | Local password sign-in. Administrators create accounts, set their e-mail and reset passwords; single sign-on reaches existing accounts only. |
 | `OSPMAE_MFA_POLICY`, `OSPMAE_MFA_ENCRYPTION_KEY` | Local second factor: `optional` (default), `admins` or `all` accounts must complete TOTP/security-key/recovery-code verification on local sign-in; the key is a persistent Fernet key (`openssl rand -base64 32`) that encrypts TOTP secrets at rest and belongs in your secrets manager. |
 | `OSPMAE_OIDC_*` (or `OSPMAE_GITHUB_*`) | SSO providers; each enabled provider requires explicit `CLIENT_ID`, `CLIENT_SECRET`, endpoints and `REDIRECT_URI`. |
-| `OSPMAE_TRUST_REMOTE_USER` + `OSPMAE_REMOTE_USER_HEADER_NAME` | Trusted header identity for deployments where the network path alone reaches the API through the authenticating proxy. |
-| `OSPMAE_TRUSTED_PROXY_CIDRS` | Networks whose hosts may form the trusted side of a forwarded client address chain (rate limits, audit records). |
+| `OSPMAE_TRUST_REMOTE_USER` + `OSPMAE_REMOTE_USER_HEADER_NAME` + `OSPMAE_REMOTE_USER_TRUSTED_CIDRS` | Trusted header identity for deployments where the network path alone reaches the API through the authenticating proxy. The header is believed only from the proxies named in `OSPMAE_REMOTE_USER_TRUSTED_CIDRS`, which is required in this mode. |
+| `OSPMAE_PASSWORD_MIN_LENGTH` | Characters a new local password needs: 15 by default; 8 to 14 only with `OSPMAE_MFA_POLICY=all`. |
+| `OSPMAE_TRUSTED_PROXY_CIDRS` | Networks whose hosts may form the trusted side of a forwarded client address chain (rate limits, audit records). A proxy in front of OSPMAE must append the connecting client's address to `X-Forwarded-For`, or overwrite the header. |
 | Project `project_type` | Not a setting: it is a server-controlled vocabulary (ledger, identity, wallet, credentials, interoperability, privacy, cryptography, governance, tooling, library, application, service, other); free-text values are refused at intake. |
 | Framework-gated fields | The capability/profiles/protocols/keys/algorithms fields describe the Universal Wallet Reference Architecture. They are presented only in the framework-options wizard step; with `OSPMAE_FEATURE_FRAMEWORKS=false` the step is removed and blank values save, so nothing leaks into a framework-free deployment. |
 | `OSPMAE_DEPENDENCY_DISCOVERY_*`, `OSPMAE_SYFT_*`, `OSPMAE_GRYPE_*` | Scan pipeline policy (host allowlist, time/memory budgets, scanner paths). |
@@ -121,7 +123,7 @@ bash format-ui.sh --check
 ```
 services/api/           FastAPI application, Alembic migrations, tasks, tests
 services/ui/            nginx + first-party pages, build tooling, tests
-services/api/alembic/   Migrations (through 0027_user_preference_theme)
+services/api/alembic/   Migrations (through 0040_session_digests)
 tools/                  docker-image-pins
 .github/workflows/      CI (tests, docker-image-pins)
 ```

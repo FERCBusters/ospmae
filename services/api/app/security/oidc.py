@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+from authlib.common.errors import AuthlibBaseError
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from authlib.jose import jwt
 from authlib.oidc.core import CodeIDToken
@@ -257,6 +262,31 @@ def _required_missing(provider: SsoProvider) -> list[str]:
     return missing
 
 
+def _is_https(url: str) -> bool:
+    """Whether an address is HTTPS, or plain HTTP on this machine for testing."""
+    parsed = urlsplit(url)
+    return parsed.scheme == "https" or (
+        parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
+    )
+
+
+def _insecure_endpoints(provider: SsoProvider) -> list[str]:
+    """The provider addresses OSPMAE would send credentials, codes or tokens
+    to, or read signing keys from, without TLS."""
+    return [
+        name
+        for name, url in (
+            ("authorisation endpoint", provider.authorization_endpoint),
+            ("token endpoint", provider.token_endpoint),
+            ("key set", provider.jwks_uri),
+            ("user endpoint", provider.userinfo_endpoint),
+            ("emails endpoint", provider.emails_endpoint),
+            ("redirect URI", provider.redirect_uri),
+        )
+        if url and not _is_https(url)
+    ]
+
+
 def _require_provider_config(provider_key: str | None) -> SsoProvider:
     provider = get_sso_provider(provider_key)
     if not provider or not provider.enabled:
@@ -271,10 +301,22 @@ def _require_provider_config(provider_key: str | None) -> SsoProvider:
                 f"{', '.join(missing)}"
             ),
         )
+    insecure = _insecure_endpoints(provider)
+    if insecure:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"{provider.label} SSO requires HTTPS addresses: {', '.join(insecure)}"
+            ),
+        )
     return provider
 
 
 _JWKS_CACHE: dict[str, tuple[dict[str, Any], datetime]] = {}
+_JWKS_LIFETIME = timedelta(hours=1)
+# A token naming a key the cached set lacks is the sign of a provider's key
+# rotation, so the set is read again, at most this often for each provider.
+_JWKS_REREAD_AFTER = timedelta(minutes=1)
 
 
 def _new_client(provider: SsoProvider, *, redirect_uri: str) -> AsyncOAuth2Client:
@@ -292,12 +334,40 @@ def _new_client(provider: SsoProvider, *, redirect_uri: str) -> AsyncOAuth2Clien
     )
 
 
-async def _get_jwks(jwks_uri: str) -> dict[str, Any]:
+def _token_key_id(id_token: str) -> str | None:
+    """The key a token says signed it, read before anything is verified.
+
+    It only decides whether the provider's key set is worth reading again;
+    the signature is verified against the set whatever this returns.
+    """
+    try:
+        segment = id_token.split(".", 1)[0]
+        header = json.loads(
+            base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+        )
+        kid = header["kid"]
+    except (ValueError, TypeError, KeyError):
+        return None
+    return kid if isinstance(kid, str) and kid else None
+
+
+def _holds_key(data: dict[str, Any], kid: str | None) -> bool:
+    keys = data["keys"]
+    return kid is None or (
+        isinstance(keys, list)
+        and any(isinstance(key, dict) and key.get("kid") == kid for key in keys)
+    )
+
+
+async def _get_jwks(jwks_uri: str, kid: str | None = None) -> dict[str, Any]:
     now = _now()
     cached = _JWKS_CACHE.get(jwks_uri)
     if cached:
         data, expires_at = cached
-        if now < expires_at:
+        read_at = expires_at - _JWKS_LIFETIME
+        if now < expires_at and (
+            _holds_key(data, kid) or now - read_at < _JWKS_REREAD_AFTER
+        ):
             return data
 
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -307,7 +377,7 @@ async def _get_jwks(jwks_uri: str) -> dict[str, Any]:
     if not isinstance(data, dict) or "keys" not in data:
         raise HTTPException(status_code=500, detail="OIDC JWKS response invalid")
 
-    _JWKS_CACHE[jwks_uri] = (data, now + timedelta(hours=1))
+    _JWKS_CACHE[jwks_uri] = (data, now + _JWKS_LIFETIME)
     return data
 
 
@@ -328,8 +398,9 @@ def _redirect_uri_from_request(request: Request, provider: SsoProvider) -> str:
     )
 
 
-def create_login_state(db: Session, *, next_url: str | None) -> OidcLoginState:
-    state = secrets.token_urlsafe(24)
+def create_login_state(
+    db: Session, *, next_url: str | None, state: str
+) -> OidcLoginState:
     nonce = secrets.token_urlsafe(24)
     code_verifier = secrets.token_urlsafe(48)
 
@@ -355,21 +426,52 @@ def pop_login_state(db: Session, *, state: str) -> OidcLoginState | None:
     if not row:
         return None
 
-    if row.expires_at <= _now():
-        try:
-            db.delete(row)
-            db.commit()
-        except Exception:
-            db.rollback()
-        return None
+    # The row's nonce and verifier are kept; the database row is used once.
+    db.expunge(row)
+    # Consumed in one statement, so callbacks sent together cannot both
+    # redeem one sign-in; an expired row is removed and redeems nothing.
+    consumed = (
+        db.query(OidcLoginState)
+        .filter(OidcLoginState.state == key)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return row if consumed == 1 and row.expires_at > _now() else None
 
-    try:
-        db.delete(row)
-        db.commit()
-    except Exception:
-        db.rollback()
 
-    return row
+def sso_binding_cookie() -> str:
+    """The cookie that binds a sign-in to the browser that started it:
+    host-bound (``__Host-``) where cookies are Secure."""
+    return "__Host-ospmae_sso" if settings.cookie_secure else "ospmae_sso"
+
+
+def _browser_state(provider_key: str, secret: str) -> str:
+    """The ``state`` of a sign-in: a digest of the provider it was started
+    with and the secret only the starting browser holds."""
+    return hashlib.sha256((provider_key + "\0" + secret).encode()).hexdigest()
+
+
+def set_sso_binding(response, request: Request):
+    """Give the browser that started a sign-in the secret its callback needs."""
+    response.set_cookie(
+        sso_binding_cookie(),
+        request.state.sso_browser_secret,
+        max_age=600,
+        httponly=True,
+        secure=settings.cookie_secure,
+        # Lax, so the cookie accompanies the provider's redirect back.
+        samesite="lax",
+        path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def clear_sso_binding(response) -> None:
+    # Browsers refuse a __Host- cookie, even an expiring one, without Secure.
+    response.delete_cookie(
+        sso_binding_cookie(), path="/", secure=settings.cookie_secure, httponly=True
+    )
 
 
 def _normalize_next(next_url: str | None) -> str | None:
@@ -527,7 +629,15 @@ async def build_authorize_redirect(
 ) -> str:
     provider = _require_provider_config(provider_key)
     redirect_uri = _redirect_uri_from_request(request, provider)
-    state_row = create_login_state(db, next_url=_normalize_next(next_url))
+    # The state names this provider and this browser: its callback is
+    # accepted only at the same provider, from the browser holding the secret.
+    secret = secrets.token_urlsafe(32)
+    request.state.sso_browser_secret = secret
+    state_row = create_login_state(
+        db,
+        next_url=_normalize_next(next_url),
+        state=_browser_state(provider.key, secret),
+    )
 
     client = _new_client(provider, redirect_uri=redirect_uri)
     url, _ = client.create_authorization_url(
@@ -653,7 +763,7 @@ async def _handle_oidc_callback(
             status_code=400, detail="OIDC token response missing id_token"
         )
 
-    jwks = await _get_jwks(provider.jwks_uri)
+    jwks = await _get_jwks(provider.jwks_uri, _token_key_id(str(id_token)))
 
     issuer_values = _split_csv(provider.issuer)
     if not issuer_values:
@@ -669,14 +779,20 @@ async def _handle_oidc_callback(
         "access_token": (token or {}).get("access_token"),
     }
 
-    claims = jwt.decode(
-        id_token,
-        jwks,
-        claims_cls=CodeIDToken,
-        claims_options=claims_options,
-        claims_params=claims_params,
-    )
-    claims.validate(leeway=int(provider.id_token_leeway_seconds or 0))
+    try:
+        claims = jwt.decode(
+            id_token,
+            jwks,
+            claims_cls=CodeIDToken,
+            claims_options=claims_options,
+            claims_params=claims_params,
+        )
+        claims.validate(leeway=int(provider.id_token_leeway_seconds or 0))
+    except Exception as error:
+        # These two calls only verify the token, so whatever they raise (the
+        # signature, a claim, the token's shape) is a token that is not
+        # vouched for.
+        raise _unverified(provider, error) from None
 
     claims_dict: dict[str, Any] = dict(claims)
     subject = str(claims_dict.get("sub") or "").strip()
@@ -694,11 +810,37 @@ async def _handle_oidc_callback(
     return user, next_url, str(id_token)
 
 
+def _unverified(provider: SsoProvider, error: Exception) -> HTTPException:
+    """The refusal of a sign-in whose provider answer could not be verified.
+
+    The log names the kind of failure only: provider answers and tokens stay
+    out of it.
+    """
+    log.warning("%s sign-in refused: %s", provider.key, type(error).__name__)
+    return HTTPException(status_code=400, detail="SSO sign-in could not be verified")
+
+
 async def handle_callback(
     request: Request, db: Session, provider_key: str | None = None
 ) -> tuple[User, str | None, str | None, SsoProvider]:
     provider = _require_provider_config(provider_key)
     state = (request.query_params.get("state") or "").strip()
+    secret = request.cookies.get(sso_binding_cookie(), "")
+    # A callback is accepted only from the browser that started the sign-in,
+    # at the provider it started with: anyone else's link signs nobody in.
+    if (
+        len(state) != 64
+        or not state.isascii()
+        or not secret
+        or len(secret) > 128
+        or not secrets.compare_digest(
+            state.encode(), _browser_state(provider.key, secret).encode()
+        )
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="SSO browser verification failed; start sign-in again",
+        )
     row = pop_login_state(db, state=state)
     if not row:
         raise HTTPException(status_code=400, detail="SSO state missing or expired")
@@ -706,12 +848,14 @@ async def handle_callback(
     # refusal is audited (see sso_attempt).
     request.state.sso_provider = provider.key
 
-    if provider.kind == "github":
-        user, next_url, id_token = await _handle_github_callback(
-            request, db, provider, row
-        )
-    else:
-        user, next_url, id_token = await _handle_oidc_callback(
-            request, db, provider, row
-        )
+    handler = (
+        _handle_github_callback if provider.kind == "github" else _handle_oidc_callback
+    )
+    try:
+        user, next_url, id_token = await handler(request, db, provider, row)
+    except HTTPException:
+        raise
+    except (AuthlibBaseError, httpx.HTTPError, ValueError, KeyError) as error:
+        # A failed exchange or an unreadable answer is a refused sign-in.
+        raise _unverified(provider, error) from None
     return user, next_url, id_token, provider

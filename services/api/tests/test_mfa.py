@@ -19,10 +19,10 @@ from datetime import datetime, timedelta
 import pyotp
 import pytest
 from app.core.config import settings
-from app.db.models import MfaChallenge, MfaRecoveryCode, User
-from app.db.models import Session as SessionRow
+from app.db.models import MfaChallenge, MfaRecoveryCode, RateLimitEntry, User
 from app.db.session import SessionLocal
 from app.security import mfa
+from app.security.sessions import session_row
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -30,7 +30,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from tests.conftest import auth_client, login, make_user
 
 ORIGIN = "https://testserver"
-PASSWORD = "Pass-current1!"
+PASSWORD = "Pass-current-long1!"
 INVALID_CODE = (400, {"detail": "Invalid or already-used code"})
 EXPIRED = (401, {"detail": "Verification expired; start again"})
 ACCEPTED = (200, {"ok": True})
@@ -64,7 +64,7 @@ def outcome(response):
 
 def post_mfa(client, path, data=None):
     headers = {"Origin": ORIGIN}
-    csrf = client.cookies.get("ospmae_csrf")
+    csrf = client.cookies.get("__Host-ospmae_csrf")
     if csrf:
         headers["X-CSRF-Token"] = csrf
     return client.post("/v1/auth/mfa/" + path, json=data or {}, headers=headers)
@@ -92,7 +92,10 @@ def start_manage(client, user):
     response = client.post(
         "/v1/auth/mfa/manage/start",
         json={"password": PASSWORD},
-        headers={"Origin": ORIGIN, "X-CSRF-Token": client.cookies.get("ospmae_csrf")},
+        headers={
+            "Origin": ORIGIN,
+            "X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf"),
+        },
     )
     assert response.status_code == 200, response.text
     assert response.json()["mfa_required"] is True
@@ -300,7 +303,7 @@ def test_login_issues_a_pending_ceremony_for_enabled_users(client, db):
     assert state.status_code == 200
     assert state.json()["stage"] == "verify"
     assert state.json()["purpose"] == "login"
-    assert "ospmae_session" not in {c.name for c in client.cookies.jar}
+    assert "__Host-ospmae_session" not in {c.name for c in client.cookies.jar}
 
 
 def test_totp_enrolment_encrypts_and_hashes_stored_factors(client, db, user):
@@ -327,11 +330,7 @@ def test_totp_enrolment_encrypts_and_hashes_stored_factors(client, db, user):
         finish = post_mfa(c, "finish")
         assert finish.status_code == 200
         assert finish.json()["user"] == user.username
-        sess = (
-            db.query(SessionRow)
-            .filter(SessionRow.session_id == c.cookies.get("ospmae_session"))
-            .one()
-        )
+        sess = session_row(db, c.cookies.get("__Host-ospmae_session"))
         assert sess.mfa_verified is True
         assert sess.mfa_version == db.get(User, user.id).mfa_version
 
@@ -445,7 +444,7 @@ def test_wrong_origin_is_refused_before_any_state_change(client, db, user):
     response = c.post(
         "/v1/auth/mfa/manage/start",
         json={"password": PASSWORD},
-        headers={"X-CSRF-Token": c.cookies.get("ospmae_csrf")},
+        headers={"X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf")},
     )
     assert outcome(response) == ORIGIN_REFUSED
     response = c.post(
@@ -453,7 +452,7 @@ def test_wrong_origin_is_refused_before_any_state_change(client, db, user):
         json={"password": PASSWORD},
         headers={
             "Origin": "https://evil.example",
-            "X-CSRF-Token": c.cookies.get("ospmae_csrf"),
+            "X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf"),
         },
     )
     assert outcome(response) == CROSS_SITE_REFUSED
@@ -573,15 +572,10 @@ def test_an_enrolment_change_ends_other_local_sessions(client, db, user):
 
     assert c.get("/v1/me/mfa").status_code == 401
     with SessionLocal() as db:
-        row = (
-            db.query(SessionRow)
-            .filter(SessionRow.session_id == other_sid)
-            .one_or_none()
-        )
+        row = session_row(db, other_sid)
         user_row = db.get(User, user.id)
         assert user_row.mfa_enabled is True
-        if row is not None:
-            assert row.mfa_version != user_row.mfa_version
+        assert row is not None and row.mfa_version != user_row.mfa_version
 
     # A clean sign-in proves the factor once and reaches the account again.
     assert login(c, user.username, PASSWORD).json()["mfa_required"]
@@ -647,19 +641,173 @@ def test_policy_blocked_sessions_end_while_optional_users_continue(client, db):
         settings.mfa_policy = "optional"
 
 
-def test_address_allowance_bounds_ceremony_attempts(client, db, user):
-    from app.security.rate_limit import check_rate_limit, record_rate_limit_attempt
+LIMITED = (429, {"detail": "Too many verification attempts; try again later"})
 
-    # 40 per-address ceremony verifications in a 300 second window are the
-    # class boundary the production limiter counts; the 41st fails closed.
-    refused_once = False
-    for _attempt in range(41):
-        allowed, _ = check_rate_limit(db, "mfa_addr:unknown", 40, 300)
-        if not allowed:
-            refused_once = True
-            break
-        record_rate_limit_attempt(db, "mfa_addr:unknown")
-    assert refused_once
+
+def _manage(client, password):
+    return client.post(
+        "/v1/auth/mfa/manage/start",
+        json={"password": password},
+        headers={
+            "Origin": ORIGIN,
+            "X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf"),
+        },
+    )
+
+
+def _ledger(prefix: str) -> int:
+    with SessionLocal() as db:
+        return (
+            db.query(RateLimitEntry)
+            .filter(RateLimitEntry.identifier.like(prefix + "%"))
+            .count()
+        )
+
+
+def test_a_session_holder_cannot_keep_guessing_the_account_password(
+    client, db, user, monkeypatch
+):
+    """Whoever holds a session (a borrowed browser, a stolen cookie) can ask
+    the account's password to be confirmed; each account confirms it at most
+    ACCOUNT_STEPS times in the window, right or wrong."""
+    from app.security import passwords
+
+    judged = []
+    real = passwords.verify_password
+
+    def counting(password, hashed):
+        judged.append(password)
+        return real(password, hashed)
+
+    monkeypatch.setattr(passwords, "verify_password", counting)
+    c = sign_in(user)
+    judged.clear()
+
+    answers = [
+        outcome(_manage(c, f"guess-number-{n}")) for n in range(mfa.ACCOUNT_STEPS)
+    ]
+    assert answers == [(401, {"detail": "Invalid password"})] * mfa.ACCOUNT_STEPS
+    assert len(judged) == mfa.ACCOUNT_STEPS
+    # Every guess was counted, against the account and against the address.
+    assert _ledger(f"mfa_user:{user.id}") == mfa.ACCOUNT_STEPS
+    assert _ledger("mfa_addr:") == mfa.ACCOUNT_STEPS
+
+    # The allowance is spent: the next guess, and the right password, are
+    # refused before any password is judged.
+    assert outcome(_manage(c, "guess-number-last")) == LIMITED
+    assert outcome(_manage(c, PASSWORD)) == LIMITED
+    assert len(judged) == mfa.ACCOUNT_STEPS
+
+    # Another account at the same address still has its own allowance.
+    other = sign_in(make_user("mfa-other", PASSWORD, role="engineer"))
+    assert _manage(other, PASSWORD).status_code == 200
+
+
+def test_each_address_makes_a_bounded_number_of_ceremony_steps(client, db, user):
+    """An address spreads its steps over many accounts and is still bounded."""
+    c = sign_in(user)
+    start_manage(c, user)
+    with SessionLocal() as s:
+        now = datetime.utcnow()
+        s.add_all(
+            RateLimitEntry(identifier="mfa_addr:8.8.8.8", timestamp=now)
+            for _ in range(mfa.ADDRESS_STEPS - _ledger("mfa_addr:8.8.8.8"))
+        )
+        s.commit()
+    assert outcome(post_mfa(c, "totp/start")) == LIMITED
+    # The refused step was not counted, and the account's own count is intact.
+    assert _ledger("mfa_addr:8.8.8.8") == mfa.ADDRESS_STEPS
+    # From another address the same browser carries on.
+    c.headers["X-Forwarded-For"] = "8.8.4.4"
+    assert post_mfa(c, "totp/start").status_code == 200
+
+
+def test_ceremony_steps_stop_when_the_allowance_ledger_cannot_be_reached(
+    client, db, user, monkeypatch
+):
+    c = sign_in(user)
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("synthetic ledger outage")
+
+    monkeypatch.setattr(mfa, "take_rate_limit", unavailable)
+    assert outcome(_manage(c, PASSWORD)) == (
+        503,
+        {"detail": "Authentication rate limiter unavailable"},
+    )
+
+
+def test_an_authenticator_joins_the_account_only_with_its_first_code(client, db, user):
+    """A wrong code during setup leaves the account as it was: no secret is
+    stored, nothing reports an authenticator, and setup can be finished."""
+    c = sign_in(user)
+    start_manage(c, user)
+    secret = post_mfa(c, "totp/start").json()["secret"]
+
+    wrong = "000000" if pyotp.TOTP(secret).now() != "000000" else "111111"
+    assert outcome(post_mfa(c, "totp/confirm", {"code": wrong})) == (
+        400,
+        {"detail": "Invalid authenticator code"},
+    )
+    assert totp_secret(user.id) is None
+    with SessionLocal() as s:
+        row = s.get(User, user.id)
+        assert (row.mfa_enabled, row.mfa_version) == (False, 0)
+    assert c.get("/v1/me/mfa").json()["totp"] is False
+    assert post_mfa(c, "state").json()["totp"] is False
+
+    # The same setup is confirmed by its right code.
+    confirmed = post_mfa(c, "totp/confirm", {"code": pyotp.TOTP(secret).now()})
+    assert confirmed.status_code == 200, confirmed.text
+    assert len(confirmed.json()["recovery_codes"]) == 10
+    # The enrolment ended the session it was made from; finishing signs in.
+    assert post_mfa(c, "finish").status_code == 200
+    assert totp_secret(user.id) and c.get("/v1/me/mfa").json()["totp"] is True
+
+
+def test_a_secret_nobody_confirmed_never_becomes_a_factor(client, db, user):
+    """An account that is not enrolled holds no proven authenticator. A
+    secret found on one was never confirmed (it could have been planted by
+    someone who once held the session and password), so enrolling a security
+    key removes it instead of making it a second way in."""
+    planted = pyotp.random_base32()
+    with SessionLocal() as s:
+        s.get(User, user.id).mfa_totp_secret = (
+            mfa.cipher().encrypt(planted.encode()).decode()
+        )
+        s.commit()
+
+    c = sign_in(user)
+    assert c.get("/v1/me/mfa").json()["totp"] is False
+    start_manage(c, user)
+    # Setup is not blocked by the unproven secret.
+    assert post_mfa(c, "totp/start").status_code == 200
+
+    key = FakeKey()
+    options = post_mfa(c, "webauthn/register-options")
+    registered = post_mfa(
+        c, "webauthn/register", {"credential": key.registration(options.json())}
+    )
+    assert registered.status_code == 200, registered.text
+    assert totp_secret(user.id) is None
+    assert post_mfa(c, "finish").status_code == 200
+    assert c.get("/v1/me/mfa").json() | {"credentials": []} == {
+        "enabled": True,
+        "totp": False,
+        "credentials": [],
+        "recovery_codes_remaining": 10,
+        "policy": "optional",
+        "required": False,
+        "local_enabled": True,
+    }
+
+    # At the next sign-in the planted secret's codes prove nothing.
+    drop_sessions(user.id, c)
+    assert login(c, user.username, PASSWORD).json()["mfa_required"]
+    assert (
+        outcome(post_mfa(c, "verify-code", {"code": pyotp.TOTP(planted).now()}))
+        == INVALID_CODE
+    )
 
 
 def test_sso_sessions_are_not_subject_to_the_local_ceremony(client, db, user):
@@ -677,7 +825,7 @@ def test_sso_sessions_are_not_subject_to_the_local_ceremony(client, db, user):
     from tests.conftest import peer_wrapper
 
     bare = TestClient(peer_wrapper(application), base_url="https://testserver")
-    bare.cookies.set("ospmae_session", sid)
+    bare.cookies.set("__Host-ospmae_session", sid)
     response = bare.get("/v1/me/mfa")
     assert response.status_code == 200, response.text
 

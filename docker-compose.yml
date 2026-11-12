@@ -23,7 +23,21 @@ services:
 
   redis:
     image: docker.io/valkey/valkey:8@sha256:8f836008e0986c36adf50da714c7060cf689dbb335f61fe077939d90fa650809
-    command: ["valkey-server", "--save", "60", "1", "--loglevel", "warning", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
+    # The password reaches Valkey in a configuration file written as the
+    # container starts. Process arguments are visible to every account on the
+    # Docker host, so it is never passed as --requirepass. The image's own
+    # entrypoint then starts Valkey as its unprivileged user.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        umask 077
+        escaped=$$(printf '%s' "$$REDIS_PASSWORD" | sed 's/[\\"]/\\&/g')
+        printf 'save 60 1\nloglevel warning\nrequirepass "%s"\n' "$$escaped" > /tmp/valkey.conf
+        chown valkey /tmp/valkey.conf 2>/dev/null || true
+        exec docker-entrypoint.sh valkey-server /tmp/valkey.conf
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     networks: [componentnet]
     restart: unless-stopped
 

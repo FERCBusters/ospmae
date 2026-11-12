@@ -20,7 +20,7 @@ REPO = "https://github.com/example/tracked"
 
 
 def _csrf(client):
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf")}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf")}
 
 
 class _ScanTask:

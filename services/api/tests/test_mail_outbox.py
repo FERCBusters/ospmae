@@ -14,7 +14,7 @@ from tests.conftest import auth_client, make_user
 
 
 def _csrf(client) -> dict[str, str]:
-    return {"X-CSRF-Token": client.cookies.get("ospmae_csrf") or ""}
+    return {"X-CSRF-Token": client.cookies.get("__Host-ospmae_csrf") or ""}
 
 
 def _admin():
@@ -108,7 +108,7 @@ def test_questions_and_replies_mail_the_project_followers(outbox):
 def test_sharing_a_manifest_mails_the_group(outbox):
     sharer, sharer_user = auth_client(role="admin")
     colleague = make_user(
-        "colleague", "Colleague-pass1!", role="admin", email="c@x.test"
+        "colleague", "Synthetic-passphrase-8!", role="admin", email="c@x.test"
     )
     with SessionLocal() as s:
         group = Group(name="architects")
