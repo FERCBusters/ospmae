@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 
-from tests.conftest import login, make_user
+from tests.conftest import generated_password, login, make_user
 
 
 def _signed_in(
@@ -17,7 +17,7 @@ def _signed_in(
     if username is None:
         username = f"u-{secrets.token_hex(4)}"
     if password is None:
-        password = f"Pass-{secrets.token_hex(8)}1!"
+        password = generated_password()
     user = make_user(username, password, role=role, email=f"{username}@example.com")
     r = login(client, username, password)
     assert r.status_code == 200, r.text

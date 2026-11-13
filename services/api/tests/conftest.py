@@ -145,6 +145,17 @@ def peer_wrapper(app_obj):
     return instance
 
 
+def generated_password() -> str:
+    """A fresh password the new-password rules always accept.
+
+    The random part sits between two fixed words: the rules strip digits and
+    punctuation from a password's ends before comparing it with common
+    passwords, so "Pass-<hex>1!" became plain "pass" whenever every hex
+    character was a digit (about one call in 1,800).
+    """
+    return f"Synthetic-{secrets.token_hex(8)}-passphrase"
+
+
 def make_user(username: str, password: str, role: str = "admin", **kw):
     from app.security.auth import create_user
 
@@ -179,7 +190,7 @@ def auth_client(
     if username is None:
         username = f"user-{secrets.token_hex(4)}"
     if password is None:
-        password = f"Pass-{secrets.token_hex(8)}1!"
+        password = generated_password()
     user = make_user(username, password, role=role)
     if app_obj is None:
         from app.main import app as app_obj  # noqa: F811
