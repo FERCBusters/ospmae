@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import xml.etree.ElementTree as ET
+
+import app.depscan.scan as scan_mod
 import pytest
 from app.depscan.parsers import (
     _bounded_read,
@@ -14,7 +19,12 @@ from app.depscan.scan import (
     _extract_repo_and_tag,
     validate_repo_url,
 )
-from app.security.url_safety import contains_xml_dtd_or_entity, safe_relative_route_path
+from app.security.url_safety import (
+    contains_xml_dtd_or_entity,
+    parse_xml_without_dtd,
+    safe_relative_route_path,
+)
+from app.tasks.release_feed import _parse_feed_entries
 
 
 @pytest.mark.parametrize(
@@ -30,6 +40,23 @@ from app.security.url_safety import contains_xml_dtd_or_entity, safe_relative_ro
         ("file:///etc/passwd", False),
         ("https://github.com/owner/repo\\..\\evil", False),
         ("ssh://git@host/org/repo", False),
+        # git reads a leading "-" as an option; --upload-pack names a command
+        # it runs, so a value shaped like one is never a repository.
+        ("--upload-pack=touch${IFS}/tmp/x;@github.com:x", False),
+        ("-uid@github.com:owner/repo", False),
+        ("-c@github.com:owner/repo", False),
+        # The same for the path, which git hands to the remote command line.
+        ("git@github.com:-oProxyCommand=x", False),
+        # A transport prefix ("ext::" runs a command) is not an account name.
+        ("ext::sh${IFS}-c${IFS}id@github.com:x", False),
+        ("fd::3@github.com:x", False),
+        # The host of the SCP-like form is the whole host, as allowlisted.
+        ("git@evil.example:owner/repo", False),
+        ("git@github.com.evil.example:owner/repo", False),
+        ("git@:owner/repo", False),
+        ("git@github.com:", False),
+        ("git@gitlab.com:group/sub/project.git", True),
+        ("org-123@github.com:owner/repo.git", True),
     ],
 )
 def test_validate_repo_url_matrix(url, ok):
@@ -38,6 +65,76 @@ def test_validate_repo_url_matrix(url, ok):
     else:
         with pytest.raises(ValueError):
             validate_repo_url(url)
+
+
+def _recorded_git(monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        commands.append(list(cmd))
+        # Every ref asked about exists, as ls-remote would report it.
+        out = f"abc {cmd[-1]}\n" if "ls-remote" in cmd else ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=out)
+
+    monkeypatch.setattr(scan_mod.subprocess, "run", fake_run)
+    return commands
+
+
+def test_git_reads_the_repository_after_its_options_end(monkeypatch):
+    """Every git command places ``--`` before the URL: what follows it is a
+    repository, never an option, whatever a stored value holds."""
+    commands = _recorded_git(monkeypatch)
+    url = "https://github.com/owner/repo"
+    scan_mod._remote_has_ref(url, "v1.0.0", kind="tag")
+    scan_mod._remote_has_ref(url, "main", kind="branch")
+    for branch in ("main", None):
+        repo_dir, _ = scan_mod.clone_repo(url, branch=branch)
+        shutil.rmtree(repo_dir, ignore_errors=True)
+    remote = [cmd for cmd in commands if "ls-remote" in cmd or "clone" in cmd]
+    assert {cmd[3] for cmd in remote} == {"ls-remote", "clone"}
+    for cmd in remote:
+        marker = cmd.index("--")
+        assert cmd[marker + 1] == url, cmd
+        # Nothing after the marker is one of git's options.
+        assert not any(arg.startswith("-") for arg in cmd[marker + 1 :]), cmd
+
+
+def test_a_clone_refuses_an_option_shaped_url_before_git_runs(monkeypatch):
+    commands = _recorded_git(monkeypatch)
+    for url in (
+        "--upload-pack=touch${IFS}/tmp/x;@github.com:x",
+        "-uid@github.com:owner/repo",
+    ):
+        with pytest.raises(ValueError):
+            scan_mod.clone_repo(url, version_hint="1.0.0")
+        with pytest.raises(ValueError):
+            scan_mod.clone_repo(url, branch="main")
+    assert commands == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_git_itself_runs_no_command_named_by_a_url(tmp_path):
+    """The real git, given the value that once reached it as an option: the
+    command it names does not run, because the value follows ``--``."""
+    marker = tmp_path / "ran"
+    url = f"--upload-pack=touch${{IFS}}{marker};@github.com:x"
+    # Only local repositories are allowed here, so nothing leaves the machine
+    # when git reads the value as an SSH address.
+    env = {**scan_mod._git_env(), "GIT_ALLOW_PROTOCOL": "file"}
+    for kind in ("tag", "branch"):
+        assert scan_mod._remote_has_ref(url, "v1.0.0", kind=kind, env=env) is False
+    assert not marker.exists()
+    # Without the marker the same value is an option, and git runs it: the
+    # check above would fail if ``--`` were dropped.
+    subprocess.run(
+        ["git", "ls-remote", "--tags", "--refs", url, "refs/tags/v1.0.0"],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert marker.exists()
 
 
 def test_redact_url_masks_credentials():
@@ -79,6 +176,73 @@ def _write(tmp_path, name: str, content: bytes):
     p = tmp_path / name
     p.write_bytes(content)
     return p
+
+
+_FEED = (
+    '<?xml version="1.0" encoding="{encoding}"?>{declarations}'
+    "<rss><channel><item><title>v1.0.0{entity}</title>"
+    "<link>https://github.com/owner/repo/releases/tag/v1.0.0</link>"
+    "</item></channel></rss>"
+)
+_DECLARATIONS = '<!DOCTYPE rss [<!ENTITY a "AAAAAAAAAA">]>'
+
+
+def _feed(encoding: str, *, declared: bool) -> bytes:
+    """The feed as a server would send it. A single-byte encoding keeps its
+    XML declaration in ASCII, which is how a parser learns the encoding."""
+    text = _FEED.format(
+        encoding=encoding,
+        declarations=_DECLARATIONS if declared else "",
+        entity=" &a;" if declared else "",
+    )
+    if encoding == "utf-16":
+        return text.encode("utf-16")
+    head, _, body = text.partition("?>")
+    return (head + "?>").encode("ascii") + body.encode(encoding)
+
+
+@pytest.mark.parametrize(
+    ("encoding", "scan_sees_it"),
+    [
+        ("utf-8", True),
+        ("latin-1", True),
+        # UTF-16 spells the declaration in other bytes: the scan passes it.
+        ("utf-16", False),
+    ],
+)
+def test_a_declaration_is_refused_in_every_encoding_the_parser_reads(
+    encoding, scan_sees_it
+):
+    raw = _feed(encoding, declared=True)
+    assert contains_xml_dtd_or_entity(raw) is scan_sees_it
+    # Unguarded, the standard parser reads the declaration and expands it.
+    expanded = ET.fromstring(raw).find(".//title").text  # noqa: S314 - the unsafe baseline
+    assert expanded == "v1.0.0 AAAAAAAAAA"
+    with pytest.raises(ValueError, match="DTD/ENTITY not allowed"):
+        parse_xml_without_dtd(raw)
+    with pytest.raises(ValueError, match="DTD/ENTITY not allowed"):
+        _parse_feed_entries(raw)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "latin-1", "utf-16"])
+def test_a_feed_without_declarations_parses_in_any_encoding(encoding):
+    raw = _feed(encoding, declared=False)
+    assert parse_xml_without_dtd(raw).find(".//title").text == "v1.0.0"
+    entries = _parse_feed_entries(raw)
+    assert [entry["title"] for entry in entries] == ["v1.0.0"]
+    assert entries[0]["link"] == "https://github.com/owner/repo/releases/tag/v1.0.0"
+
+
+def test_an_encoding_the_parser_cannot_read_is_a_parse_error():
+    # EBCDIC shares no bytes with ASCII; the parser refuses the document
+    # outright, so nothing in it is read, declarations included.
+    with pytest.raises(ET.ParseError):
+        parse_xml_without_dtd(_feed("cp037", declared=True))
+
+
+def test_malformed_xml_is_still_a_parse_error():
+    with pytest.raises(ET.ParseError):
+        parse_xml_without_dtd(b"<rss><channel>")
 
 
 def test_bounded_read_skips_oversize_files(tmp_path):

@@ -29,6 +29,7 @@ from app.security.outbound import public_client
 from app.security.regex_shape import compile_supplied_pattern
 from app.security.url_safety import (
     contains_xml_dtd_or_entity,
+    parse_xml_without_dtd,
     validate_public_https_url,
 )
 from app.services.entity_changelog import (
@@ -178,7 +179,9 @@ def _parse_feed_entries(xml_data: bytes) -> list[dict[str, Any]]:
     if contains_xml_dtd_or_entity(xml_data):
         raise ValueError("DTD/ENTITY not allowed in release feeds")
 
-    root = ET.fromstring(xml_data)  # noqa: S314 - DTD/entity screened above
+    # The byte scan above sees ASCII-compatible encodings only (a UTF-16
+    # feed passes it); the parser refuses a declaration in any encoding.
+    root = parse_xml_without_dtd(xml_data)
     root_name = _localname(root.tag).lower()
 
     entries: list[dict[str, Any]] = []

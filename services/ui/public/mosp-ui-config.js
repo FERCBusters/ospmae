@@ -115,7 +115,10 @@
       label: "Framework",
       queryParam: "framework",
       endpoint: "/v1/frameworks",
-      selectMinWidthPx: 240,
+      // Sized by its longest name within these bounds, as in KEEN, so the
+      // picker leaves room for the links on a laptop.
+      selectMinChars: 14,
+      selectMaxChars: 19,
     },
 
     // OSPMAE doesn't have global navbar search.
@@ -130,8 +133,14 @@
     // The shared MOSP shell defaults are KEEN-flavoured and include KEEN's
     // "Start audit" action. OSPMAE does not have an audits module, so opt out
     // of navbar extra actions while keeping the shared navbar shell itself.
+    //
+    // The design system collapses the links behind a menu button below
+    // 1400px by default (navbar-expand-xxl), which is every laptop at 100%
+    // zoom. As in KEEN, the bar stays expanded from 992px; styles.css fits
+    // it into that width.
     nav: {
       extraHtml: "",
+      expandClass: "navbar-expand-lg",
     },
 
     bell: {

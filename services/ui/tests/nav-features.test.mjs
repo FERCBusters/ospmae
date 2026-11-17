@@ -43,3 +43,33 @@ test("an answer without features keeps every link", async (t) => {
     ],
   );
 });
+
+test("the navigation stays expanded at laptop widths, as in KEEN", async (t) => {
+  const cfg = await config(t);
+  // The design system's default (navbar-expand-xxl) hides the links behind
+  // the menu button below 1400px: every laptop at 100% zoom.
+  assert.equal(cfg.nav.expandClass, "navbar-expand-lg");
+  // The framework picker is sized by its names, within bounds that leave
+  // room for the links; a fixed minimum width would take that room back.
+  assert.equal(cfg.framework.selectMinChars, 14);
+  assert.equal(cfg.framework.selectMaxChars, 19);
+  assert.equal(cfg.framework.selectMinWidthPx, undefined);
+
+  // styles.css fits the expanded bar into that width from the same 992px.
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(
+    new URL("../public/styles.css", import.meta.url),
+    "utf8",
+  );
+  const laptop = css.slice(
+    css.indexOf("@media (min-width: 992px) {\n  #navbar"),
+  );
+  assert.match(
+    laptop,
+    /#navbar \.navbar-keen \.navbar-collapse \{[^}]*flex-wrap: wrap;/,
+  );
+  assert.match(
+    laptop,
+    /#navbar \.navbar-keen \.mosp-nav-framework-select \{[^}]*max-width: 11rem;/,
+  );
+});

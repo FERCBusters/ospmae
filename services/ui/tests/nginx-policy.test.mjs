@@ -106,3 +106,106 @@ test("the design system is pinned by commit, in the manifest and the lock alike"
   assert.ok(locked.resolved.endsWith(`#${commit}`));
   assert.match(locked.integrity, /^sha512-/);
 });
+
+// One location block of the server, by its exact opening line.
+const locationBlock = (opening) => {
+  const start = server.indexOf(`  location ${opening} {`);
+  assert.notEqual(start, -1, opening);
+  return server.slice(start, server.indexOf("\n  }", start));
+};
+
+test("pages are served only to a signed-in browser, which nginx asks the API about", () => {
+  // Without the gate a signed-out browser receives a page and shows it until
+  // the page's own script learns there is no session.
+  for (const opening of ["= /", "~* \\.html$", "/"]) {
+    const block = locationBlock(opening);
+    assert.match(block, /auth_request \/_auth_check;/, opening);
+    // A signed-out browser gets the sign-in page in place, as a refusal.
+    assert.match(block, /error_page 401 =403 \/login\.html;/, opening);
+  }
+  // No page is named outside the gate except the sign-in flow's own.
+  const ungated = [...server.matchAll(/location (= \S+\.html) \{([^}]*)\}/g)]
+    .filter(([, , body]) => !body.includes("auth_request"))
+    .map(([, opening]) => opening)
+    .sort();
+  assert.deepEqual(ungated, [
+    "= /login.html",
+    "= /mfa.html",
+    "= /preferences.html",
+    "= /sso-email.html",
+  ]);
+  // The retired preferences page only redirects to a gated one.
+  assert.match(
+    locationBlock("= /preferences.html"),
+    /return 301 \/account\.html;/,
+  );
+});
+
+test("the administration page and its scripts go only to administrators", () => {
+  for (const opening of [
+    "= /admin.html",
+    "= /pages/admin.js",
+    "= /pages/admin-features.js",
+  ]) {
+    const block = locationBlock(opening);
+    assert.match(block, /auth_request \/_auth_check_admin;/, opening);
+    assert.match(block, /error_page 401 =403 \/login\.html;/, opening);
+    // Another signed-in account is told the page does not exist.
+    assert.match(block, /error_page 403 =404 \/_admin_404;/, opening);
+  }
+  const hidden = locationBlock("= /_admin_404");
+  assert.match(hidden, /internal;/);
+  assert.match(hidden, /return 404;/);
+});
+
+test("the checks are internal, carry the session cookie and no client identity", () => {
+  for (const [opening, route] of [
+    ["= /_auth_check", "/v1/auth/check"],
+    ["= /_auth_check_admin", "/v1/auth/check-admin"],
+  ]) {
+    const block = locationBlock(opening);
+    // A browser cannot ask for the check's address itself.
+    assert.match(block, /internal;/, opening);
+    assert.ok(block.includes(`proxy_pass $ospmae_api${route};`), opening);
+    assert.ok(block.includes("proxy_set_header Cookie $http_cookie;"), opening);
+    // The page request's body is not replayed to the API.
+    assert.ok(block.includes("proxy_pass_request_body off;"), opening);
+    assert.ok(block.includes('proxy_set_header Content-Length "";'), opening);
+    for (const header of [
+      "REMOTE_USER",
+      "X-Remote-User",
+      "X-Vouch-User",
+      "X-Forwarded-User",
+    ]) {
+      assert.ok(
+        block.includes(`proxy_set_header ${header} "";`),
+        `${opening} ${header}`,
+      );
+    }
+  }
+});
+
+test("what the sign-in page loads stays reachable without a session", async () => {
+  // Every script and stylesheet the ungated pages name is served by a
+  // location with no gate; a gated one would leave the sign-in page bare.
+  const open = (path) => {
+    if (path.startsWith("/vendor/")) return locationBlock("^~ /vendor/");
+    if (path.startsWith("/pages/")) {
+      const exact = server.includes(`  location = ${path} {`);
+      return locationBlock(exact ? `= ${path}` : "^~ /pages/");
+    }
+    return locationBlock(`= ${path}`);
+  };
+  for (const page of ["login.html", "mfa.html", "sso-email.html"]) {
+    const html = await readFile(
+      new URL(`../public/${page}`, import.meta.url),
+      "utf8",
+    );
+    const assets = [
+      ...html.matchAll(/<(?:script|link)[^>]*\s(?:src|href)="(\/[^"]+)"/g),
+    ].map(([, path]) => path);
+    assert.ok(assets.length > 0, page);
+    for (const path of assets)
+      assert.doesNotMatch(open(path), /auth_request/, `${page} ${path}`);
+  }
+});

@@ -194,6 +194,11 @@
   }
   function safeNext(raw) {
     const value = String(raw || "").trim();
+    // Browsers read a backslash as a slash and drop tabs and line breaks
+    // before a navigation leaves the page, so "/\\host" and "/<tab>/host"
+    // both name another site; a value containing either never replays, the
+    // rule of the sign-in page's sanitizeNext.
+    if (/[\\\u0000-\u001f\u007f]/.test(value)) return "/index.html";
     if (
       value.startsWith("/") &&
       !value.startsWith("//") &&

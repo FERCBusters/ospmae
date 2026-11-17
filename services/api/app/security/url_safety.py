@@ -3,7 +3,9 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
+from xml.parsers import expat
 
 _DISALLOWED_SCHEMES_RE = re.compile(r"^(?:javascript|data|vbscript):", re.IGNORECASE)
 
@@ -162,6 +164,48 @@ def contains_xml_dtd_or_entity(xml_bytes: bytes) -> bool:
 
     body = xml_bytes.lower()
     return (b"<!doctype" in body) or (b"<!entity" in body)
+
+
+class _DeclarationFound(Exception):
+    """A document type or entity declaration was read."""
+
+
+class _RootReached(Exception):
+    """The root element began: declarations can only precede it."""
+
+
+def _refuse_declaration(*_args: object) -> None:
+    raise _DeclarationFound
+
+
+def _stop_at_root(*_args: object) -> None:
+    raise _RootReached
+
+
+def parse_xml_without_dtd(xml_bytes: bytes) -> ET.Element:
+    """Parse XML, refusing any document type or entity declaration.
+
+    ``contains_xml_dtd_or_entity`` reads bytes, so it sees a declaration only
+    in an ASCII-compatible encoding; a UTF-16 document spells ``<!DOCTYPE``
+    in other bytes and passes it. The parser decodes the document whatever
+    its encoding, so the refusal is made where a declaration is recognised:
+    the same parser (expat) reads the document up to its root element first,
+    and stops at a declaration.
+    """
+
+    probe = expat.ParserCreate()
+    probe.StartDoctypeDeclHandler = _refuse_declaration
+    probe.EntityDeclHandler = _refuse_declaration
+    probe.StartElementHandler = _stop_at_root
+    try:
+        probe.Parse(xml_bytes, True)
+    except _DeclarationFound:
+        raise ValueError("DTD/ENTITY not allowed in XML") from None
+    except (_RootReached, expat.ExpatError):
+        # No declaration precedes the root. Malformed XML is reported by the
+        # parse below, as it always was.
+        pass
+    return ET.fromstring(xml_bytes)  # noqa: S314 - declarations refused above
 
 
 # Characters that browsers resolve before a path reaches the server, plus all

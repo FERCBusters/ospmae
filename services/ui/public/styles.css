@@ -271,3 +271,66 @@
   background-color: var(--keen-accent);
   border-color: var(--keen-accent);
 }
+
+/* Long values (an advisory title that is one unbroken commit address, say)
+   wrap at any character, so a table or list keeps to its container instead
+   of running off the screen. app.js (expandableText) shortens them behind an
+   Expand control. */
+.long-text {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.long-text-toggle {
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+/* The title column keeps a readable measure when the table is squeezed; the
+   other columns hold short values and do not wrap. */
+.vuln-title-cell {
+  min-width: 14rem;
+}
+
+/* Keep the full navigation available at ordinary laptop widths, as in KEEN:
+   the design system's default hides it behind the menu button below 1400px,
+   which is every laptop at 100% zoom. mosp-ui-config.js sets the 992px
+   breakpoint (navbar-expand-lg); these rules let the expanded bar fit, and
+   wrap to a second row rather than overflow when it cannot. */
+@media (min-width: 992px) {
+  #navbar .navbar-keen .navbar-collapse {
+    padding-top: 0;
+    min-width: 0;
+    flex-wrap: wrap;
+    row-gap: 0.35rem;
+  }
+  #navbar .navbar-keen .navbar-nav {
+    flex-wrap: wrap;
+    margin-bottom: 0 !important;
+  }
+  #navbar .navbar-keen .mosp-nav-framework,
+  #navbar .navbar-keen .mosp-nav-search,
+  #navbar .navbar-keen .mosp-nav-actions {
+    margin-top: 0;
+  }
+  #navbar .navbar-keen .mosp-nav-framework-label {
+    display: none;
+  }
+  #navbar .navbar-keen .mosp-nav-framework-select {
+    width: 11rem;
+    max-width: 11rem;
+  }
+  #navbar .navbar-keen .mosp-nav-actions {
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    gap: 0.25rem;
+  }
+}
+@media (min-width: 992px) and (max-width: 1399.98px) {
+  #navbar .navbar-keen .nav-link {
+    font-size: 0.875rem;
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
+  }
+  #navbar .navbar-keen .navbar-brand {
+    margin-right: 0.45rem;
+  }
+}

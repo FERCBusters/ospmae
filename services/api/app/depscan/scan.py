@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -34,6 +35,14 @@ SKIP_DIRS = {
 # Component characters and whitespace are never part of a repository URL.
 _URL_REJECT_CHARS = set(" \t\r\n\0\\'\"<>")
 
+# The SCP-like form git accepts for SSH: account@host:path. The account and
+# the path start with a letter, digit or underscore, so no part of the value
+# can read as a git option, and the account holds no ":" for git to read as
+# a transport ("ext::", "fd::").
+_SCP_LIKE_URL = re.compile(
+    r"^[A-Za-z0-9_][A-Za-z0-9._-]*@(?P<host>[A-Za-z0-9.-]+):(?!-)[A-Za-z0-9_~./-][^:]*$"
+)
+
 # Characters git refuses in a ref name (git check-ref-format), plus the glob
 # characters ls-remote would expand as a pattern.
 _REF_REJECT_CHARS = set(" ~^:?*[\\{}")
@@ -58,6 +67,10 @@ def validate_repo_url(url: str) -> None:
         raise ValueError("Repository URL is empty")
     if any(ch in _URL_REJECT_CHARS for ch in raw):
         raise ValueError("Repository URL contains an unsafe character")
+    # git reads an argument beginning with "-" as one of its options, and
+    # --upload-pack names a command it runs. No repository URL starts so.
+    if raw.startswith("-"):
+        raise ValueError("Repository URL must not start with '-'")
 
     parsed = urlparse(raw)
     if parsed.username or parsed.password:
@@ -77,10 +90,9 @@ def validate_repo_url(url: str) -> None:
             raise ValueError(f"Repo host not allowed: {host}")
         return
     # SCP-like ssh URL: git@github.com:org/repo.git
-    if "://" not in raw and ":" in raw and "@" in raw:
-        host = raw.split("@", 1)[1].split(":", 1)[0].lower()
-        if not host:
-            raise ValueError("Repository URL has no host")
+    scp_like = _SCP_LIKE_URL.match(raw)
+    if scp_like:
+        host = scp_like.group("host").lower()
         allow = _allowed_hosts()
         if allow and host not in allow:
             raise ValueError(f"Repo host not allowed: {host}")
@@ -288,7 +300,8 @@ def _remote_has_ref(
 
     The ref is only ever used as a positional pattern prefixed with
     ``refs/tags/`` or ``refs/heads/``, so an option-shaped value cannot reach
-    git's option parser.
+    git's option parser. The URL follows ``--``, which ends git's options, so
+    it is read as a repository whatever it holds.
     """
     try:
         safe_ref = validate_git_ref_name(ref)
@@ -296,10 +309,10 @@ def _remote_has_ref(
         return False
     if kind == "tag":
         query = f"refs/tags/{safe_ref}"
-        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--tags", "--refs", url, query]
+        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--tags", "--refs", "--", url, query]
     else:
         query = f"refs/heads/{safe_ref}"
-        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--heads", url, query]
+        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--heads", "--", url, query]
 
     timeout = int(
         getattr(settings, "dependency_discovery_clone_timeout_seconds", 180) or 180
@@ -387,6 +400,7 @@ def clone_repo(
                     "--branch",
                     chosen_ref,
                     "--single-branch",
+                    "--",
                     clone_url,
                     str(tmpdir),
                 ],
@@ -396,7 +410,16 @@ def clone_repo(
         else:
             # default branch as before
             _run(
-                ["git", *_GIT_FLAGS, "clone", "--depth", "1", clone_url, str(tmpdir)],
+                [
+                    "git",
+                    *_GIT_FLAGS,
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--",
+                    clone_url,
+                    str(tmpdir),
+                ],
                 timeout=timeout,
                 env=env,
             )

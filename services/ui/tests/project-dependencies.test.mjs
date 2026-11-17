@@ -159,6 +159,30 @@ test("findings are grouped by dependency, worst first, with safe links", async (
   );
 });
 
+test("a long advisory title in the findings list is shortened and wraps", async (t) => {
+  const title =
+    "https://github.com/example-org/example-project/commit/" +
+    "0123456789abcdef0123456789abcdef01234567#diff-" +
+    "f".repeat(96);
+  const graph = dependencyGraph();
+  graph.vulnerabilities = [{ ...graph.vulnerabilities[0], title }];
+  const page = await dependencyTab(t, { answers: { dependencies: graph } });
+  const item = page.doc.querySelector("#depVulnList .accordion-body");
+  // The finding's text wraps at any character inside the list.
+  assert.ok(item.querySelector(".long-text .fw-semibold"));
+  const shown = () =>
+    [...item.querySelectorAll("[data-long-text] > span")]
+      .filter((span) => !span.hidden)
+      .map((span) => span.textContent);
+  assert.deepEqual(shown(), [`${title.slice(0, 140)}…`]);
+  // The fixed version stays beside the title, outside what is shortened.
+  assert.ok(item.textContent.includes("• fixed: 5.2.0"));
+  item.querySelector("[data-long-text-toggle]").click();
+  assert.deepEqual(shown(), [title]);
+  item.querySelector("[data-long-text-toggle]").click();
+  assert.deepEqual(shown(), [`${title.slice(0, 140)}…`]);
+});
+
 test("a version with no findings hides the panel", async (t) => {
   const page = await dependencyTab(t, {
     answers: { dependencies: dependencyGraph({ vulnerabilities: [] }) },

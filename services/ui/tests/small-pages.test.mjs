@@ -420,6 +420,91 @@ function detail(t, options = {}) {
   );
 }
 
+// An advisory title can be one unbroken address far wider than the table.
+const COMMIT =
+  "https://github.com/example-org/example-project/commit/" +
+  "0123456789abcdef0123456789abcdef01234567" +
+  "#diff-" +
+  "f".repeat(96);
+
+test("a long advisory title is shortened, wraps, and opens on request", async (t) => {
+  const short = "x".repeat(140);
+  const page = await detail(t, {
+    api: (method, path) =>
+      path.startsWith("/v1/dependencies/")
+        ? [
+            200,
+            {
+              ...DETAIL,
+              vulnerabilities: [
+                { vulnerability_id: "CVE-L", severity: "HIGH", title: COMMIT },
+                { vulnerability_id: "CVE-S", severity: "LOW", title: short },
+                {
+                  vulnerability_id: "CVE-X",
+                  severity: "LOW",
+                  title: `<img src=x onerror=alert(1)> ${"é".repeat(150)}`,
+                },
+              ],
+            },
+          ]
+        : null,
+  });
+  assert.deepEqual(page.errors, []);
+  const cells = [...page.doc.querySelectorAll("#vulnBody tr")].map(
+    (row) => row.children[2],
+  );
+  // The cell wraps at any character, so an unbroken address stays inside it.
+  for (const cell of cells)
+    assert.ok(cell.classList.contains("long-text"), cell.className);
+
+  const [long, exact, hostile] = cells;
+  const shown = (cell) =>
+    [...cell.querySelectorAll("[data-long-text] > span")]
+      .filter((span) => !span.hidden)
+      .map((span) => span.textContent);
+  assert.ok(COMMIT.length > 140);
+  assert.deepEqual(shown(long), [`${COMMIT.slice(0, 140)}…`]);
+  const toggle = long.querySelector("button");
+  assert.equal(toggle.type, "button");
+  assert.equal(toggle.textContent, "Expand");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+
+  toggle.click();
+  assert.deepEqual(shown(long), [COMMIT]);
+  assert.equal(toggle.textContent, "Collapse");
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  // Opening one title leaves the others as they were.
+  assert.equal(hostile.querySelector("button").textContent, "Expand");
+
+  toggle.click();
+  assert.deepEqual(shown(long), [`${COMMIT.slice(0, 140)}…`]);
+  assert.equal(toggle.textContent, "Expand");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+
+  // A title at the limit is shown whole, with nothing to open.
+  assert.equal(exact.querySelector("button"), null);
+  assert.equal(exact.textContent.trim(), short);
+
+  // A shortened title is still text, cut between whole characters.
+  assert.equal(hostile.querySelector("img"), null);
+  assert.equal(
+    shown(hostile)[0],
+    `<img src=x onerror=alert(1)> ${"é".repeat(111)}…`,
+  );
+  hostile.querySelector("button").click();
+  assert.equal(hostile.querySelector("img"), null);
+  assert.equal(
+    shown(hostile)[0],
+    `<img src=x onerror=alert(1)> ${"é".repeat(150)}`,
+  );
+
+  // A click elsewhere on the page, or on the page itself, changes nothing.
+  page.$("vulnCount").click();
+  page.doc.dispatchEvent(new page.window.Event("click"));
+  assert.equal(toggle.textContent, "Expand");
+  assert.deepEqual(page.errors, []);
+});
+
 test("a dependency page shows its users, findings, versions and scope", async (t) => {
   const page = await detail(t);
   assert.deepEqual(page.errors, []);

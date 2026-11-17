@@ -50,8 +50,24 @@
     return "/index.html";
   }
 
+  // Where a completed sign-in goes: an explicit ?next= first. Without one,
+  // a signed-out browser that asked for another page was given this page in
+  // its place (nginx's auth gate), so the address it asked for is the
+  // destination, as on KEEN's sign-in page.
   function getNextParam() {
-    return new URLSearchParams(window.location.search).get("next") || "";
+    const explicit = new URLSearchParams(window.location.search).get("next");
+    if (explicit) return explicit;
+    const { pathname, search } = window.location;
+    return pathname === "/login.html" ? "" : pathname + search;
+  }
+
+  // The second factor page finishes the sign-in, so it is told where the
+  // browser was going.
+  function secondFactorUrl() {
+    const next = getNextParam();
+    return next
+      ? `/mfa.html?next=${encodeURIComponent(sanitizeNext(next))}`
+      : "/mfa.html";
   }
 
   // Messages show as an alert above the form, as on KEEN's sign-in page.
@@ -180,7 +196,7 @@
 
       if (res.mfa_required) {
         setMsg("Second factor required. Redirecting…");
-        window.location.replace("/mfa.html");
+        window.location.replace(secondFactorUrl());
         return;
       }
 

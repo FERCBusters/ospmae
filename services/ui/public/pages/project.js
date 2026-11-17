@@ -9,6 +9,7 @@ const {
   nodeColor: nodeColorForKey,
   toast,
   loadEntityChangelog,
+  expandableText,
 } = window.OSPMAE;
 
 const state = {
@@ -2695,7 +2696,9 @@ function renderDepVulnerabilityPanel(res) {
       .map((v) => {
         const sev = String(v?.severity || "").toUpperCase();
         const sevCls = severityBadgeClass(sev);
-        const title = v?.title ? escapeHtml(v.title) : "";
+        // A long title (one unbroken address, say) is shortened behind an
+        // Expand control and wraps inside the list.
+        const title = v?.title ? expandableText(v.title).outerHTML : "";
         const fixed = v?.fixed_version
           ? ` • fixed: ${escapeHtml(v.fixed_version)}`
           : "";
@@ -2719,7 +2722,7 @@ function renderDepVulnerabilityPanel(res) {
         return `
           <div class="py-2 border-top">
             <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap">
-              <div>
+              <div class="long-text">
                 <div class="fw-semibold">${escapeHtml(v?.vulnerability_id || "Vulnerability")}</div>
                 ${title ? `<div class="text-secondary small">${title}${fixed}</div>` : fixed ? `<div class="text-secondary small">${fixed.slice(3)}</div>` : ""}
                 ${refHtml}

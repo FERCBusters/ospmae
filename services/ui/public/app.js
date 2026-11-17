@@ -1134,6 +1134,53 @@
     return parsed ? parsed.toLocaleString() : String(value);
   }
 
+  // A long value, such as an advisory title that is one unbroken commit
+  // address, shows its first part beside a control that reveals the rest.
+  // The value wraps at any character (.long-text in styles.css), so the
+  // whole of it stays inside its column once expanded. Built from text
+  // nodes: nothing in the value is read as markup.
+  const LONG_TEXT_LIMIT = 140;
+
+  function expandableText(value, limit = LONG_TEXT_LIMIT) {
+    const chars = Array.from(String(value ?? ""));
+    const wrap = document.createElement("span");
+    wrap.className = "long-text";
+    if (chars.length <= limit) {
+      wrap.textContent = chars.join("");
+      return wrap;
+    }
+    wrap.setAttribute("data-long-text", "");
+    const short = document.createElement("span");
+    short.setAttribute("data-long-text-short", "");
+    short.textContent = `${chars.slice(0, limit).join("").trimEnd()}…`;
+    const full = document.createElement("span");
+    full.setAttribute("data-long-text-full", "");
+    full.setAttribute("hidden", "");
+    full.textContent = chars.join("");
+    const toggle = document.createElement("button");
+    toggle.setAttribute("type", "button");
+    toggle.className =
+      "btn btn-link btn-sm p-0 align-baseline long-text-toggle";
+    toggle.setAttribute("data-long-text-toggle", "");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "Expand";
+    wrap.append(short, full, " ", toggle);
+    return wrap;
+  }
+
+  // One listener serves every expandable value, including those in markup a
+  // page inserts later.
+  document.addEventListener("click", (event) => {
+    const toggle = event.target.closest?.("[data-long-text-toggle]");
+    if (!toggle) return;
+    const wrap = toggle.closest("[data-long-text]");
+    const expanded = toggle.getAttribute("aria-expanded") !== "true";
+    wrap.querySelector("[data-long-text-short]").hidden = expanded;
+    wrap.querySelector("[data-long-text-full]").hidden = !expanded;
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.textContent = expanded ? "Collapse" : "Expand";
+  });
+
   window.OSPMAE = {
     state,
     api: apiRequest,
@@ -1151,6 +1198,7 @@
     parseTimestamp,
     formatTimestamp,
     escapeHtml,
+    expandableText,
     safeHref,
     csvCell,
     isAdmin,

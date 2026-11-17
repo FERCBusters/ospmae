@@ -1,0 +1,1285 @@
+diff --git a/SECURITY.md b/SECURITY.md
+index ccaf8c1..c10311e 100644
+--- a/SECURITY.md
++++ b/SECURITY.md
+@@ -33,10 +33,14 @@ Upstream identity providers, Git hosts and package registries are trusted for th
+ 
+ ### Hostile scan inputs
+ 
+-A project's repository URL, lockfiles, package names, vulnerability titles and release feeds can all be attacker-shaped. The scan pipeline contains what such input can do to its own run: repository URLs validate against a host allowlist with credential and control-character refusals, clones run in a fixed scrubbed environment with redirects disabled and positional (non-option) refs only, lockfile parsing reads at most the configured bytes per file and caps traversed and matched files, feeds screen entity declarations across the whole bounded payload, one malformed lockfile or finding costs that item alone, and display values are cleaned before storage. Within those limits hostile input can still describe false dependencies or unsafe-looking findings; the catalogue marks their provenance through the recorded source files and commit, and reviewers or adopters verify before asserting anything downstream.
++A project's repository URL, lockfiles, package names, vulnerability titles and release feeds can all be attacker-shaped. The scan pipeline contains what such input can do to its own run: repository URLs validate against a host allowlist with credential and control-character refusals and never begin with `-` (the SSH `account@host:path` form is matched as a whole, so no part of it reads as a git option or transport), every git command places `--` before the URL so git reads it as a repository whatever it holds, clones run in a fixed scrubbed environment with redirects disabled and positional (non-option) refs only, lockfile parsing reads at most the configured bytes per file and caps traversed and matched files, feeds screen entity declarations across the whole bounded payload and the parser itself refuses a document type or entity declaration in any encoding (a UTF-16 feed spells one in bytes the screen does not match), one malformed lockfile or finding costs that item alone, and display values are cleaned before storage. Within those limits hostile input can still describe false dependencies or unsafe-looking findings; the catalogue marks their provenance through the recorded source files and commit, and reviewers or adopters verify before asserting anything downstream.
+ 
+ ## Authentication
+ 
++### Pages
++
++nginx serves a page only to a signed-in browser, as KEEN's does: each page request is first put to the API (`auth_request` to `/v1/auth/check`), so a signed-out browser receives the sign-in page in place of the page it asked for (status 403, at the same address, which a completed sign-in returns to) and never the application's own markup. The administration page and its scripts are checked against `/v1/auth/check-admin` and answer 404 to any other account. The sign-in, second-factor and e-mail confirmation pages, scripts and styles are served without a session; none holds account data. The gate keeps pages from signed-out browsers; every record is still authorised by the API. The second-factor page continues only to OSPMAE's own pages: like the sign-in page, it refuses a destination containing a backslash or a control character, which a browser would read as another site.
++
+ ### Sessions
+ 
+ Browser sessions use random, server-generated identifiers. The database (`sessions`) keeps only the SHA-256 digest of each identifier, as KEEN's session store does, so the table, a backup or a database reader holds no identifier a browser could present; every lookup of a presented identifier goes through `security/sessions.session_row`. The browser receives an HttpOnly session cookie with `SameSite` policy and `Secure` flag from configuration; CSRF protection pairs a separate CSRF cookie with a header check written by `security/csrf.py`. Where cookies are Secure and no cookie domain is set, the session, CSRF, device, pending second-factor and SSO binding cookies take the `__Host-` prefix (`__Host-ospmae_session`, `__Host-ospmae_csrf`), which a browser accepts only from the installation's own host over HTTPS, so a site on a sibling subdomain can neither set nor shadow them. A session ends at its sliding expiry and also at a fixed time after sign-in (`OSPMAE_SESSION_ABSOLUTE_TTL_SECONDS`, 30 days by default), however recently it was used. Signing in issues a fresh identifier; signing out revokes the account's sessions.
+diff --git a/services/api/app/depscan/scan.py b/services/api/app/depscan/scan.py
+index 68d6e31..e41aeba 100644
+--- a/services/api/app/depscan/scan.py
++++ b/services/api/app/depscan/scan.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import os
++import re
+ import shutil
+ import subprocess
+ import tempfile
+@@ -34,6 +35,14 @@ SKIP_DIRS = {
+ # Component characters and whitespace are never part of a repository URL.
+ _URL_REJECT_CHARS = set(" \t\r\n\0\\'\"<>")
+ 
++# The SCP-like form git accepts for SSH: account@host:path. The account and
++# the path start with a letter, digit or underscore, so no part of the value
++# can read as a git option, and the account holds no ":" for git to read as
++# a transport ("ext::", "fd::").
++_SCP_LIKE_URL = re.compile(
++    r"^[A-Za-z0-9_][A-Za-z0-9._-]*@(?P<host>[A-Za-z0-9.-]+):(?!-)[A-Za-z0-9_~./-][^:]*$"
++)
++
+ # Characters git refuses in a ref name (git check-ref-format), plus the glob
+ # characters ls-remote would expand as a pattern.
+ _REF_REJECT_CHARS = set(" ~^:?*[\\{}")
+@@ -58,6 +67,10 @@ def validate_repo_url(url: str) -> None:
+         raise ValueError("Repository URL is empty")
+     if any(ch in _URL_REJECT_CHARS for ch in raw):
+         raise ValueError("Repository URL contains an unsafe character")
++    # git reads an argument beginning with "-" as one of its options, and
++    # --upload-pack names a command it runs. No repository URL starts so.
++    if raw.startswith("-"):
++        raise ValueError("Repository URL must not start with '-'")
+ 
+     parsed = urlparse(raw)
+     if parsed.username or parsed.password:
+@@ -77,10 +90,9 @@ def validate_repo_url(url: str) -> None:
+             raise ValueError(f"Repo host not allowed: {host}")
+         return
+     # SCP-like ssh URL: git@github.com:org/repo.git
+-    if "://" not in raw and ":" in raw and "@" in raw:
+-        host = raw.split("@", 1)[1].split(":", 1)[0].lower()
+-        if not host:
+-            raise ValueError("Repository URL has no host")
++    scp_like = _SCP_LIKE_URL.match(raw)
++    if scp_like:
++        host = scp_like.group("host").lower()
+         allow = _allowed_hosts()
+         if allow and host not in allow:
+             raise ValueError(f"Repo host not allowed: {host}")
+@@ -288,7 +300,8 @@ def _remote_has_ref(
+ 
+     The ref is only ever used as a positional pattern prefixed with
+     ``refs/tags/`` or ``refs/heads/``, so an option-shaped value cannot reach
+-    git's option parser.
++    git's option parser. The URL follows ``--``, which ends git's options, so
++    it is read as a repository whatever it holds.
+     """
+     try:
+         safe_ref = validate_git_ref_name(ref)
+@@ -296,10 +309,10 @@ def _remote_has_ref(
+         return False
+     if kind == "tag":
+         query = f"refs/tags/{safe_ref}"
+-        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--tags", "--refs", url, query]
++        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--tags", "--refs", "--", url, query]
+     else:
+         query = f"refs/heads/{safe_ref}"
+-        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--heads", url, query]
++        cmd = ["git", *_GIT_FLAGS, "ls-remote", "--heads", "--", url, query]
+ 
+     timeout = int(
+         getattr(settings, "dependency_discovery_clone_timeout_seconds", 180) or 180
+@@ -387,6 +400,7 @@ def clone_repo(
+                     "--branch",
+                     chosen_ref,
+                     "--single-branch",
++                    "--",
+                     clone_url,
+                     str(tmpdir),
+                 ],
+@@ -396,7 +410,16 @@ def clone_repo(
+         else:
+             # default branch as before
+             _run(
+-                ["git", *_GIT_FLAGS, "clone", "--depth", "1", clone_url, str(tmpdir)],
++                [
++                    "git",
++                    *_GIT_FLAGS,
++                    "clone",
++                    "--depth",
++                    "1",
++                    "--",
++                    clone_url,
++                    str(tmpdir),
++                ],
+                 timeout=timeout,
+                 env=env,
+             )
+diff --git a/services/api/app/security/url_safety.py b/services/api/app/security/url_safety.py
+index f9816d9..e3dbf86 100644
+--- a/services/api/app/security/url_safety.py
++++ b/services/api/app/security/url_safety.py
+@@ -3,7 +3,9 @@ from __future__ import annotations
+ import ipaddress
+ import re
+ import socket
++import xml.etree.ElementTree as ET
+ from urllib.parse import urlparse
++from xml.parsers import expat
+ 
+ _DISALLOWED_SCHEMES_RE = re.compile(r"^(?:javascript|data|vbscript):", re.IGNORECASE)
+ 
+@@ -164,6 +166,48 @@ def contains_xml_dtd_or_entity(xml_bytes: bytes) -> bool:
+     return (b"<!doctype" in body) or (b"<!entity" in body)
+ 
+ 
++class _DeclarationFound(Exception):
++    """A document type or entity declaration was read."""
++
++
++class _RootReached(Exception):
++    """The root element began: declarations can only precede it."""
++
++
++def _refuse_declaration(*_args: object) -> None:
++    raise _DeclarationFound
++
++
++def _stop_at_root(*_args: object) -> None:
++    raise _RootReached
++
++
++def parse_xml_without_dtd(xml_bytes: bytes) -> ET.Element:
++    """Parse XML, refusing any document type or entity declaration.
++
++    ``contains_xml_dtd_or_entity`` reads bytes, so it sees a declaration only
++    in an ASCII-compatible encoding; a UTF-16 document spells ``<!DOCTYPE``
++    in other bytes and passes it. The parser decodes the document whatever
++    its encoding, so the refusal is made where a declaration is recognised:
++    the same parser (expat) reads the document up to its root element first,
++    and stops at a declaration.
++    """
++
++    probe = expat.ParserCreate()
++    probe.StartDoctypeDeclHandler = _refuse_declaration
++    probe.EntityDeclHandler = _refuse_declaration
++    probe.StartElementHandler = _stop_at_root
++    try:
++        probe.Parse(xml_bytes, True)
++    except _DeclarationFound:
++        raise ValueError("DTD/ENTITY not allowed in XML") from None
++    except (_RootReached, expat.ExpatError):
++        # No declaration precedes the root. Malformed XML is reported by the
++        # parse below, as it always was.
++        pass
++    return ET.fromstring(xml_bytes)  # noqa: S314 - declarations refused above
++
++
+ # Characters that browsers resolve before a path reaches the server, plus all
+ # ASCII control characters; a same-origin route must never contain them.
+ _BAD_ROUTE_CHARS = {ord("\\")} | set(range(0x00, 0x20)) | {0x7F}
+diff --git a/services/api/app/tasks/release_feed.py b/services/api/app/tasks/release_feed.py
+index ea9bef1..56f5fb7 100644
+--- a/services/api/app/tasks/release_feed.py
++++ b/services/api/app/tasks/release_feed.py
+@@ -29,6 +29,7 @@ from app.security.outbound import public_client
+ from app.security.regex_shape import compile_supplied_pattern
+ from app.security.url_safety import (
+     contains_xml_dtd_or_entity,
++    parse_xml_without_dtd,
+     validate_public_https_url,
+ )
+ from app.services.entity_changelog import (
+@@ -178,7 +179,9 @@ def _parse_feed_entries(xml_data: bytes) -> list[dict[str, Any]]:
+     if contains_xml_dtd_or_entity(xml_data):
+         raise ValueError("DTD/ENTITY not allowed in release feeds")
+ 
+-    root = ET.fromstring(xml_data)  # noqa: S314 - DTD/entity screened above
++    # The byte scan above sees ASCII-compatible encodings only (a UTF-16
++    # feed passes it); the parser refuses a declaration in any encoding.
++    root = parse_xml_without_dtd(xml_data)
+     root_name = _localname(root.tag).lower()
+ 
+     entries: list[dict[str, Any]] = []
+diff --git a/services/api/tests/test_depscan_and_urls.py b/services/api/tests/test_depscan_and_urls.py
+index c15c2a3..5d9f97f 100644
+--- a/services/api/tests/test_depscan_and_urls.py
++++ b/services/api/tests/test_depscan_and_urls.py
+@@ -2,6 +2,11 @@
+ 
+ from __future__ import annotations
+ 
++import shutil
++import subprocess
++import xml.etree.ElementTree as ET
++
++import app.depscan.scan as scan_mod
+ import pytest
+ from app.depscan.parsers import (
+     _bounded_read,
+@@ -14,7 +19,12 @@ from app.depscan.scan import (
+     _extract_repo_and_tag,
+     validate_repo_url,
+ )
+-from app.security.url_safety import contains_xml_dtd_or_entity, safe_relative_route_path
++from app.security.url_safety import (
++    contains_xml_dtd_or_entity,
++    parse_xml_without_dtd,
++    safe_relative_route_path,
++)
++from app.tasks.release_feed import _parse_feed_entries
+ 
+ 
+ @pytest.mark.parametrize(
+@@ -30,6 +40,23 @@ from app.security.url_safety import contains_xml_dtd_or_entity, safe_relative_ro
+         ("file:///etc/passwd", False),
+         ("https://github.com/owner/repo\\..\\evil", False),
+         ("ssh://git@host/org/repo", False),
++        # git reads a leading "-" as an option; --upload-pack names a command
++        # it runs, so a value shaped like one is never a repository.
++        ("--upload-pack=touch${IFS}/tmp/x;@github.com:x", False),
++        ("-uid@github.com:owner/repo", False),
++        ("-c@github.com:owner/repo", False),
++        # The same for the path, which git hands to the remote command line.
++        ("git@github.com:-oProxyCommand=x", False),
++        # A transport prefix ("ext::" runs a command) is not an account name.
++        ("ext::sh${IFS}-c${IFS}id@github.com:x", False),
++        ("fd::3@github.com:x", False),
++        # The host of the SCP-like form is the whole host, as allowlisted.
++        ("git@evil.example:owner/repo", False),
++        ("git@github.com.evil.example:owner/repo", False),
++        ("git@:owner/repo", False),
++        ("git@github.com:", False),
++        ("git@gitlab.com:group/sub/project.git", True),
++        ("org-123@github.com:owner/repo.git", True),
+     ],
+ )
+ def test_validate_repo_url_matrix(url, ok):
+@@ -40,6 +67,76 @@ def test_validate_repo_url_matrix(url, ok):
+             validate_repo_url(url)
+ 
+ 
++def _recorded_git(monkeypatch):
++    commands: list[list[str]] = []
++
++    def fake_run(cmd, **_kwargs):
++        commands.append(list(cmd))
++        # Every ref asked about exists, as ls-remote would report it.
++        out = f"abc {cmd[-1]}\n" if "ls-remote" in cmd else ""
++        return subprocess.CompletedProcess(cmd, 0, stdout=out)
++
++    monkeypatch.setattr(scan_mod.subprocess, "run", fake_run)
++    return commands
++
++
++def test_git_reads_the_repository_after_its_options_end(monkeypatch):
++    """Every git command places ``--`` before the URL: what follows it is a
++    repository, never an option, whatever a stored value holds."""
++    commands = _recorded_git(monkeypatch)
++    url = "https://github.com/owner/repo"
++    scan_mod._remote_has_ref(url, "v1.0.0", kind="tag")
++    scan_mod._remote_has_ref(url, "main", kind="branch")
++    for branch in ("main", None):
++        repo_dir, _ = scan_mod.clone_repo(url, branch=branch)
++        shutil.rmtree(repo_dir, ignore_errors=True)
++    remote = [cmd for cmd in commands if "ls-remote" in cmd or "clone" in cmd]
++    assert {cmd[3] for cmd in remote} == {"ls-remote", "clone"}
++    for cmd in remote:
++        marker = cmd.index("--")
++        assert cmd[marker + 1] == url, cmd
++        # Nothing after the marker is one of git's options.
++        assert not any(arg.startswith("-") for arg in cmd[marker + 1 :]), cmd
++
++
++def test_a_clone_refuses_an_option_shaped_url_before_git_runs(monkeypatch):
++    commands = _recorded_git(monkeypatch)
++    for url in (
++        "--upload-pack=touch${IFS}/tmp/x;@github.com:x",
++        "-uid@github.com:owner/repo",
++    ):
++        with pytest.raises(ValueError):
++            scan_mod.clone_repo(url, version_hint="1.0.0")
++        with pytest.raises(ValueError):
++            scan_mod.clone_repo(url, branch="main")
++    assert commands == []
++
++
++@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
++def test_git_itself_runs_no_command_named_by_a_url(tmp_path):
++    """The real git, given the value that once reached it as an option: the
++    command it names does not run, because the value follows ``--``."""
++    marker = tmp_path / "ran"
++    url = f"--upload-pack=touch${{IFS}}{marker};@github.com:x"
++    # Only local repositories are allowed here, so nothing leaves the machine
++    # when git reads the value as an SSH address.
++    env = {**scan_mod._git_env(), "GIT_ALLOW_PROTOCOL": "file"}
++    for kind in ("tag", "branch"):
++        assert scan_mod._remote_has_ref(url, "v1.0.0", kind=kind, env=env) is False
++    assert not marker.exists()
++    # Without the marker the same value is an option, and git runs it: the
++    # check above would fail if ``--`` were dropped.
++    subprocess.run(
++        ["git", "ls-remote", "--tags", "--refs", url, "refs/tags/v1.0.0"],
++        env=env,
++        cwd=tmp_path,
++        capture_output=True,
++        timeout=60,
++        check=False,
++    )
++    assert marker.exists()
++
++
+ def test_redact_url_masks_credentials():
+     out = redact_url("git clone https://user:secretpw@github.com/o/r")
+     assert "secretpw" not in out
+@@ -81,6 +178,73 @@ def _write(tmp_path, name: str, content: bytes):
+     return p
+ 
+ 
++_FEED = (
++    '<?xml version="1.0" encoding="{encoding}"?>{declarations}'
++    "<rss><channel><item><title>v1.0.0{entity}</title>"
++    "<link>https://github.com/owner/repo/releases/tag/v1.0.0</link>"
++    "</item></channel></rss>"
++)
++_DECLARATIONS = '<!DOCTYPE rss [<!ENTITY a "AAAAAAAAAA">]>'
++
++
++def _feed(encoding: str, *, declared: bool) -> bytes:
++    """The feed as a server would send it. A single-byte encoding keeps its
++    XML declaration in ASCII, which is how a parser learns the encoding."""
++    text = _FEED.format(
++        encoding=encoding,
++        declarations=_DECLARATIONS if declared else "",
++        entity=" &a;" if declared else "",
++    )
++    if encoding == "utf-16":
++        return text.encode("utf-16")
++    head, _, body = text.partition("?>")
++    return (head + "?>").encode("ascii") + body.encode(encoding)
++
++
++@pytest.mark.parametrize(
++    ("encoding", "scan_sees_it"),
++    [
++        ("utf-8", True),
++        ("latin-1", True),
++        # UTF-16 spells the declaration in other bytes: the scan passes it.
++        ("utf-16", False),
++    ],
++)
++def test_a_declaration_is_refused_in_every_encoding_the_parser_reads(
++    encoding, scan_sees_it
++):
++    raw = _feed(encoding, declared=True)
++    assert contains_xml_dtd_or_entity(raw) is scan_sees_it
++    # Unguarded, the standard parser reads the declaration and expands it.
++    expanded = ET.fromstring(raw).find(".//title").text  # noqa: S314 - the unsafe baseline
++    assert expanded == "v1.0.0 AAAAAAAAAA"
++    with pytest.raises(ValueError, match="DTD/ENTITY not allowed"):
++        parse_xml_without_dtd(raw)
++    with pytest.raises(ValueError, match="DTD/ENTITY not allowed"):
++        _parse_feed_entries(raw)
++
++
++@pytest.mark.parametrize("encoding", ["utf-8", "latin-1", "utf-16"])
++def test_a_feed_without_declarations_parses_in_any_encoding(encoding):
++    raw = _feed(encoding, declared=False)
++    assert parse_xml_without_dtd(raw).find(".//title").text == "v1.0.0"
++    entries = _parse_feed_entries(raw)
++    assert [entry["title"] for entry in entries] == ["v1.0.0"]
++    assert entries[0]["link"] == "https://github.com/owner/repo/releases/tag/v1.0.0"
++
++
++def test_an_encoding_the_parser_cannot_read_is_a_parse_error():
++    # EBCDIC shares no bytes with ASCII; the parser refuses the document
++    # outright, so nothing in it is read, declarations included.
++    with pytest.raises(ET.ParseError):
++        parse_xml_without_dtd(_feed("cp037", declared=True))
++
++
++def test_malformed_xml_is_still_a_parse_error():
++    with pytest.raises(ET.ParseError):
++        parse_xml_without_dtd(b"<rss><channel>")
++
++
+ def test_bounded_read_skips_oversize_files(tmp_path):
+     p = _write(tmp_path, "package-lock.json", b"{}\n" * (3_000_000 // 4))
+     assert _bounded_read(p, 1_000_000) is None
+diff --git a/services/ui/nginx/default.conf b/services/ui/nginx/default.conf
+index 6ab6ba9..be9daf7 100644
+--- a/services/ui/nginx/default.conf
++++ b/services/ui/nginx/default.conf
+@@ -137,7 +137,75 @@ server {
+   }
+ 
+   # ---------------------------------------------------------------------------
+-  # Static assets (no auth gate; the pages authenticate over the API).
++  # Auth gate for HTML pages (cookie-based sessions), as in KEEN.
++  #
++  # A page is served only to a signed-in browser: nginx asks the API first
++  # (auth_request), so a signed-out browser never receives, and never briefly
++  # shows, the application's pages. It gets the sign-in page in place, at the
++  # address it asked for, and signing in continues to that address.
++  # ---------------------------------------------------------------------------
++
++  # Subrequest endpoint used by auth_request.
++  location = /_auth_check {
++    internal;
++
++    proxy_pass $ospmae_api/v1/auth/check;
++    proxy_http_version 1.1;
++
++    proxy_pass_request_body off;
++    proxy_set_header Content-Length "";
++
++    proxy_set_header Host $host;
++    proxy_set_header X-Real-IP $remote_addr;
++    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-Proto $scheme;
++    proxy_set_header Cookie $http_cookie;
++
++    # The client's copies of every identity header are cleared, as for /v1/.
++    proxy_set_header REMOTE_USER "";
++    proxy_set_header X-Remote-User "";
++    proxy_set_header X-Vouch-User "";
++    proxy_set_header X-Forwarded-User "";
++
++    proxy_connect_timeout 3s;
++    proxy_read_timeout 10s;
++  }
++
++  # Administrator-only check that hides the administration page. The decision
++  # comes from the API's role data, not from anything nginx holds.
++  location = /_auth_check_admin {
++    internal;
++
++    proxy_pass $ospmae_api/v1/auth/check-admin;
++    proxy_http_version 1.1;
++
++    proxy_pass_request_body off;
++    proxy_set_header Content-Length "";
++
++    proxy_set_header Host $host;
++    proxy_set_header X-Real-IP $remote_addr;
++    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-Proto $scheme;
++    proxy_set_header Cookie $http_cookie;
++
++    proxy_set_header REMOTE_USER "";
++    proxy_set_header X-Remote-User "";
++    proxy_set_header X-Vouch-User "";
++    proxy_set_header X-Forwarded-User "";
++
++    proxy_connect_timeout 3s;
++    proxy_read_timeout 10s;
++  }
++
++  # Answers 404 to a signed-in account that is not an administrator.
++  location = /_admin_404 {
++    internal;
++    return 404;
++  }
++
++  # ---------------------------------------------------------------------------
++  # Static assets (no auth gate: scripts and styles hold no account data, and
++  # the sign-in page needs them before anyone is signed in).
+   # ---------------------------------------------------------------------------
+ 
+   # During development, the UI is frequently rebuilt without fingerprinted
+@@ -162,10 +230,41 @@ server {
+     try_files $uri =404;
+   }
+ 
+-  # Unauthenticated pages (sign-in flows), exact only.
++  # Administration page and its scripts: hidden unless the signed-in account
++  # is an administrator. Exact locations take precedence over /pages/ above.
++  location = /admin.html {
++    auth_request /_auth_check_admin;
++    error_page 401 =403 /login.html;
++    error_page 403 =404 /_admin_404;
++    try_files $uri =404;
++  }
++  location = /pages/admin.js {
++    auth_request /_auth_check_admin;
++    error_page 401 =403 /login.html;
++    error_page 403 =404 /_admin_404;
++    try_files $uri =404;
++  }
++  location = /pages/admin-features.js {
++    auth_request /_auth_check_admin;
++    error_page 401 =403 /login.html;
++    error_page 403 =404 /_admin_404;
++    try_files $uri =404;
++  }
++
++  # Pages reachable without a session (sign-in flows), exact only. The second
++  # factor page continues a sign-in whose session does not exist yet. The
++  # e-mail confirmation page holds no account data, and loading it without a
++  # session lets SameSite=Strict cookies work after navigation from mail; its
++  # API requires a signed-in session and CSRF proof.
+   location = /login.html {
+     try_files $uri =404;
+   }
++  location = /mfa.html {
++    try_files $uri =404;
++  }
++  location = /sso-email.html {
++    try_files $uri =404;
++  }
+   location = /preferences.html {
+     return 301 /account.html;
+   }
+@@ -177,21 +276,29 @@ server {
+   # root gets it served in place (no redirect), so bookmarks and typed URLs
+   # keep the bare path.
+   location = / {
+-    try_files /index.html =404;
+-  }
++    auth_request /_auth_check;
++    error_page 401 =403 /login.html;
+ 
+-  # Root page.
+-  location = /index.html {
+-    try_files $uri =404;
++    try_files /index.html =404;
+   }
+ 
+-  # Remaining pages: exact try_files, no auth gate (the API enforces auth).
++  # Every other page requires a signed-in session. The API still enforces
++  # authentication and permissions on all data; this gate keeps the pages
++  # themselves from a signed-out browser.
+   location ~* \.html$ {
++    auth_request /_auth_check;
++    error_page 401 =403 /login.html;
++
+     try_files $uri =404;
+   }
+ 
+-  # Fallback for unknown paths: 404 rather than silently serving the dashboard.
++  # Fallback for unknown paths: 404 rather than silently serving the
++  # dashboard, and only to a signed-in browser, so a signed-out one learns
++  # nothing about which paths exist.
+   location / {
++    auth_request /_auth_check;
++    error_page 401 =403 /login.html;
++
+     try_files $uri =404;
+   }
+ 
+diff --git a/services/ui/public/app.js b/services/ui/public/app.js
+index 82a83ff..84ef88c 100644
+--- a/services/ui/public/app.js
++++ b/services/ui/public/app.js
+@@ -1134,6 +1134,53 @@
+     return parsed ? parsed.toLocaleString() : String(value);
+   }
+ 
++  // A long value, such as an advisory title that is one unbroken commit
++  // address, shows its first part beside a control that reveals the rest.
++  // The value wraps at any character (.long-text in styles.css), so the
++  // whole of it stays inside its column once expanded. Built from text
++  // nodes: nothing in the value is read as markup.
++  const LONG_TEXT_LIMIT = 140;
++
++  function expandableText(value, limit = LONG_TEXT_LIMIT) {
++    const chars = Array.from(String(value ?? ""));
++    const wrap = document.createElement("span");
++    wrap.className = "long-text";
++    if (chars.length <= limit) {
++      wrap.textContent = chars.join("");
++      return wrap;
++    }
++    wrap.setAttribute("data-long-text", "");
++    const short = document.createElement("span");
++    short.setAttribute("data-long-text-short", "");
++    short.textContent = `${chars.slice(0, limit).join("").trimEnd()}…`;
++    const full = document.createElement("span");
++    full.setAttribute("data-long-text-full", "");
++    full.setAttribute("hidden", "");
++    full.textContent = chars.join("");
++    const toggle = document.createElement("button");
++    toggle.setAttribute("type", "button");
++    toggle.className =
++      "btn btn-link btn-sm p-0 align-baseline long-text-toggle";
++    toggle.setAttribute("data-long-text-toggle", "");
++    toggle.setAttribute("aria-expanded", "false");
++    toggle.textContent = "Expand";
++    wrap.append(short, full, " ", toggle);
++    return wrap;
++  }
++
++  // One listener serves every expandable value, including those in markup a
++  // page inserts later.
++  document.addEventListener("click", (event) => {
++    const toggle = event.target.closest?.("[data-long-text-toggle]");
++    if (!toggle) return;
++    const wrap = toggle.closest("[data-long-text]");
++    const expanded = toggle.getAttribute("aria-expanded") !== "true";
++    wrap.querySelector("[data-long-text-short]").hidden = expanded;
++    wrap.querySelector("[data-long-text-full]").hidden = !expanded;
++    toggle.setAttribute("aria-expanded", String(expanded));
++    toggle.textContent = expanded ? "Collapse" : "Expand";
++  });
++
+   window.OSPMAE = {
+     state,
+     api: apiRequest,
+@@ -1151,6 +1198,7 @@
+     parseTimestamp,
+     formatTimestamp,
+     escapeHtml,
++    expandableText,
+     safeHref,
+     csvCell,
+     isAdmin,
+diff --git a/services/ui/public/dependencies.html b/services/ui/public/dependencies.html
+index 92294be..db5ed20 100644
+--- a/services/ui/public/dependencies.html
++++ b/services/ui/public/dependencies.html
+@@ -95,7 +95,7 @@
+                     <th>Severity</th>
+                     <th>ID</th>
+                     <th>Title</th>
+-                    <th>Fixed version</th>
++                    <th class="text-nowrap">Fixed version</th>
+                     <th>Scanner</th>
+                   </tr>
+                 </thead>
+diff --git a/services/ui/public/mosp-ui-config.js b/services/ui/public/mosp-ui-config.js
+index d7a3674..3cbd58f 100644
+--- a/services/ui/public/mosp-ui-config.js
++++ b/services/ui/public/mosp-ui-config.js
+@@ -115,7 +115,10 @@
+       label: "Framework",
+       queryParam: "framework",
+       endpoint: "/v1/frameworks",
+-      selectMinWidthPx: 240,
++      // Sized by its longest name within these bounds, as in KEEN, so the
++      // picker leaves room for the links on a laptop.
++      selectMinChars: 14,
++      selectMaxChars: 19,
+     },
+ 
+     // OSPMAE doesn't have global navbar search.
+@@ -130,8 +133,14 @@
+     // The shared MOSP shell defaults are KEEN-flavoured and include KEEN's
+     // "Start audit" action. OSPMAE does not have an audits module, so opt out
+     // of navbar extra actions while keeping the shared navbar shell itself.
++    //
++    // The design system collapses the links behind a menu button below
++    // 1400px by default (navbar-expand-xxl), which is every laptop at 100%
++    // zoom. As in KEEN, the bar stays expanded from 992px; styles.css fits
++    // it into that width.
+     nav: {
+       extraHtml: "",
++      expandClass: "navbar-expand-lg",
+     },
+ 
+     bell: {
+diff --git a/services/ui/public/pages/dependencies.js b/services/ui/public/pages/dependencies.js
+index af219be..06671dc 100644
+--- a/services/ui/public/pages/dependencies.js
++++ b/services/ui/public/pages/dependencies.js
+@@ -5,6 +5,7 @@
+     window.OSPMAE?.api || window.OSPMAE?.apiRequest || window.apiRequest;
+   const initAuth = window.OSPMAE?.initAuth;
+   const toast = window.OSPMAE?.toast;
++  const expandableText = window.OSPMAE?.expandableText;
+ 
+   const el = {
+     refreshBtn: document.getElementById("refreshBtn"),
+@@ -356,7 +357,7 @@
+         tr.innerHTML = `
+           <td>${sevBadge(sev).outerHTML}</td>
+           <td class="text-nowrap">${esc(id)}</td>
+-          <td>${esc(title)}${
++          <td class="long-text vuln-title-cell">${expandableText(title).outerHTML}${
+             refs.length
+               ? `<div class="small text-secondary mt-1">${refs
+                   .slice(0, 3)
+diff --git a/services/ui/public/pages/login.js b/services/ui/public/pages/login.js
+index 84f1f75..d7b7036 100644
+--- a/services/ui/public/pages/login.js
++++ b/services/ui/public/pages/login.js
+@@ -50,8 +50,24 @@
+     return "/index.html";
+   }
+ 
++  // Where a completed sign-in goes: an explicit ?next= first. Without one,
++  // a signed-out browser that asked for another page was given this page in
++  // its place (nginx's auth gate), so the address it asked for is the
++  // destination, as on KEEN's sign-in page.
+   function getNextParam() {
+-    return new URLSearchParams(window.location.search).get("next") || "";
++    const explicit = new URLSearchParams(window.location.search).get("next");
++    if (explicit) return explicit;
++    const { pathname, search } = window.location;
++    return pathname === "/login.html" ? "" : pathname + search;
++  }
++
++  // The second factor page finishes the sign-in, so it is told where the
++  // browser was going.
++  function secondFactorUrl() {
++    const next = getNextParam();
++    return next
++      ? `/mfa.html?next=${encodeURIComponent(sanitizeNext(next))}`
++      : "/mfa.html";
+   }
+ 
+   // Messages show as an alert above the form, as on KEEN's sign-in page.
+@@ -180,7 +196,7 @@
+ 
+       if (res.mfa_required) {
+         setMsg("Second factor required. Redirecting…");
+-        window.location.replace("/mfa.html");
++        window.location.replace(secondFactorUrl());
+         return;
+       }
+ 
+diff --git a/services/ui/public/pages/mfa.js b/services/ui/public/pages/mfa.js
+index b51d237..596701b 100644
+--- a/services/ui/public/pages/mfa.js
++++ b/services/ui/public/pages/mfa.js
+@@ -194,6 +194,11 @@
+   }
+   function safeNext(raw) {
+     const value = String(raw || "").trim();
++    // Browsers read a backslash as a slash and drop tabs and line breaks
++    // before a navigation leaves the page, so "/\\host" and "/<tab>/host"
++    // both name another site; a value containing either never replays, the
++    // rule of the sign-in page's sanitizeNext.
++    if (/[\\\u0000-\u001f\u007f]/.test(value)) return "/index.html";
+     if (
+       value.startsWith("/") &&
+       !value.startsWith("//") &&
+diff --git a/services/ui/public/pages/project.js b/services/ui/public/pages/project.js
+index 827d063..a7dbceb 100644
+--- a/services/ui/public/pages/project.js
++++ b/services/ui/public/pages/project.js
+@@ -9,6 +9,7 @@ const {
+   nodeColor: nodeColorForKey,
+   toast,
+   loadEntityChangelog,
++  expandableText,
+ } = window.OSPMAE;
+ 
+ const state = {
+@@ -2695,7 +2696,9 @@ function renderDepVulnerabilityPanel(res) {
+       .map((v) => {
+         const sev = String(v?.severity || "").toUpperCase();
+         const sevCls = severityBadgeClass(sev);
+-        const title = v?.title ? escapeHtml(v.title) : "";
++        // A long title (one unbroken address, say) is shortened behind an
++        // Expand control and wraps inside the list.
++        const title = v?.title ? expandableText(v.title).outerHTML : "";
+         const fixed = v?.fixed_version
+           ? ` • fixed: ${escapeHtml(v.fixed_version)}`
+           : "";
+@@ -2719,7 +2722,7 @@ function renderDepVulnerabilityPanel(res) {
+         return `
+           <div class="py-2 border-top">
+             <div class="d-flex align-items-start justify-content-between gap-2 flex-wrap">
+-              <div>
++              <div class="long-text">
+                 <div class="fw-semibold">${escapeHtml(v?.vulnerability_id || "Vulnerability")}</div>
+                 ${title ? `<div class="text-secondary small">${title}${fixed}</div>` : fixed ? `<div class="text-secondary small">${fixed.slice(3)}</div>` : ""}
+                 ${refHtml}
+diff --git a/services/ui/public/styles.css b/services/ui/public/styles.css
+index 67ed957..d890c03 100644
+--- a/services/ui/public/styles.css
++++ b/services/ui/public/styles.css
+@@ -271,3 +271,66 @@
+   background-color: var(--keen-accent);
+   border-color: var(--keen-accent);
+ }
++
++/* Long values (an advisory title that is one unbroken commit address, say)
++   wrap at any character, so a table or list keeps to its container instead
++   of running off the screen. app.js (expandableText) shortens them behind an
++   Expand control. */
++.long-text {
++  overflow-wrap: anywhere;
++  word-break: break-word;
++}
++.long-text-toggle {
++  white-space: nowrap;
++  vertical-align: baseline;
++}
++/* The title column keeps a readable measure when the table is squeezed; the
++   other columns hold short values and do not wrap. */
++.vuln-title-cell {
++  min-width: 14rem;
++}
++
++/* Keep the full navigation available at ordinary laptop widths, as in KEEN:
++   the design system's default hides it behind the menu button below 1400px,
++   which is every laptop at 100% zoom. mosp-ui-config.js sets the 992px
++   breakpoint (navbar-expand-lg); these rules let the expanded bar fit, and
++   wrap to a second row rather than overflow when it cannot. */
++@media (min-width: 992px) {
++  #navbar .navbar-keen .navbar-collapse {
++    padding-top: 0;
++    min-width: 0;
++    flex-wrap: wrap;
++    row-gap: 0.35rem;
++  }
++  #navbar .navbar-keen .navbar-nav {
++    flex-wrap: wrap;
++    margin-bottom: 0 !important;
++  }
++  #navbar .navbar-keen .mosp-nav-framework,
++  #navbar .navbar-keen .mosp-nav-search,
++  #navbar .navbar-keen .mosp-nav-actions {
++    margin-top: 0;
++  }
++  #navbar .navbar-keen .mosp-nav-framework-label {
++    display: none;
++  }
++  #navbar .navbar-keen .mosp-nav-framework-select {
++    width: 11rem;
++    max-width: 11rem;
++  }
++  #navbar .navbar-keen .mosp-nav-actions {
++    flex-wrap: nowrap;
++    white-space: nowrap;
++    gap: 0.25rem;
++  }
++}
++@media (min-width: 992px) and (max-width: 1399.98px) {
++  #navbar .navbar-keen .nav-link {
++    font-size: 0.875rem;
++    padding-left: 0.4rem;
++    padding-right: 0.4rem;
++  }
++  #navbar .navbar-keen .navbar-brand {
++    margin-right: 0.45rem;
++  }
++}
+diff --git a/services/ui/tests/login-sanitize.test.mjs b/services/ui/tests/login-sanitize.test.mjs
+index af59574..32a685b 100644
+--- a/services/ui/tests/login-sanitize.test.mjs
++++ b/services/ui/tests/login-sanitize.test.mjs
+@@ -60,3 +60,137 @@ test("allowed hosts still permit absolute same-protocol redirects", () => {
+   const deny = withStubs(match[0], []);
+   assert.equal(deny("https://partner.example.com/ok"), "/index.html");
+ });
++
++// The destination helpers are plain functions in the same IIFE; they are
++// evaluated together against a stand-in for the address the page is shown at.
++const grab = (signature) => {
++  const start = source.indexOf(`  function ${signature} {`);
++  assert.notEqual(start, -1, signature);
++  return source.slice(start, source.indexOf("\n  }", start) + 4);
++};
++
++function destinations(href) {
++  const at = new URL(href);
++  const fn = new Function(
++    "redirectAllowedHosts",
++    "window",
++    `${match[0]}\n${grab("getNextParam()")}\n${grab("secondFactorUrl()")}
++     return { getNextParam, secondFactorUrl, sanitizeNext };`,
++  );
++  return fn([], {
++    location: { origin: at.origin, pathname: at.pathname, search: at.search },
++  });
++}
++
++test("an explicit next names the destination wherever the page is shown", () => {
++  for (const href of [
++    "https://ospmae.test/login.html?next=%2Fproject.html%3Fid%3D3",
++    "https://ospmae.test/admin.html?next=%2Fproject.html%3Fid%3D3",
++  ]) {
++    assert.equal(destinations(href).getNextParam(), "/project.html?id=3", href);
++  }
++});
++
++test("the sign-in page shown in place of another page returns to that page", () => {
++  // nginx gives a signed-out browser this page at the address it asked for.
++  const inPlace = destinations(
++    "https://ospmae.test/project.html?id=7&tab=deps",
++  );
++  assert.equal(inPlace.getNextParam(), "/project.html?id=7&tab=deps");
++  assert.equal(
++    inPlace.sanitizeNext(inPlace.getNextParam()),
++    "/project.html?id=7&tab=deps",
++  );
++  // The site root is a page like any other.
++  assert.equal(destinations("https://ospmae.test/").getNextParam(), "/");
++  // At its own address the page has nowhere to return to.
++  const own = destinations("https://ospmae.test/login.html");
++  assert.equal(own.getNextParam(), "");
++  assert.equal(own.sanitizeNext(own.getNextParam()), "/index.html");
++});
++
++test("the second factor page is told the destination, already made safe", () => {
++  assert.equal(
++    destinations("https://ospmae.test/login.html").secondFactorUrl(),
++    "/mfa.html",
++  );
++  assert.equal(
++    destinations(
++      "https://ospmae.test/project.html?id=7&tab=deps",
++    ).secondFactorUrl(),
++    "/mfa.html?next=%2Fproject.html%3Fid%3D7%26tab%3Ddeps",
++  );
++  // A destination naming another site is replaced before it is handed on.
++  for (const hostile of [
++    "//evil.example",
++    "/\\evil.example",
++    "/\t/evil.example",
++  ]) {
++    assert.equal(
++      destinations(
++        `https://ospmae.test/login.html?next=${encodeURIComponent(hostile)}`,
++      ).secondFactorUrl(),
++      "/mfa.html?next=%2Findex.html",
++      hostile,
++    );
++  }
++});
++
++// The second factor page finishes a sign-in at the address in its own next
++// parameter, through its own check.
++const mfaSource = readFileSync(
++  path.resolve(here, "..", "public", "pages", "mfa.js"),
++  "utf8",
++);
++const safeNextSource = mfaSource.match(
++  /function safeNext\(raw\) \{[\s\S]*?\n  \}/,
++);
++assert.ok(safeNextSource, "safeNext must exist as a plain function");
++const safeNext = new Function(
++  "window",
++  `${safeNextSource[0]}\n return safeNext;`,
++)({ location: { origin: "https://ospmae.test" } });
++
++test("the second factor page continues only to OSPMAE's own pages", () => {
++  assert.equal(safeNext("/project.html?id=3"), "/project.html?id=3");
++  assert.equal(safeNext("/account.html#password"), "/account.html#password");
++  assert.equal(
++    safeNext("https://ospmae.test/account.html?x=1#y"),
++    "/account.html?x=1#y",
++  );
++  for (const hostile of [
++    "//evil.example",
++    "https://evil.example/",
++    "javascript:alert(1)",
++    "http://[",
++  ]) {
++    assert.equal(safeNext(hostile), "/index.html", hostile);
++  }
++  // Nothing to continue to resolves to the site's own root.
++  assert.equal(safeNext(""), "/");
++});
++
++test("the second factor page refuses addresses a browser reads as another site", () => {
++  // A browser turns each of these into //evil.example before navigating:
++  // a backslash counts as a slash, and tabs and line breaks are dropped.
++  for (const hostile of [
++    "/\\evil.example",
++    "/\\/evil.example",
++    "/\t/evil.example",
++    "/\n/evil.example",
++    "/\r/evil.example",
++    "/a\u0000b",
++    "/a\u007fb",
++  ]) {
++    assert.equal(safeNext(hostile), "/index.html", JSON.stringify(hostile));
++  }
++  // What two of them would have named, unchecked.
++  assert.equal(
++    new URL("/\\evil.example", "https://ospmae.test").origin,
++    "https://evil.example",
++  );
++  assert.equal(
++    new URL("/\t/evil.example", "https://ospmae.test").origin,
++    "https://evil.example",
++  );
++});
+diff --git a/services/ui/tests/nav-features.test.mjs b/services/ui/tests/nav-features.test.mjs
+index 14ca89b..084c02b 100644
+--- a/services/ui/tests/nav-features.test.mjs
++++ b/services/ui/tests/nav-features.test.mjs
+@@ -43,3 +43,33 @@ test("an answer without features keeps every link", async (t) => {
+     ],
+   );
+ });
++
++test("the navigation stays expanded at laptop widths, as in KEEN", async (t) => {
++  const cfg = await config(t);
++  // The design system's default (navbar-expand-xxl) hides the links behind
++  // the menu button below 1400px: every laptop at 100% zoom.
++  assert.equal(cfg.nav.expandClass, "navbar-expand-lg");
++  // The framework picker is sized by its names, within bounds that leave
++  // room for the links; a fixed minimum width would take that room back.
++  assert.equal(cfg.framework.selectMinChars, 14);
++  assert.equal(cfg.framework.selectMaxChars, 19);
++  assert.equal(cfg.framework.selectMinWidthPx, undefined);
++
++  // styles.css fits the expanded bar into that width from the same 992px.
++  const { readFile } = await import("node:fs/promises");
++  const css = await readFile(
++    new URL("../public/styles.css", import.meta.url),
++    "utf8",
++  );
++  const laptop = css.slice(
++    css.indexOf("@media (min-width: 992px) {\n  #navbar"),
++  );
++  assert.match(
++    laptop,
++    /#navbar \.navbar-keen \.navbar-collapse \{[^}]*flex-wrap: wrap;/,
++  );
++  assert.match(
++    laptop,
++    /#navbar \.navbar-keen \.mosp-nav-framework-select \{[^}]*max-width: 11rem;/,
++  );
++});
+diff --git a/services/ui/tests/nginx-policy.test.mjs b/services/ui/tests/nginx-policy.test.mjs
+index bdf4499..d97b157 100644
+--- a/services/ui/tests/nginx-policy.test.mjs
++++ b/services/ui/tests/nginx-policy.test.mjs
+@@ -106,3 +106,106 @@ test("the design system is pinned by commit, in the manifest and the lock alike"
+   assert.ok(locked.resolved.endsWith(`#${commit}`));
+   assert.match(locked.integrity, /^sha512-/);
+ });
++
++// One location block of the server, by its exact opening line.
++const locationBlock = (opening) => {
++  const start = server.indexOf(`  location ${opening} {`);
++  assert.notEqual(start, -1, opening);
++  return server.slice(start, server.indexOf("\n  }", start));
++};
++
++test("pages are served only to a signed-in browser, which nginx asks the API about", () => {
++  // Without the gate a signed-out browser receives a page and shows it until
++  // the page's own script learns there is no session.
++  for (const opening of ["= /", "~* \\.html$", "/"]) {
++    const block = locationBlock(opening);
++    assert.match(block, /auth_request \/_auth_check;/, opening);
++    // A signed-out browser gets the sign-in page in place, as a refusal.
++    assert.match(block, /error_page 401 =403 \/login\.html;/, opening);
++  }
++  // No page is named outside the gate except the sign-in flow's own.
++  const ungated = [...server.matchAll(/location (= \S+\.html) \{([^}]*)\}/g)]
++    .filter(([, , body]) => !body.includes("auth_request"))
++    .map(([, opening]) => opening)
++    .sort();
++  assert.deepEqual(ungated, [
++    "= /login.html",
++    "= /mfa.html",
++    "= /preferences.html",
++    "= /sso-email.html",
++  ]);
++  // The retired preferences page only redirects to a gated one.
++  assert.match(
++    locationBlock("= /preferences.html"),
++    /return 301 \/account\.html;/,
++  );
++});
++
++test("the administration page and its scripts go only to administrators", () => {
++  for (const opening of [
++    "= /admin.html",
++    "= /pages/admin.js",
++    "= /pages/admin-features.js",
++  ]) {
++    const block = locationBlock(opening);
++    assert.match(block, /auth_request \/_auth_check_admin;/, opening);
++    assert.match(block, /error_page 401 =403 \/login\.html;/, opening);
++    // Another signed-in account is told the page does not exist.
++    assert.match(block, /error_page 403 =404 \/_admin_404;/, opening);
++  }
++  const hidden = locationBlock("= /_admin_404");
++  assert.match(hidden, /internal;/);
++  assert.match(hidden, /return 404;/);
++});
++
++test("the checks are internal, carry the session cookie and no client identity", () => {
++  for (const [opening, route] of [
++    ["= /_auth_check", "/v1/auth/check"],
++    ["= /_auth_check_admin", "/v1/auth/check-admin"],
++  ]) {
++    const block = locationBlock(opening);
++    // A browser cannot ask for the check's address itself.
++    assert.match(block, /internal;/, opening);
++    assert.ok(block.includes(`proxy_pass $ospmae_api${route};`), opening);
++    assert.ok(block.includes("proxy_set_header Cookie $http_cookie;"), opening);
++    // The page request's body is not replayed to the API.
++    assert.ok(block.includes("proxy_pass_request_body off;"), opening);
++    assert.ok(block.includes('proxy_set_header Content-Length "";'), opening);
++    for (const header of [
++      "REMOTE_USER",
++      "X-Remote-User",
++      "X-Vouch-User",
++      "X-Forwarded-User",
++    ]) {
++      assert.ok(
++        block.includes(`proxy_set_header ${header} "";`),
++        `${opening} ${header}`,
++      );
++    }
++  }
++});
++
++test("what the sign-in page loads stays reachable without a session", async () => {
++  // Every script and stylesheet the ungated pages name is served by a
++  // location with no gate; a gated one would leave the sign-in page bare.
++  const open = (path) => {
++    if (path.startsWith("/vendor/")) return locationBlock("^~ /vendor/");
++    if (path.startsWith("/pages/")) {
++      const exact = server.includes(`  location = ${path} {`);
++      return locationBlock(exact ? `= ${path}` : "^~ /pages/");
++    }
++    return locationBlock(`= ${path}`);
++  };
++  for (const page of ["login.html", "mfa.html", "sso-email.html"]) {
++    const html = await readFile(
++      new URL(`../public/${page}`, import.meta.url),
++      "utf8",
++    );
++    const assets = [
++      ...html.matchAll(/<(?:script|link)[^>]*\s(?:src|href)="(\/[^"]+)"/g),
++    ].map(([, path]) => path);
++    assert.ok(assets.length > 0, page);
++    for (const path of assets)
++      assert.doesNotMatch(open(path), /auth_request/, `${page} ${path}`);
++  }
++});
+diff --git a/services/ui/tests/project-dependencies.test.mjs b/services/ui/tests/project-dependencies.test.mjs
+index d54804b..a1e93f8 100644
+--- a/services/ui/tests/project-dependencies.test.mjs
++++ b/services/ui/tests/project-dependencies.test.mjs
+@@ -159,6 +159,30 @@ test("findings are grouped by dependency, worst first, with safe links", async (
+   );
+ });
+ 
++test("a long advisory title in the findings list is shortened and wraps", async (t) => {
++  const title =
++    "https://github.com/example-org/example-project/commit/" +
++    "0123456789abcdef0123456789abcdef01234567#diff-" +
++    "f".repeat(96);
++  const graph = dependencyGraph();
++  graph.vulnerabilities = [{ ...graph.vulnerabilities[0], title }];
++  const page = await dependencyTab(t, { answers: { dependencies: graph } });
++  const item = page.doc.querySelector("#depVulnList .accordion-body");
++  // The finding's text wraps at any character inside the list.
++  assert.ok(item.querySelector(".long-text .fw-semibold"));
++  const shown = () =>
++    [...item.querySelectorAll("[data-long-text] > span")]
++      .filter((span) => !span.hidden)
++      .map((span) => span.textContent);
++  assert.deepEqual(shown(), [`${title.slice(0, 140)}…`]);
++  // The fixed version stays beside the title, outside what is shortened.
++  assert.ok(item.textContent.includes("• fixed: 5.2.0"));
++  item.querySelector("[data-long-text-toggle]").click();
++  assert.deepEqual(shown(), [title]);
++  item.querySelector("[data-long-text-toggle]").click();
++  assert.deepEqual(shown(), [`${title.slice(0, 140)}…`]);
++});
++
+ test("a version with no findings hides the panel", async (t) => {
+   const page = await dependencyTab(t, {
+     answers: { dependencies: dependencyGraph({ vulnerabilities: [] }) },
+diff --git a/services/ui/tests/small-pages.test.mjs b/services/ui/tests/small-pages.test.mjs
+index efce755..ef848dc 100644
+--- a/services/ui/tests/small-pages.test.mjs
++++ b/services/ui/tests/small-pages.test.mjs
+@@ -420,6 +420,91 @@ function detail(t, options = {}) {
+   );
+ }
+ 
++// An advisory title can be one unbroken address far wider than the table.
++const COMMIT =
++  "https://github.com/example-org/example-project/commit/" +
++  "0123456789abcdef0123456789abcdef01234567" +
++  "#diff-" +
++  "f".repeat(96);
++
++test("a long advisory title is shortened, wraps, and opens on request", async (t) => {
++  const short = "x".repeat(140);
++  const page = await detail(t, {
++    api: (method, path) =>
++      path.startsWith("/v1/dependencies/")
++        ? [
++            200,
++            {
++              ...DETAIL,
++              vulnerabilities: [
++                { vulnerability_id: "CVE-L", severity: "HIGH", title: COMMIT },
++                { vulnerability_id: "CVE-S", severity: "LOW", title: short },
++                {
++                  vulnerability_id: "CVE-X",
++                  severity: "LOW",
++                  title: `<img src=x onerror=alert(1)> ${"é".repeat(150)}`,
++                },
++              ],
++            },
++          ]
++        : null,
++  });
++  assert.deepEqual(page.errors, []);
++  const cells = [...page.doc.querySelectorAll("#vulnBody tr")].map(
++    (row) => row.children[2],
++  );
++  // The cell wraps at any character, so an unbroken address stays inside it.
++  for (const cell of cells)
++    assert.ok(cell.classList.contains("long-text"), cell.className);
++
++  const [long, exact, hostile] = cells;
++  const shown = (cell) =>
++    [...cell.querySelectorAll("[data-long-text] > span")]
++      .filter((span) => !span.hidden)
++      .map((span) => span.textContent);
++  assert.ok(COMMIT.length > 140);
++  assert.deepEqual(shown(long), [`${COMMIT.slice(0, 140)}…`]);
++  const toggle = long.querySelector("button");
++  assert.equal(toggle.type, "button");
++  assert.equal(toggle.textContent, "Expand");
++  assert.equal(toggle.getAttribute("aria-expanded"), "false");
++
++  toggle.click();
++  assert.deepEqual(shown(long), [COMMIT]);
++  assert.equal(toggle.textContent, "Collapse");
++  assert.equal(toggle.getAttribute("aria-expanded"), "true");
++  // Opening one title leaves the others as they were.
++  assert.equal(hostile.querySelector("button").textContent, "Expand");
++
++  toggle.click();
++  assert.deepEqual(shown(long), [`${COMMIT.slice(0, 140)}…`]);
++  assert.equal(toggle.textContent, "Expand");
++  assert.equal(toggle.getAttribute("aria-expanded"), "false");
++
++  // A title at the limit is shown whole, with nothing to open.
++  assert.equal(exact.querySelector("button"), null);
++  assert.equal(exact.textContent.trim(), short);
++
++  // A shortened title is still text, cut between whole characters.
++  assert.equal(hostile.querySelector("img"), null);
++  assert.equal(
++    shown(hostile)[0],
++    `<img src=x onerror=alert(1)> ${"é".repeat(111)}…`,
++  );
++  hostile.querySelector("button").click();
++  assert.equal(hostile.querySelector("img"), null);
++  assert.equal(
++    shown(hostile)[0],
++    `<img src=x onerror=alert(1)> ${"é".repeat(150)}`,
++  );
++
++  // A click elsewhere on the page, or on the page itself, changes nothing.
++  page.$("vulnCount").click();
++  page.doc.dispatchEvent(new page.window.Event("click"));
++  assert.equal(toggle.textContent, "Expand");
++  assert.deepEqual(page.errors, []);
++});
++
+ test("a dependency page shows its users, findings, versions and scope", async (t) => {
+   const page = await detail(t);
+   assert.deepEqual(page.errors, []);
+

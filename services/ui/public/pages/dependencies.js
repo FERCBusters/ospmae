@@ -5,6 +5,7 @@
     window.OSPMAE?.api || window.OSPMAE?.apiRequest || window.apiRequest;
   const initAuth = window.OSPMAE?.initAuth;
   const toast = window.OSPMAE?.toast;
+  const expandableText = window.OSPMAE?.expandableText;
 
   const el = {
     refreshBtn: document.getElementById("refreshBtn"),
@@ -356,7 +357,7 @@
         tr.innerHTML = `
           <td>${sevBadge(sev).outerHTML}</td>
           <td class="text-nowrap">${esc(id)}</td>
-          <td>${esc(title)}${
+          <td class="long-text vuln-title-cell">${expandableText(title).outerHTML}${
             refs.length
               ? `<div class="small text-secondary mt-1">${refs
                   .slice(0, 3)
