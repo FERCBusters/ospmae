@@ -29,7 +29,6 @@
     // Browsers resolve backslashes and control characters before a navigation
     // leaves the page; a next value containing either never replays as-is.
     if (/[\\\u0000-\u001f\u007f]/.test(raw)) return "/index.html";
-    if (raw.startsWith("/") && !raw.includes("://")) return raw;
 
     let u;
     try {
@@ -39,8 +38,12 @@
     }
 
     if (u.protocol !== "http:" && u.protocol !== "https:") return "/index.html";
-    if (u.origin === window.location.origin)
-      return u.pathname + u.search + u.hash;
+    if (u.origin === window.location.origin) {
+      // Dot segments are resolved by now, so "/.//host" has become "//host",
+      // which a navigation reads as another site: such a path never replays.
+      const path = u.pathname + u.search + u.hash;
+      return path.startsWith("//") ? "/index.html" : path;
+    }
 
     const host = String(u.hostname || "")
       .trim()

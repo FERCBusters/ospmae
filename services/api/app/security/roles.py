@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.db.models import Group, User, UserGroup
@@ -54,35 +53,27 @@ def normalize_role(role: str | None) -> str | None:
     return canonicalize_role(role)
 
 
-def _group_role_priority_expr():
-    col = func.lower(func.trim(Group.role))
-    return case(
-        (col == ROLE_ADMIN, _ROLE_PRECEDENCE[ROLE_ADMIN]),
-        (col == ROLE_FRAMEWORK_ADMIN, _ROLE_PRECEDENCE[ROLE_FRAMEWORK_ADMIN]),
-        (col == ROLE_MAINTAINER, _ROLE_PRECEDENCE[ROLE_MAINTAINER]),
-        (col == ROLE_CONTRIBUTOR, _ROLE_PRECEDENCE[ROLE_CONTRIBUTOR]),
-        (col == ROLE_ENGINEER, _ROLE_PRECEDENCE[ROLE_ENGINEER]),
-        (col == ROLE_PRODUCT_OWNER, _ROLE_PRECEDENCE[ROLE_PRODUCT_OWNER]),
-        (col == ROLE_ARCHITECT, _ROLE_PRECEDENCE[ROLE_ARCHITECT]),
-        (col == ROLE_VIEWER, _ROLE_PRECEDENCE[ROLE_VIEWER]),
-        else_=-1,
-    )
-
-
 def resolve_group_role(db: Session, user_id: int) -> str | None:
-    max_rank = (
-        db.query(func.max(_group_role_priority_expr()))
-        .select_from(UserGroup)
-        .join(Group, Group.id == UserGroup.group_id)
+    """The highest role among the groups an account belongs to.
+
+    The role returned is one a group actually holds. Maintainer and
+    framework administrator share a precedence tier, and neither role's
+    permissions contain the other's: when an account's groups hold both, it
+    resolves to maintainer, whose writes are scoped to the projects its groups
+    own, and framework management is granted to such an account explicitly
+    (a direct role, or the framework.write permission on a group).
+    """
+    held = {
+        role
+        for (raw,) in db.query(Group.role)
+        .join(UserGroup, UserGroup.group_id == Group.id)
         .filter(UserGroup.user_id == user_id)
-        .scalar()
-    )
-
-    if max_rank is None or int(max_rank) < 0:
+        .all()
+        if (role := canonicalize_role(raw)) in _ROLE_PRECEDENCE
+    }
+    if not held:
         return None
-
-    rank_to_role = {v: k for k, v in _ROLE_PRECEDENCE.items()}
-    return rank_to_role.get(int(max_rank))
+    return max(held, key=lambda role: (_ROLE_PRECEDENCE[role], role == ROLE_MAINTAINER))
 
 
 def attach_effective_role(db: Session, user: User) -> str:

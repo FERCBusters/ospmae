@@ -1036,3 +1036,209 @@ def test_stored_ignore_patterns_of_every_older_shape_still_apply():
     assert ignored("nightly") is False
     project.release_rss_ignore_patterns = [{"pattern": "RC", "case_sensitive": True}]
     assert (ignored("1.0-rc1"), ignored("1.0-RC1")) == (False, True)
+
+
+# ---------------------------------------------------------------------------
+# What a published import may take from a draft, and what one feed may do to
+# the poll of the others.
+# ---------------------------------------------------------------------------
+
+
+def _draft_only_project(client, **fields) -> tuple[int, int, int, int]:
+    """A project whose only version is a mapped draft with its own source."""
+    admin, _ = signed_in("admin")
+    fw = make_framework(admin)
+    node = make_node(admin, fw["id"], "wallet")
+    pid = make_project(client, "feeder", **fields)["id"]
+    draft = make_version(
+        client,
+        pid,
+        "2.0.0-internal",
+        is_draft=True,
+        link_to_source_code="https://github.com/example/unreleased-fork",
+    )
+    map_nodes(client, draft["id"], fw["id"], [node["id"]])
+    return pid, draft["id"], node["id"], fw["id"]
+
+
+def _mapped_nodes(client, version_id: int, framework_id: int) -> list[int]:
+    body = ok(
+        client.get(
+            f"/v1/project-versions/{version_id}/framework-nodes",
+            params={"framework_id": framework_id},
+        )
+    )
+    return [int(n) for n in body["node_ids"]]
+
+
+# An entry whose link names no repository: the source would be inherited.
+_NO_REPO = "https://downloads.example.org/a/-"
+
+
+def test_discovery_publishes_nothing_taken_from_a_draft(upstream, scans, owner):
+    client, _ = owner
+    pid, draft_id, node_id, fw = _draft_only_project(client)
+    upstream.serve(FEED, atom(atom_entry("v1.0.0", 1, repo=_NO_REPO)))
+    ok(
+        client.put(
+            f"/v1/projects/{pid}",
+            json={"release_rss_feed_url": FEED},
+            headers=csrf(client),
+        )
+    )
+    rf.discover_project_release_feed.run(pid)
+    rows = versions(pid)
+    published = rows["v1.0.0"]
+    assert (published.is_draft, published.is_latest) == (False, True)
+    # The draft's repository and mappings stayed with the draft.
+    assert published.link_to_source_code is None
+    assert _mapped_nodes(client, published.id, fw) == []
+    assert _mapped_nodes(client, draft_id, fw) == [node_id]
+    assert rows["2.0.0-internal"].is_draft is True
+    # Without a source of its own the published version is not scanned.
+    assert published.id not in scans
+
+
+@pytest.mark.parametrize(("auto_publish", "inherits"), [(True, False), (False, True)])
+def test_an_auto_publishing_poll_takes_nothing_from_a_draft_but_a_staging_one_may(
+    upstream, scans, owner, auto_publish, inherits
+):
+    client, _ = owner
+    pid, _, node_id, fw = _draft_only_project(
+        client, release_rss_feed_url=FEED, release_auto_publish=auto_publish
+    )
+    upstream.serve(FEED, atom(atom_entry("v1.0.0", 1, repo=_NO_REPO)))
+    rf.poll_release_feeds.run()
+    imported = versions(pid)["v1.0.0"]
+    # A staged draft goes to the same owners as the draft it copies.
+    assert imported.is_draft is (not auto_publish)
+    assert _mapped_nodes(client, imported.id, fw) == ([node_id] if inherits else [])
+    assert imported.link_to_source_code == (
+        "https://github.com/example/unreleased-fork" if inherits else None
+    )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        # A date that cannot be moved to UTC.
+        "<entry><id>bad-date</id><updated>0001-01-01T00:00:00+01:00</updated>"
+        f'<link href="{REPO}/releases/tag/v9.0.0"/><title>Release v9.0.0</title></entry>',
+        # A number too long to compare with the published version's.
+        "<entry><id>bad-number</id><updated>2026-03-09T10:00:00Z</updated>"
+        f'<link href="{_NO_REPO}/x"/><title>Release {"9" * 5000}</title></entry>',
+    ],
+    ids=["date", "number"],
+)
+def test_one_feeds_content_never_stops_the_poll_for_other_projects(
+    upstream, scans, owner, entry
+):
+    client, _ = owner
+    other_feed = "https://feeds.example.org/other.atom"
+    hostile = make_project(client, "hostile")["id"]
+    make_version(client, hostile, "1.0.0")
+    quiet = make_project(client, "quiet")["id"]
+    make_version(client, quiet, "1.0.0")
+    for pid, url in ((hostile, FEED), (quiet, other_feed)):
+        with SessionLocal() as s:
+            s.get(Project, pid).release_rss_feed_url = url
+            s.commit()
+    upstream.serve(FEED, atom(entry))
+    upstream.serve(other_feed, atom(atom_entry("v1.1.0", 2)))
+
+    for _ in range(2):  # every cycle, not only the first
+        result = rf.poll_release_feeds.run()
+        assert result["checked"] == 2
+        assert "v1.1.0" in versions(quiet)
+        assert set(versions(hostile)) == {"1.0.0"}
+        # Both were looked at, so neither is asked again before the other.
+        assert feed_state(hostile).release_rss_last_checked_at is not None
+        assert feed_state(quiet).release_rss_last_checked_at is not None
+
+
+def test_a_label_the_catalogue_cannot_hold_is_passed_over(upstream, scans, owner):
+    client, _ = owner
+    long_title = "Announcing " + "a" * 80  # no release title, no tag link
+    control = "v1.0.1\x07"
+    pid = _polled_project(client, upstream, atom_entry("v1.0.0", 1))
+    upstream.serve(
+        FEED,
+        atom(
+            atom_entry("v1.0.0", 1),
+            f"<entry><id>long</id><updated>2026-03-02T10:00:00Z</updated>"
+            f'<link href="{_NO_REPO}"/><title>{long_title}</title></entry>',
+            atom_entry("v1.2.0", 3),
+        ),
+    )
+    assert rf._usable_version_label("v1.2.0") is True
+    assert rf._usable_version_label("a" * 64) is True
+    assert rf._usable_version_label("a" * 65) is False
+    assert rf._usable_version_label(control) is False
+    result = rf.poll_release_feeds.run()
+    assert result["created"] == 1
+    assert set(versions(pid)) == {"v1.0.0", "v1.2.0"}
+    # First discovery applies the same rule.
+    with SessionLocal() as s:
+        s.query(ProjectVersion).filter_by(project_id=pid).delete()
+        s.commit()
+    rf.discover_project_release_feed.run(pid)
+    assert set(versions(pid)) == {"v1.0.0", "v1.2.0"}
+
+
+def test_the_poll_reaches_every_project_in_turn(upstream, scans, owner):
+    client, _ = owner
+    pids = []
+    for index in range(3):
+        url = f"https://feeds.example.org/{index}.atom"
+        upstream.serve(url, atom(atom_entry("v1.0.0", 1)))
+        pids.append(make_project(client, f"p{index}")["id"])
+        with SessionLocal() as s:
+            s.get(Project, pids[-1]).release_rss_feed_url = url
+            s.commit()
+
+    def polled() -> list[str]:
+        before = len(upstream.requests)
+        rf.poll_release_feeds.run(limit_projects=1)
+        return [str(r.url) for r in upstream.requests[before:]]
+
+    # One project a cycle: each cycle takes the one waiting longest, though
+    # the one just polled is also the most recently updated.
+    seen = [polled() for _ in range(4)]
+    assert seen == [
+        ["https://feeds.example.org/0.atom"],
+        ["https://feeds.example.org/1.atom"],
+        ["https://feeds.example.org/2.atom"],
+        ["https://feeds.example.org/0.atom"],
+    ]
+
+
+def test_a_rule_that_runs_past_its_allowance_is_skipped_not_waited_for(monkeypatch):
+    import re
+    import time
+
+    from app.security import regex_shape
+
+    # A pattern the shape check refuses today, as an older installation may
+    # have stored one, reaching the matcher anyway.
+    slow = re.compile("a*a*a*a*a*a*!")
+    monkeypatch.setattr(rf, "compile_supplied_pattern", lambda *_: slow)
+    # Celery's task logger does not always reach the root logger, so the
+    # warning is read where it is raised.
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        rf.log, "warning", lambda message, *args: warnings.append(message % args)
+    )
+    project = Project(
+        id=7, release_rss_ignore_patterns=[{"pattern": "x", "match_type": "regex"}]
+    )
+    entry = {"title": "a" * 400, "link": "", "id": ""}
+    started = time.monotonic()
+    assert rf._release_feed_entry_is_ignored(project, entry, "a" * 60) is False
+    # One allowance, not one per candidate text, and nowhere near the hours
+    # the search itself would take.
+    assert time.monotonic() - started < 4 * regex_shape.SEARCH_SECONDS
+    assert len(warnings) == 1
+    assert "time limit" in warnings[0] and "project_id=7" in warnings[0]
+    # The timer is gone afterwards and an ordinary rule still decides.
+    assert regex_shape.search_within(re.compile("rc\\d+"), "v1.0.0-rc1") is True
+    assert regex_shape.search_within(re.compile("rc\\d+"), "v1.0.0") is False

@@ -194,3 +194,70 @@ test("the second factor page refuses addresses a browser reads as another site",
     "https://evil.example",
   );
 });
+
+// A dot segment is removed when the browser resolves an address, after any
+// check made on the text as typed: "/.//host" names OSPMAE's own origin with
+// the path "//host", and replaying that path names another site.
+const DOT_SEGMENT_DESTINATIONS = [
+  "/.//evil.example/x://",
+  "/..//evil.example/x://",
+  "/a/..//evil.example/x://",
+  "/%2e//evil.example/x://",
+  "/%2E%2e//evil.example/x://",
+  "/.//evil.example/?a=://",
+  "/.//evil.example/#://",
+  "/.//evil.example/x",
+  "/./%2Fevil.example/..//evil.example/",
+];
+
+const leavesOrigin = (destination) =>
+  new URL(destination, "https://ospmae.test/login.html").origin !==
+  "https://ospmae.test";
+
+test("a destination that becomes another site once resolved falls back", () => {
+  for (const hostile of DOT_SEGMENT_DESTINATIONS) {
+    for (const [name, check] of [
+      ["sign-in", sanitizeNext],
+      ["second factor", safeNext],
+    ]) {
+      const destination = check(hostile);
+      assert.equal(leavesOrigin(destination), false, `${name} ${hostile}`);
+      assert.doesNotMatch(destination, /^\/\//, `${name} ${hostile}`);
+    }
+  }
+  // The first of them, as the pages would have replayed it before.
+  assert.equal(leavesOrigin("//evil.example/x://"), true);
+  assert.equal(sanitizeNext("/.//evil.example/x://"), "/index.html");
+  assert.equal(safeNext("/.//evil.example/x://"), "/index.html");
+});
+
+test("the pages' own addresses are kept, resolved", () => {
+  for (const check of [sanitizeNext, safeNext]) {
+    assert.equal(
+      check("/project.html?id=3&tab=deps"),
+      "/project.html?id=3&tab=deps",
+    );
+    assert.equal(check("/account.html#password"), "/account.html#password");
+    // An address inside a query is data, not a destination.
+    assert.equal(
+      check("/project.html?from=https://example.org/a"),
+      "/project.html?from=https://example.org/a",
+    );
+    // Dot segments that stay on the site resolve to the page they name.
+    assert.equal(check("/a/../project.html?id=3"), "/project.html?id=3");
+    assert.equal(check("/./index.html"), "/index.html");
+  }
+});
+
+test("the sign-in page as shown at a dot-segment address returns home", () => {
+  const {
+    secondFactorUrl,
+    sanitizeNext: clean,
+    getNextParam,
+  } = destinations(
+    "https://ospmae.test/login.html?next=%2F.%2F%2Fevil.example%2Fx%3A%2F%2F",
+  );
+  assert.equal(getNextParam(), "/.//evil.example/x://");
+  assert.equal(clean(getNextParam()), "/index.html");
+  assert.equal(secondFactorUrl(), "/mfa.html?next=%2Findex.html");
+});

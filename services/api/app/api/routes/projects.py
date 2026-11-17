@@ -1361,6 +1361,9 @@ def get_project_version_changelog(
         entity_id=version_id,
         limit=limit,
         offset=offset,
+        # What a version held while it was a draft stays with those who
+        # could read the draft, after it is published too.
+        published_states_only=not _can_view_drafts(db, user, project),
     )
 
 
@@ -2476,17 +2479,41 @@ def _collect_manifest_rows(
     return rows
 
 
-def _manifest_rows_from_saved(db: Session, manifest: Manifest) -> list[dict]:
+def _manifest_rows_from_saved(
+    db: Session, manifest: Manifest, user: User
+) -> list[dict]:
+    """A saved manifest's rows, as this reader may see them.
+
+    A manifest's own sharing says who may open it. An item saved from a draft
+    version still follows the draft rule for each reader, today: it is left
+    out for anyone who could not read that draft directly, however the
+    manifest is shared and whoever saved it.
+    """
     rows: list[dict] = []
     version_ids = [
         int(item.project_version_id)  # type: ignore[arg-type]
         for item in (manifest.items or [])
         if getattr(item, "project_version_id", None)
     ]
+    hidden_version_ids: set[int] = set()
+    if version_ids:
+        drafts = (
+            db.query(ProjectVersion)
+            .filter(ProjectVersion.id.in_(version_ids))
+            .filter(ProjectVersion.is_draft.is_(True))
+            .all()
+        )
+        for draft in drafts:
+            project = db.get(Project, draft.project_id)
+            if project is None or not _can_view_drafts(db, user, project):
+                hidden_version_ids.add(int(draft.id))
+    version_ids = [vid for vid in version_ids if vid not in hidden_version_ids]
     deps_by_version = _manifest_dependencies_for_versions(
         db, version_ids, include_vulnerabilities=True
     )
     for item in manifest.items or []:
+        if int(item.project_version_id or 0) in hidden_version_ids:
+            continue
         capability_pairs = [
             {
                 "capability_id": cap.framework_node_id,
@@ -3512,7 +3539,7 @@ def get_manifest(
     _require_manifest_access(db, user)
     manifest = _ensure_manifest_manage(db, user, manifest_id)
 
-    rows = _manifest_rows_from_saved(db, manifest)
+    rows = _manifest_rows_from_saved(db, manifest, user)
     return {
         "id": manifest.id,
         "name": manifest.name,
@@ -3573,7 +3600,7 @@ def export_saved_manifest(
 ):
     _require_manifest_access(db, user)
     manifest = _ensure_manifest_access(db, user, manifest_id)
-    rows = _manifest_rows_from_saved(db, manifest)
+    rows = _manifest_rows_from_saved(db, manifest, user)
     export_name = name or manifest.name or f"manifest-{manifest.id}"
     effective_format = (fmt or format or "json").strip().lower()
     return _manifest_response(rows, fmt=effective_format, name=export_name)

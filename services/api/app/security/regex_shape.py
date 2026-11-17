@@ -5,14 +5,21 @@ two aligned. Python's engine backtracks, so a pattern such as ``(a+)+$`` or
 ``(a|a)*$`` takes time exponential in the text it searches. Release-feed
 ignore patterns are written by project editors and searched against text from
 upstream feeds, so a pattern is refused when it is saved, and again before it
-runs, unless its matching state and backtracking stay bounded.
+runs, unless its matching state and backtracking stay bounded. The shape
+check reasons about a pattern; ``search_within`` bounds the search itself, so
+a shape the check does not recognise still cannot hold a worker.
 """
 
 from __future__ import annotations
 
 import re
+import signal
+import threading
 from functools import lru_cache
-from re import _parser  # type: ignore[attr-defined]  # CPython's parser has no stub
+from re import (  # type: ignore[attr-defined]  # CPython's parser has no stub
+    _compiler,
+    _parser,
+)
 
 # A greedy or lazy repeat of anything wider than one character keeps
 # backtracking state for every repetition. A possessive repeat keeps none, and
@@ -29,8 +36,14 @@ _HELD_REPEAT = (
     "repetition"
 )
 _NESTED_REPEAT = (
-    "make an unbounded repeat inside another repeat possessive: nested repeats "
-    "backtrack exponentially"
+    "make a repeat inside another repeat possessive, or give it one fixed "
+    "count, and give alternatives in a repeated group different first "
+    "characters: nested repeats backtrack exponentially"
+)
+_ADJACENT_REPEATS = (
+    "separate repeats that can match the same text with text neither can "
+    "match, or make them possessive: each one multiplies the time by the "
+    "length of the text"
 )
 
 
@@ -43,6 +56,61 @@ def _one_character(items) -> bool:
     return op in _ONE_CHARACTER
 
 
+# Characters a one-character item is tried against to decide whether two items
+# can match the same text: ASCII, Latin-1 and Latin Extended-A.
+_SAMPLE = [chr(code) for code in range(0x180)]
+# Adjacent repeats that can match the same text split it between them in as
+# many ways as its length allows, once per repeat: two is quadratic in the
+# text, and each further one multiplies that by the text's length again.
+ADJACENT_REPEATS = 2
+
+
+def _characters(state, items) -> frozenset[str] | None:
+    """The sample characters a one-character item matches, else None."""
+    if not _one_character(items):
+        return None
+    one = _compiler.compile(_parser.SubPattern(state, list(items)))
+    return frozenset(ch for ch in _SAMPLE if one.fullmatch(ch))
+
+
+def _first_characters(state, item) -> frozenset[str] | None:
+    """The sample characters an item that consumes text can start with, where
+    that is plain to see; None where it is not."""
+    op, value = item
+    if op in _ONE_CHARACTER:
+        return _characters(state, [item])
+    if op in _REPEATS and value[0] >= 1:
+        return _characters(state, value[2])
+    if op == _parser.SUBPATTERN and value[-1]:
+        return _first_characters(state, value[-1][0])
+    if op == _parser.BRANCH:
+        found: set[str] = set()
+        for branch in value[1]:
+            first = _first_characters(state, branch[0]) if branch else None
+            if first is None:
+                return None
+            found |= first
+        return frozenset(found)
+    return None
+
+
+def _all_characters(state, items) -> frozenset[str] | None:
+    """Every sample character a sequence of one-character items, and repeats
+    of them, can match; None for anything else."""
+    found: set[str] = set()
+    for op, value in items:
+        if op == _parser.SUBPATTERN:
+            inner = _all_characters(state, value[-1])
+        elif op in _REPEATS:
+            inner = _all_characters(state, value[2])
+        else:
+            inner = _characters(state, [(op, value)])
+        if inner is None:
+            return None
+        found |= inner
+    return frozenset(found)
+
+
 def check_pattern_shape(pattern: str, flags: int = 0) -> None:
     """Raise ValueError for a pattern whose matching can grow without bound."""
     if len(pattern) > MAX_PATTERN_CHARS:
@@ -53,8 +121,72 @@ def check_pattern_shape(pattern: str, flags: int = 0) -> None:
         parsed = _parser.parse(pattern, flags)
     except (re.error, RecursionError) as exc:
         raise ValueError(f"invalid regex pattern: {exc}") from exc
+    state = parsed.state
+
+    def consumes(item) -> bool:
+        return _parser.SubPattern(state, [item]).getwidth()[0] > 0
+
+    def flat(items) -> list:
+        """The sequence with its plain groups opened out in place."""
+        out: list = []
+        for item in items:
+            if item[0] == _parser.SUBPATTERN:
+                out.extend(flat(item[1][-1]))
+            else:
+                out.append(item)
+        return out
+
+    def varying(item) -> bool:
+        return item[0] in _REPEATS[:2] and item[1][0] != item[1][1]
+
+    def shared(items, limit: int, message: str) -> None:
+        """Refuse `limit` or more repeats in a row that can match the same
+        text with nothing between them that none of them can match."""
+        # For each varying repeat met: the characters it can match, or None
+        # where that is not plain to see.
+        run: list[frozenset[str] | None] = []
+        for item in flat(items):
+            if varying(item):
+                body = item[1][2]
+                # A repeat shares text with an earlier one when what it can
+                # start with is something the earlier one can match.
+                first = (
+                    _characters(state, body)
+                    if _one_character(body)
+                    else (_first_characters(state, body[0]) if body else None)
+                )
+                if (
+                    any(
+                        first is None or other is None or first & other for other in run
+                    )
+                    and len(run) + 1 >= limit
+                ):
+                    raise ValueError(message)
+                run.append(_all_characters(state, body))
+            elif run and consumes(item):
+                # Text that must be here, and that no repeat before it can
+                # match, ends what those repeats share with later ones.
+                first = _first_characters(state, item)
+                if first is not None and all(
+                    other is not None and not (first & other) for other in run
+                ):
+                    run = []
+
+    def overlapping_alternatives(body) -> None:
+        """Alternatives in a repeated group that can start with the same
+        text let each round be matched more than one way: (?:a|aa){1,512}."""
+        for op, value in flat(body):
+            if op != _parser.BRANCH:
+                continue
+            seen: set[str] = set()
+            for branch in value[1]:
+                first = _first_characters(state, branch[0]) if branch else None
+                if first is None or first & seen:
+                    raise ValueError(_NESTED_REPEAT)
+                seen |= first
 
     def check(items, held, repeated):
+        shared(items, ADJACENT_REPEATS + 1, _ADJACENT_REPEATS)
         for op, value in items:
             if op in _REPEATS:
                 high, body = value[1], value[2]
@@ -70,6 +202,13 @@ def check_pattern_shape(pattern: str, flags: int = 0) -> None:
                     inner = REPEATS_HELD + 1 if unbounded else held * high
                     if inner > REPEATS_HELD:
                         raise ValueError(_HELD_REPEAT)
+                    if high > 1:
+                        # One repetition followed by the next: a repeat that
+                        # can share text with its own next round, or with
+                        # another in the body, splits the text between rounds
+                        # in exponentially many ways, bounded or not.
+                        shared(list(body) * 2, 2, _NESTED_REPEAT)
+                        overlapping_alternatives(body)
                 check(body, inner, repeated or high > 1)
             elif op == _parser.SUBPATTERN:
                 check(value[-1], held, repeated)
@@ -77,6 +216,10 @@ def check_pattern_shape(pattern: str, flags: int = 0) -> None:
                 check(value, held, repeated)
             elif op == _parser.BRANCH:
                 for branch in value[1]:
+                    # Alternatives inside a repeat are tried round by round;
+                    # a varying repeat in one is a nested repeat.
+                    if repeated and any(varying(item) for item in flat(branch)):
+                        raise ValueError(_NESTED_REPEAT)
                     check(branch, held, repeated)
             elif op in (_parser.ASSERT, _parser.ASSERT_NOT):
                 check(value[1], held, repeated)
@@ -95,3 +238,39 @@ def compile_supplied_pattern(pattern: str, flags: int = 0) -> re.Pattern[str]:
     """Compile a supplied pattern once it passes the shape checks."""
     check_pattern_shape(pattern, flags)
     return re.compile(pattern, flags)
+
+
+class _SearchDeadline(Exception):
+    """The search ran past its allowance."""
+
+
+def _past_deadline(_signum, _frame) -> None:
+    raise _SearchDeadline
+
+
+# How long one search of one text may run. A pattern that passes the shape
+# check searches a 1024-character window in well under a millisecond.
+SEARCH_SECONDS = 0.25
+
+
+def search_within(
+    compiled: re.Pattern[str], text: str, seconds: float = SEARCH_SECONDS
+) -> bool | None:
+    """Whether the pattern matches the text; None when the search was stopped
+    at its deadline.
+
+    The deadline is an interval timer, which the matcher notices between
+    steps. Timers belong to a process's main thread, where a worker runs its
+    tasks; anywhere else the search runs unbounded, as it did before.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return compiled.search(text) is not None
+    previous = signal.signal(signal.SIGALRM, _past_deadline)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return compiled.search(text) is not None
+    except _SearchDeadline:
+        return None
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)

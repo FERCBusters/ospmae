@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime
 
@@ -19,6 +20,7 @@ from app.realtime.notifications import hub
 from app.security.auth import (
     get_current_user_from_headers_cookies,
     get_current_user_from_request,
+    still_signed_in,
 )
 from app.security.client_addr import (
     allowance_address,
@@ -267,6 +269,18 @@ def _bootstrap_catalog_data() -> None:
         db.close()
 
 
+# How often an open notification socket asks whether it is still signed in.
+_WS_RECHECK_SECONDS = 60.0
+
+
+def _socket_still_signed_in(ws: WebSocket, user_id: int, peer: str | None) -> bool:
+    db = SessionLocal()
+    try:
+        return still_signed_in(ws.headers, ws.cookies, db, user_id, socket_peer=peer)
+    finally:
+        db.close()
+
+
 @app.websocket("/ws/notifications")
 async def ws_notifications(ws: WebSocket):
     """WebSocket notifications endpoint.
@@ -318,7 +332,17 @@ async def ws_notifications(ws: WebSocket):
         while True:
             # Keep the socket alive and detect disconnects. Client text is
             # ignored; the server bounds the size of each frame.
-            _ = await ws.receive_text()
+            try:
+                _ = await asyncio.wait_for(
+                    ws.receive_text(), timeout=_WS_RECHECK_SECONDS
+                )
+            except asyncio.TimeoutError:
+                # The socket was authenticated once, at its handshake. A
+                # sign-out, password change, expiry or deactivation since
+                # then ends it here, as it ends the session's requests.
+                if not _socket_still_signed_in(ws, user.id, peer):
+                    await ws.close(code=4401)
+                    break
     except WebSocketDisconnect:
         pass
     except Exception:

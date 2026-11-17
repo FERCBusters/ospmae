@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from celery.utils.log import get_task_logger
-from sqlalchemy import func
+from sqlalchemy import func, true
 from sqlalchemy.exc import IntegrityError
 
 from app.celery_app import celery_app
@@ -26,7 +26,7 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.depscan.scan import repository_url_for_release_link
 from app.security.outbound import public_client
-from app.security.regex_shape import compile_supplied_pattern
+from app.security.regex_shape import compile_supplied_pattern, search_within
 from app.security.url_safety import (
     contains_xml_dtd_or_entity,
     parse_xml_without_dtd,
@@ -360,8 +360,20 @@ def _release_feed_entry_is_ignored(
                     project.id,
                 )
                 continue
-            if any(compiled.search(candidate) for candidate in candidates):
-                return True
+            for candidate in candidates:
+                found = search_within(compiled, candidate)
+                if found is None:
+                    # The shape check passed the pattern, yet it ran past its
+                    # allowance on this text: the rule is skipped, so one
+                    # project's rule cannot hold the worker.
+                    log.warning(
+                        "Release-feed ignore regex stopped at its time limit "
+                        "for project_id=%s",
+                        project.id,
+                    )
+                    break
+                if found:
+                    return True
             continue
 
         needle = pattern if case_sensitive else pattern.lower()
@@ -483,8 +495,33 @@ def _newest_release_to_promote(
     return None
 
 
+# The longest version label the catalogue stores, as the API's own limit.
+_VERSION_LABEL_CHARS = 64
+
+
+def _usable_version_label(version_name: str) -> bool:
+    """Whether a label taken from a feed can name a version: within the stored
+    length and free of control characters. An entry whose label is not is
+    passed over, as an entry with no title is."""
+    return len(version_name) <= _VERSION_LABEL_CHARS and version_name.isprintable()
+
+
+def _mark_feed_checked(db, project_id: int) -> None:
+    """Record that a project's feed was looked at, on its own, after a poll
+    of it failed: the next poll starts with the projects waiting longest."""
+    try:
+        db.query(Project).filter(Project.id == project_id).update(
+            {Project.release_rss_last_checked_at: _utcnow_naive()},
+            synchronize_session=False,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("Could not record the feed check for project_id=%s", project_id)
+
+
 def _best_version_for_capability_inheritance(
-    db, project_id: int
+    db, project_id: int, *, published_only: bool = False
 ) -> ProjectVersion | None:
     """Pick a sensible version to inherit capability mappings from.
 
@@ -499,6 +536,10 @@ def _best_version_for_capability_inheritance(
       4) Any version.
 
     Within each bucket, prefer is_latest, then most recently updated.
+
+    A version that will be published takes nothing from a draft
+    (``published_only``): a draft's mappings and source link are its owners'
+    alone until they publish it.
     """
 
     q = (
@@ -511,6 +552,7 @@ def _best_version_for_capability_inheritance(
             ProjectVersionFrameworkNode.project_version_id == ProjectVersion.id,
         )
         .filter(ProjectVersion.project_id == project_id)
+        .filter(ProjectVersion.is_draft.is_(False) if published_only else true())
         .group_by(ProjectVersion.id)
         .order_by(
             ProjectVersion.is_draft.asc(),
@@ -554,315 +596,336 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
             db.query(Project)
             .filter(Project.release_rss_feed_url.isnot(None))
             .filter(Project.track_branch.is_(False))
-            .order_by(Project.updated_at.desc())
+            # Longest unchecked first: every project is reached in turn,
+            # whichever ones were edited or polled most recently.
+            .order_by(
+                Project.release_rss_last_checked_at.asc().nulls_first(),
+                Project.id.asc(),
+            )
             .limit(int(limit_projects or 50))
             .all()
         )
 
         with public_client(timeout=_READ_SECONDS) as client:
             for project in projects:
-                url = str(project.release_rss_feed_url or "").strip()
-                if not url:
-                    continue
-
-                checked += 1
-                headers = {}
-                if project.release_rss_last_etag:
-                    headers["If-None-Match"] = str(project.release_rss_last_etag)
-                if project.release_rss_last_modified:
-                    headers["If-Modified-Since"] = str(
-                        project.release_rss_last_modified
-                    )
-
+                # One project's feed never stops the poll for the others:
+                # whatever its content raises is logged and left behind.
                 try:
-                    resp, content, final_url = _safe_fetch_feed(client, url, headers)
-                except Exception:
-                    log.exception("Release feed fetch failed")
+                    url = str(project.release_rss_feed_url or "").strip()
+                    if not url:
+                        continue
+
+                    checked += 1
+                    headers = {}
+                    if project.release_rss_last_etag:
+                        headers["If-None-Match"] = str(project.release_rss_last_etag)
+                    if project.release_rss_last_modified:
+                        headers["If-Modified-Since"] = str(
+                            project.release_rss_last_modified
+                        )
+
+                    try:
+                        resp, content, final_url = _safe_fetch_feed(
+                            client, url, headers
+                        )
+                    except Exception:
+                        log.exception("Release feed fetch failed")
+                        project.release_rss_last_checked_at = _utcnow_naive()
+                        db.add(project)
+                        db.commit()
+                        continue
+
                     project.release_rss_last_checked_at = _utcnow_naive()
-                    db.add(project)
-                    db.commit()
-                    continue
+                    if resp.status_code == 304:
+                        db.add(project)
+                        db.commit()
+                        continue
 
-                project.release_rss_last_checked_at = _utcnow_naive()
-                if resp.status_code == 304:
-                    db.add(project)
-                    db.commit()
-                    continue
+                    if resp.status_code != 200:
+                        log.warning(
+                            "Release feed HTTP %s for project_id=%s",
+                            resp.status_code,
+                            project.id,
+                        )
+                        db.add(project)
+                        db.commit()
+                        continue
 
-                if resp.status_code != 200:
-                    log.warning(
-                        "Release feed HTTP %s for project_id=%s",
-                        resp.status_code,
-                        project.id,
+                    etag = resp.headers.get("etag")
+                    last_mod = resp.headers.get("last-modified")
+                    if etag:
+                        project.release_rss_last_etag = etag
+                    if last_mod:
+                        project.release_rss_last_modified = last_mod
+
+                    if not content or not content.strip():
+                        db.add(project)
+                        db.commit()
+                        continue
+
+                    try:
+                        entries = _parse_feed_entries(content)
+                    except Exception:
+                        log.exception(
+                            "Failed to parse release feed for project_id=%s", project.id
+                        )
+                        db.add(project)
+                        db.commit()
+                        continue
+
+                    if not entries:
+                        db.add(project)
+                        db.commit()
+                        continue
+
+                    last_seen_id = (
+                        str(project.release_rss_last_entry_id or "").strip() or None
                     )
-                    db.add(project)
-                    db.commit()
-                    continue
+                    newest_id = str(entries[-1].get("id") or "").strip() or None
 
-                etag = resp.headers.get("etag")
-                last_mod = resp.headers.get("last-modified")
-                if etag:
-                    project.release_rss_last_etag = etag
-                if last_mod:
-                    project.release_rss_last_modified = last_mod
-
-                if not content or not content.strip():
-                    db.add(project)
-                    db.commit()
-                    continue
-
-                try:
-                    entries = _parse_feed_entries(content)
-                except Exception:
-                    log.exception(
-                        "Failed to parse release feed for project_id=%s", project.id
-                    )
-                    db.add(project)
-                    db.commit()
-                    continue
-
-                if not entries:
-                    db.add(project)
-                    db.commit()
-                    continue
-
-                last_seen_id = (
-                    str(project.release_rss_last_entry_id or "").strip() or None
-                )
-                newest_id = str(entries[-1].get("id") or "").strip() or None
-
-                # Determine which entries are new.
-                new_entries: list[dict[str, Any]] = []
-                if last_seen_id:
-                    idx = next(
-                        (
-                            i
-                            for i, e in enumerate(entries)
-                            if str(e.get("id") or "").strip() == last_seen_id
-                        ),
-                        None,
-                    )
-                    if idx is None:
-                        # Feed rotated/truncated; only consider newest.
+                    # Determine which entries are new.
+                    new_entries: list[dict[str, Any]] = []
+                    if last_seen_id:
+                        idx = next(
+                            (
+                                i
+                                for i, e in enumerate(entries)
+                                if str(e.get("id") or "").strip() == last_seen_id
+                            ),
+                            None,
+                        )
+                        if idx is None:
+                            # Feed rotated/truncated; only consider newest.
+                            new_entries = [entries[-1]]
+                        else:
+                            new_entries = entries[idx + 1 :]
+                    else:
+                        # First run: only consider newest entry, and only if it isn't already present.
                         new_entries = [entries[-1]]
-                    else:
-                        new_entries = entries[idx + 1 :]
-                else:
-                    # First run: only consider newest entry, and only if it isn't already present.
-                    new_entries = [entries[-1]]
 
-                # One feed poll must not stampede the catalogue: a hostile or
-                # noisy feed cannot fan out thousands of versions and mails in
-                # one cycle.
-                new_entries = new_entries[-10:]
+                    # One feed poll must not stampede the catalogue: a hostile or
+                    # noisy feed cannot fan out thousands of versions and mails in
+                    # one cycle.
+                    new_entries = new_entries[-10:]
 
-                # Record newest entry id so we don't keep reprocessing.
-                if newest_id:
-                    project.release_rss_last_entry_id = newest_id
+                    # Record newest entry id so we don't keep reprocessing.
+                    if newest_id:
+                        project.release_rss_last_entry_id = newest_id
 
-                # New entries become drafts, or published versions for a
-                # project that publishes automatically.
-                auto_publish = project.release_auto_publish
-                latest_before = (
-                    _latest_published_version(db, project.id) if auto_publish else None
-                )
-                created_versions: list[ProjectVersion] = []
-
-                # Find a sensible inheritance source for capability mappings (and optionally
-                # link_to_source_code). Prefer the most-recently updated published version
-                # that already has capability selections.
-                inheritance_source = _best_version_for_capability_inheritance(
-                    db, project.id
-                )
-
-                for entry in new_entries:
-                    title = str(entry.get("title") or "").strip()
-                    link = entry.get("link")
-                    version_name = _guess_version_from_entry(title, link)
-                    if not version_name:
-                        continue
-
-                    if _release_feed_entry_is_ignored(project, entry, version_name):
-                        ignored += 1
-                        log.info(
-                            "Ignoring release-feed entry for project_id=%s version=%s due to configured ignore pattern",
-                            project.id,
-                            version_name,
-                        )
-                        continue
-
-                    exists = (
-                        db.query(ProjectVersion.id)
-                        .filter(ProjectVersion.project_id == project.id)
-                        .filter(ProjectVersion.version == version_name)
-                        .one_or_none()
+                    # New entries become drafts, or published versions for a
+                    # project that publishes automatically.
+                    auto_publish = project.release_auto_publish
+                    latest_before = (
+                        _latest_published_version(db, project.id)
+                        if auto_publish
+                        else None
                     )
-                    if exists:
-                        continue
+                    created_versions: list[ProjectVersion] = []
 
-                    if _is_semantically_lower_than_current_latest(
-                        db, project.id, version_name
-                    ):
-                        log.info(
-                            "Skipping release-feed draft for project_id=%s version=%s because it is lower than the current latest published version",
-                            project.id,
-                            version_name,
-                        )
-                        continue
-
-                    release_dt = _to_naive_utc(entry.get("published_dt"))
-
-                    link_to_source = _source_code_url_for_entry(
-                        project, link, inheritance_source
+                    # Find a sensible inheritance source for capability mappings (and optionally
+                    # link_to_source_code). Prefer the most-recently updated published version
+                    # that already has capability selections.
+                    inheritance_source = _best_version_for_capability_inheritance(
+                        db, project.id, published_only=auto_publish
                     )
 
-                    notes = None
-                    if link:
-                        notes = f"Auto-imported from release feed: {link}"
+                    for entry in new_entries:
+                        title = str(entry.get("title") or "").strip()
+                        link = entry.get("link")
+                        version_name = _guess_version_from_entry(title, link)
+                        if not version_name or not _usable_version_label(version_name):
+                            continue
 
-                    pv = ProjectVersion(
-                        project_id=project.id,
-                        version=version_name,
-                        release_date=release_dt,
-                        status=None,
-                        link_to_source_code=link_to_source,
-                        notes=notes,
-                        is_latest=False,
-                        is_draft=not auto_publish,
-                    )
-
-                    db.add(pv)
-                    db.flush()
-
-                    # Inherit capability mappings from the previous version so maintainers
-                    # don't need to re-select the same capabilities on every draft.
-                    #
-                    # NOTE: we intentionally copy *exactly* the node links; maintainers can
-                    # still edit them on the draft before publishing.
-                    if inheritance_source:
-                        inherited_capability_ids = (
-                            db.query(ProjectVersionFrameworkNode.framework_node_id)
-                            .filter(
-                                ProjectVersionFrameworkNode.project_version_id
-                                == inheritance_source.id
-                            )
-                            .all()
-                        )
-                        for (framework_node_id,) in inherited_capability_ids:
-                            db.add(
-                                ProjectVersionFrameworkNode(
-                                    project_version_id=pv.id,
-                                    framework_node_id=framework_node_id,
-                                )
-                            )
-
-                    db.flush()
-                    db.refresh(pv)
-                    record_entity_changelog(
-                        db,
-                        entity_type="project_version",
-                        entity_id=pv.id,
-                        action="created",
-                        before=None,
-                        after=project_version_changelog_state(db, pv),
-                        user=None,
-                        request_method="TASK",
-                        request_path="release_feed.poll_release_feeds",
-                    )
-
-                    # Once we've created at least one draft, use the newest draft as the
-                    # inheritance source for subsequent new entries in the same run. This
-                    # keeps capability selection consistent when multiple new releases are
-                    # created from one poll.
-                    inheritance_source = pv
-
-                    created_versions.append(pv)
-                    created += 1
-
-                scan_id = None
-                if auto_publish and created_versions:
-                    promoted = _newest_release_to_promote(
-                        created_versions, latest_before
-                    )
-                    if promoted is not None:
-                        set_latest_version(db, project.id, promoted.id)
-                        db.flush()
-                    scan_id = queue_latest_version_scan(db, project.id)
-
-                try:
-                    db.add(project)
-                    db.commit()
-                except IntegrityError:
-                    db.rollback()
-                    log.exception(
-                        "Integrity error while creating release feed versions"
-                    )
-                    continue
-
-                if scan_id is not None:
-                    launch_dependency_scan(scan_id)
-
-                if auto_publish:
-                    # Published releases go to subscribers, the way a
-                    # maintainer's publication does; there is no draft for
-                    # the owners to review.
-                    for pv in created_versions:
-                        try:
-                            notify_subscribers_published(
-                                db, project=project, version=pv
-                            )
-                        except Exception:
-                            db.rollback()
-                            log.exception(
-                                "Release notification failed for project_id=%s version=%s",
-                                project.id,
-                                pv.version,
-                            )
-                elif created_versions:
-                    # NOTE: email sending is intentionally best-effort, but we log when
-                    # it is skipped or fails so operators can diagnose issues.
-                    if not (
-                        str(getattr(settings, "smtp_host", "") or "").strip()
-                        and str(getattr(settings, "smtp_from_email", "") or "").strip()
-                    ):
-                        log.info(
-                            "SMTP not configured; skipping draft release notifications for project_id=%s",
-                            project.id,
-                        )
-                    else:
-                        recipients = _owner_emails(db, project)
-                        if not recipients:
+                        if _release_feed_entry_is_ignored(project, entry, version_name):
+                            ignored += 1
                             log.info(
-                                "No owner emails found; skipping draft release notifications for project_id=%s",
+                                "Ignoring release-feed entry for project_id=%s version=%s due to configured ignore pattern",
+                                project.id,
+                                version_name,
+                            )
+                            continue
+
+                        exists = (
+                            db.query(ProjectVersion.id)
+                            .filter(ProjectVersion.project_id == project.id)
+                            .filter(ProjectVersion.version == version_name)
+                            .one_or_none()
+                        )
+                        if exists:
+                            continue
+
+                        if _is_semantically_lower_than_current_latest(
+                            db, project.id, version_name
+                        ):
+                            log.info(
+                                "Skipping release-feed draft for project_id=%s version=%s because it is lower than the current latest published version",
+                                project.id,
+                                version_name,
+                            )
+                            continue
+
+                        release_dt = _to_naive_utc(entry.get("published_dt"))
+
+                        link_to_source = _source_code_url_for_entry(
+                            project, link, inheritance_source
+                        )
+
+                        notes = None
+                        if link:
+                            notes = f"Auto-imported from release feed: {link}"
+
+                        pv = ProjectVersion(
+                            project_id=project.id,
+                            version=version_name,
+                            release_date=release_dt,
+                            status=None,
+                            link_to_source_code=link_to_source,
+                            notes=notes,
+                            is_latest=False,
+                            is_draft=not auto_publish,
+                        )
+
+                        db.add(pv)
+                        db.flush()
+
+                        # Inherit capability mappings from the previous version so maintainers
+                        # don't need to re-select the same capabilities on every draft.
+                        #
+                        # NOTE: we intentionally copy *exactly* the node links; maintainers can
+                        # still edit them on the draft before publishing.
+                        if inheritance_source:
+                            inherited_capability_ids = (
+                                db.query(ProjectVersionFrameworkNode.framework_node_id)
+                                .filter(
+                                    ProjectVersionFrameworkNode.project_version_id
+                                    == inheritance_source.id
+                                )
+                                .all()
+                            )
+                            for (framework_node_id,) in inherited_capability_ids:
+                                db.add(
+                                    ProjectVersionFrameworkNode(
+                                        project_version_id=pv.id,
+                                        framework_node_id=framework_node_id,
+                                    )
+                                )
+
+                        db.flush()
+                        db.refresh(pv)
+                        record_entity_changelog(
+                            db,
+                            entity_type="project_version",
+                            entity_id=pv.id,
+                            action="created",
+                            before=None,
+                            after=project_version_changelog_state(db, pv),
+                            user=None,
+                            request_method="TASK",
+                            request_path="release_feed.poll_release_feeds",
+                        )
+
+                        # Once we've created at least one draft, use the newest draft as the
+                        # inheritance source for subsequent new entries in the same run. This
+                        # keeps capability selection consistent when multiple new releases are
+                        # created from one poll.
+                        inheritance_source = pv
+
+                        created_versions.append(pv)
+                        created += 1
+
+                    scan_id = None
+                    if auto_publish and created_versions:
+                        promoted = _newest_release_to_promote(
+                            created_versions, latest_before
+                        )
+                        if promoted is not None:
+                            set_latest_version(db, project.id, promoted.id)
+                            db.flush()
+                        scan_id = queue_latest_version_scan(db, project.id)
+
+                    try:
+                        db.add(project)
+                        db.commit()
+                    except IntegrityError:
+                        db.rollback()
+                        log.exception(
+                            "Integrity error while creating release feed versions"
+                        )
+                        continue
+
+                    if scan_id is not None:
+                        launch_dependency_scan(scan_id)
+
+                    if auto_publish:
+                        # Published releases go to subscribers, the way a
+                        # maintainer's publication does; there is no draft for
+                        # the owners to review.
+                        for pv in created_versions:
+                            try:
+                                notify_subscribers_published(
+                                    db, project=project, version=pv
+                                )
+                            except Exception:
+                                db.rollback()
+                                log.exception(
+                                    "Release notification failed for project_id=%s version=%s",
+                                    project.id,
+                                    pv.version,
+                                )
+                    elif created_versions:
+                        # NOTE: email sending is intentionally best-effort, but we log when
+                        # it is skipped or fails so operators can diagnose issues.
+                        if not (
+                            str(getattr(settings, "smtp_host", "") or "").strip()
+                            and str(
+                                getattr(settings, "smtp_from_email", "") or ""
+                            ).strip()
+                        ):
+                            log.info(
+                                "SMTP not configured; skipping draft release notifications for project_id=%s",
                                 project.id,
                             )
                         else:
-                            url_for_email = public_project_url(project.id)
-                            for pv in created_versions:
-                                for email in recipients:
-                                    try:
-                                        send_project_version_draft_email(
-                                            db=db,
-                                            to_email=email,
-                                            project_name=project.display_name,
-                                            version=pv.version,
-                                            project_url=url_for_email,
-                                            source="release feed",
-                                        )
-                                        db.commit()
-                                        log.info(
-                                            "Draft release notification queued to %s for project_id=%s version=%s",
-                                            email,
-                                            project.id,
-                                            pv.version,
-                                        )
-                                    except Exception:
-                                        log.exception(
-                                            "Draft release notification failed to %s for project_id=%s version=%s",
-                                            email,
-                                            project.id,
-                                            pv.version,
-                                        )
+                            recipients = _owner_emails(db, project)
+                            if not recipients:
+                                log.info(
+                                    "No owner emails found; skipping draft release notifications for project_id=%s",
+                                    project.id,
+                                )
+                            else:
+                                url_for_email = public_project_url(project.id)
+                                for pv in created_versions:
+                                    for email in recipients:
+                                        try:
+                                            send_project_version_draft_email(
+                                                db=db,
+                                                to_email=email,
+                                                project_name=project.display_name,
+                                                version=pv.version,
+                                                project_url=url_for_email,
+                                                source="release feed",
+                                            )
+                                            db.commit()
+                                            log.info(
+                                                "Draft release notification queued to %s for project_id=%s version=%s",
+                                                email,
+                                                project.id,
+                                                pv.version,
+                                            )
+                                        except Exception:
+                                            log.exception(
+                                                "Draft release notification failed to %s for project_id=%s version=%s",
+                                                email,
+                                                project.id,
+                                                pv.version,
+                                            )
+                except Exception:
+                    db.rollback()
+                    log.exception(
+                        "Release feed poll failed for project_id=%s", project.id
+                    )
+                    _mark_feed_checked(db, project.id)
+
         try:
             from app.tasks.notifications import kick_delivery
 
@@ -961,7 +1024,10 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             )
         )
 
-        inheritance_source = _best_version_for_capability_inheritance(db, project.id)
+        # Discovery publishes what it imports.
+        inheritance_source = _best_version_for_capability_inheritance(
+            db, project.id, published_only=True
+        )
         newest_id = str(entries[-1].get("id") or "").strip() or None
         newest_version: ProjectVersion | None = None
 
@@ -969,7 +1035,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             title = str(entry.get("title") or "").strip()
             link = entry.get("link")
             version_name = _guess_version_from_entry(title, link)
-            if not version_name:
+            if not version_name or not _usable_version_label(version_name):
                 continue
 
             if _release_feed_entry_is_ignored(project, entry, version_name):

@@ -199,17 +199,14 @@
     // both name another site; a value containing either never replays, the
     // rule of the sign-in page's sanitizeNext.
     if (/[\\\u0000-\u001f\u007f]/.test(value)) return "/index.html";
-    if (
-      value.startsWith("/") &&
-      !value.startsWith("//") &&
-      !value.includes("://")
-    ) {
-      return value;
-    }
     try {
       const u = new URL(value, window.location.origin);
-      if (u.origin === window.location.origin)
-        return u.pathname + u.search + u.hash;
+      if (u.origin === window.location.origin) {
+        // Dot segments are resolved by now: "/.//host" has become "//host",
+        // which a navigation reads as another site.
+        const path = u.pathname + u.search + u.hash;
+        if (!path.startsWith("//")) return path;
+      }
     } catch {}
     return "/index.html";
   }

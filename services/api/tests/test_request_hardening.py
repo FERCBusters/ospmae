@@ -6,12 +6,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 
 import app.main as main_module
 import pytest
 from app.api.payloads import ReleaseFeedIgnorePatternPayload
 from app.core.config import settings
 from app.db.models import AuditLog, LoginThrottle, Project, User, UserShortcut
+from app.db.models import Session as SessionRow
 from app.db.session import SessionLocal
 from app.security import request_limits
 from app.security.local_allowance import LocalAllowance
@@ -566,6 +568,23 @@ def test_handshakes_need_the_application_origin(client, fresh_allowances):
         r"(ab){2000}",
         "a" * 257,
         r"([a-z",
+        # Bounded repeats nest exponentially too: each round of the outer
+        # one can take the text in more than one way.
+        r"(?:a{1,2}){1,512}!",
+        r"(?:a{0,32}){0,32}!",
+        r"(?:a|aa){1,512}!",
+        r"(?:a?b?){1,40}c",
+        r"(?:x\d*\d*){2,9}",
+        r"(?:(?:a{1,3}|b)){1,300}!",
+        r"(?:a*){2}!",
+        r"(?:\d+\.?){1,9}x",
+        # Repeats in a row over the same text multiply by its length each.
+        r"a*a*a*!",
+        r"a*a*a*a*a*a*!",
+        r"a*aa*aa*a!",
+        r".*.*.*=",
+        r"\w*\d*[a-z]*x",
+        r"(?:ab)*+a*(?:ab)?a*a*!",
     ],
 )
 def test_patterns_that_can_backtrack_without_bound_are_refused(pattern):
@@ -585,6 +604,21 @@ def test_patterns_that_can_backtrack_without_bound_are_refused(pattern):
         r"nightly|beta|alpha",
         r"(ab){10}",
         r"[^/]+/[^/]+",
+        # Repeats kept apart by text neither can match, or two at most.
+        r"^v?\d+\.\d+\.\d+-(?:rc|beta|alpha)\.?\d*$",
+        r"\d+\.\d+(?:\.\d+)?(?:-\w+)?$",
+        r"[a-z]+-[a-z]+-[a-z]+",
+        r"a*b*c*",
+        r"a*a*",
+        r".*rc.*",
+        r"\s*v\d+",
+        # A fixed count inside a repeat, and rounds that cannot run together.
+        r"(?:x{2}){1,5}",
+        r"(?:\d{1,3}\.){2}\d+",
+        r"(?:rc|beta){1,3}",
+        # Possessive repeats commit, so they share nothing.
+        r"a*+a*+a*+!",
+        r"(?:a{1,2})++!",
     ],
 )
 def test_bounded_patterns_are_accepted(pattern):
@@ -656,3 +690,131 @@ def test_every_per_address_allowance_counts_one_ipv6_network(client, monkeypatch
         "login:2001:db8:5:6::/64": 3,
     }
     assert stray == 0
+
+
+def test_every_accepted_pattern_searches_a_full_window_quickly():
+    """The claim the shape check makes, measured: the patterns it accepts
+    search the longest text a feed can offer, built to suit each of them, in
+    far less than one search's allowance."""
+    import re
+    import time
+
+    from app.security.regex_shape import SEARCH_SECONDS, compile_supplied_pattern
+
+    accepted = [
+        r"^v?\d+\.\d+\.\d+-(?:rc|beta|alpha)\.?\d*$",
+        r"\d+\.\d+(?:\.\d+)?(?:-\w+)?$",
+        r"[a-z]+-[a-z]+-[a-z]+",
+        r"a*b*c*",
+        r"a*a*",
+        r".*rc.*",
+        r"(?:x{2}){1,5}",
+        r"(?:\d{1,3}\.){2}\d+",
+        r"(?:\.\d+)*+$",
+        r"[^/]+/[^/]+",
+    ]
+    texts = [
+        unit * (1024 // len(unit))
+        for unit in ("a", "1", "a1", "1.", "-a", "x", "r", "/a")
+    ]
+    for pattern in accepted:
+        compiled = compile_supplied_pattern(pattern, re.IGNORECASE)
+        started = time.perf_counter()
+        for text in texts:
+            compiled.search(text)
+            compiled.search(text + "!")
+        assert time.perf_counter() - started < SEARCH_SECONDS, pattern
+
+
+def test_a_search_stops_at_its_allowance_and_leaves_no_timer_behind():
+    import re
+    import signal
+    import threading
+    import time
+
+    from app.security.regex_shape import search_within
+
+    slow = re.compile("(?:a|aa){1,512}!")
+    handler_before = signal.getsignal(signal.SIGALRM)
+    started = time.monotonic()
+    assert search_within(slow, "a" * 200, seconds=0.1) is None
+    assert time.monotonic() - started < 2
+    # The previous handler is back and no timer is pending.
+    assert signal.getsignal(signal.SIGALRM) is handler_before
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert search_within(slow, "aaa!") is True
+    assert search_within(slow, "bbb") is False
+
+    # Off the main thread there is no timer to set: the search just runs.
+    found: list[bool | None] = []
+    worker = threading.Thread(
+        target=lambda: found.append(search_within(re.compile("b+"), "abba"))
+    )
+    worker.start()
+    worker.join()
+    assert found == [True]
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+# --- Open notification sockets -----------------------------------------------
+
+
+def test_an_open_socket_ends_when_its_session_does(fresh_allowances, monkeypatch):
+    """The socket is authenticated at its handshake; a sign-out afterwards
+    ends it at its next check instead of leaving it to receive."""
+    from app.realtime.notifications import hub
+    from app.security.auth import session_cookie_name
+
+    monkeypatch.setattr(main_module, "_WS_RECHECK_SECONDS", 0.05)
+    client, user = auth_client(role="viewer")
+    # The test client opens sockets over plain ws, where it withholds Secure
+    # cookies; a browser's wss handshake carries them, as this header does.
+    name = session_cookie_name()
+    headers = {
+        "X-Test-Peer": "127.0.0.1",
+        "Origin": "https://testserver",
+        "Cookie": f"{name}={client.cookies.get(name)}",
+    }
+    with client.websocket_connect("/ws/notifications", headers=headers) as ws:
+        # Still signed in: checks pass and the socket stays registered.
+        time.sleep(0.3)
+        assert user.id in hub._connections
+        with SessionLocal() as s:
+            expiry_before = (
+                s.query(SessionRow).filter_by(user_id=user.id).one().expires_at
+            )
+        time.sleep(0.2)
+        with SessionLocal() as s:
+            row = s.query(SessionRow).filter_by(user_id=user.id).one()
+            # Asking extends nothing: an idle socket keeps no session alive.
+            assert row.expires_at == expiry_before
+            s.delete(row)
+            s.commit()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+        assert closed.value.code == 4401
+    assert user.id not in hub._connections
+
+
+@pytest.mark.parametrize(
+    "event", ["deactivated", "enrolment_moved_on", "other_account"]
+)
+def test_still_signed_in_follows_the_account_and_the_session(event):
+    from app.security.auth import session_cookie_name, still_signed_in
+
+    client, user = auth_client(role="viewer")
+    cookies = {session_cookie_name(): client.cookies.get(session_cookie_name())}
+    with SessionLocal() as s:
+        assert still_signed_in({}, cookies, s, user.id) is True
+        assert still_signed_in({}, {}, s, user.id) is False
+        assert (
+            still_signed_in({}, {session_cookie_name(): "x" * 43}, s, user.id) is False
+        )
+        account = s.get(User, user.id)
+        if event == "deactivated":
+            account.is_active = False
+        elif event == "enrolment_moved_on":
+            account.mfa_version = account.mfa_version + 1
+        s.commit()
+        asked_for = user.id + 1 if event == "other_account" else user.id
+        assert still_signed_in({}, cookies, s, asked_for) is False

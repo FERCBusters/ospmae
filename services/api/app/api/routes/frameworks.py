@@ -85,8 +85,8 @@ def _project_ids_by_node_id(
 ) -> dict[int, set[int]]:
     """Return distinct project id sets per framework node (direct mappings).
 
-    Sets are based on ProjectVersionFrameworkNode mappings. When latest_only=True,
-    only latest versions contribute.
+    Sets are based on ProjectVersionFrameworkNode mappings of published
+    versions. When latest_only=True, only latest versions contribute.
     """
 
     q = (
@@ -105,6 +105,8 @@ def _project_ids_by_node_id(
             FrameworkNode.id == ProjectVersionFrameworkNode.framework_node_id,
         )
         .filter(FrameworkNode.framework_id == framework_id)
+        # A draft's mappings are its owners' alone: they name no project here.
+        .filter(ProjectVersion.is_draft.is_(False))
     )
     if latest_only:
         q = q.filter(ProjectVersion.is_latest.is_(True))

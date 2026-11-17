@@ -690,6 +690,8 @@ def _capabilities_bipartite(
             ProjectVersion,
             ProjectVersion.id == ProjectVersionFrameworkNode.project_version_id,
         )
+        # A draft is its owners' alone: it never counts in a cross-project view.
+        .filter(ProjectVersion.is_draft.is_(False))
         .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .group_by(ProjectVersionFrameworkNode.framework_node_id)
         .having(
@@ -714,15 +716,20 @@ def _capabilities_bipartite(
             "meta": {"latest_only": latest_only, "lens": "capabilities"},
         }
 
-    edges_q = db.query(
-        ProjectVersionFrameworkNode.project_version_id,
-        ProjectVersionFrameworkNode.framework_node_id,
-    ).filter(ProjectVersionFrameworkNode.framework_node_id.in_(top_node_ids))
-    if latest_only:
-        edges_q = edges_q.join(
+    edges_q = (
+        db.query(
+            ProjectVersionFrameworkNode.project_version_id,
+            ProjectVersionFrameworkNode.framework_node_id,
+        )
+        .join(
             ProjectVersion,
             ProjectVersion.id == ProjectVersionFrameworkNode.project_version_id,
-        ).filter(ProjectVersion.is_latest.is_(True))
+        )
+        .filter(ProjectVersion.is_draft.is_(False))
+        .filter(ProjectVersionFrameworkNode.framework_node_id.in_(top_node_ids))
+    )
+    if latest_only:
+        edges_q = edges_q.filter(ProjectVersion.is_latest.is_(True))
     edges = edges_q.all()
 
     project_edge_counts: dict[int, int] = defaultdict(int)
@@ -853,6 +860,8 @@ def _licenses_bipartite(
         )
         .select_from(Project)
         .join(ProjectVersion, ProjectVersion.project_id == Project.id)
+        # A draft is its owners' alone: it never counts in a cross-project view.
+        .filter(ProjectVersion.is_draft.is_(False))
         .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .group_by(license_expr)
         .having(func.count(func.distinct(Project.id)) >= int(min_usage))
@@ -881,6 +890,8 @@ def _licenses_bipartite(
             license_expr.label("license"),
         )
         .join(Project, Project.id == ProjectVersion.project_id)
+        # A draft is its owners' alone: it never counts in a cross-project view.
+        .filter(ProjectVersion.is_draft.is_(False))
         .filter(ProjectVersion.is_latest.is_(True) if latest_only else True)  # type: ignore[arg-type]  # SQLAlchemy accepts bool filters and desc() chains
         .filter(license_expr.in_(top_licenses))
         .order_by(func.coalesce(Project.display_name, Project.machine_name).asc())

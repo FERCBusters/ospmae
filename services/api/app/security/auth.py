@@ -146,6 +146,40 @@ def _remote_user_from_headers(
     return value
 
 
+def still_signed_in(
+    headers: Mapping[str, str],
+    cookies: Mapping[str, str],
+    db: Session,
+    user_id: int,
+    socket_peer: str | None = None,
+) -> bool:
+    """Whether what authenticated a connection still names this account.
+
+    A notification socket outlives the request that opened it, so it asks
+    again while it stays open. Unlike a request, the question extends
+    nothing: an idle socket does not keep a session alive.
+    """
+    remote_user = _remote_user_from_headers(headers, socket_peer)
+    if remote_user:
+        user = get_user_by_username(db, remote_user)
+        return bool(user and user.is_active and user.id == user_id)
+
+    session_cookie = cookies.get(session_cookie_name())
+    session_row = get_session(db, session_cookie) if session_cookie else None
+    if not session_row or session_row.user_id != user_id:
+        return False
+    user = (
+        db.query(User)
+        .filter(User.id == user_id, User.is_active == True)  # noqa: E712 - SQLAlchemy boolean column predicate
+        .one_or_none()
+    )
+    if not user:
+        return False
+    from app.security.mfa import local_session_allowed
+
+    return local_session_allowed(db, user, session_row)
+
+
 def get_current_user_from_headers_cookies(
     headers: Mapping[str, str],
     cookies: Mapping[str, str],

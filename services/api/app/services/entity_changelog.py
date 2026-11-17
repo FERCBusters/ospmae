@@ -379,6 +379,46 @@ def _serialise_changelog(row: EntityChangelog) -> dict[str, Any]:
     }
 
 
+def _published_history(
+    db: Session, entity_type: str | None, entity_id: int | None, limit: int, offset: int
+) -> dict[str, Any]:
+    """One version's history without what it held as a draft.
+
+    Entries whose resulting state is a draft are left out. The entry that
+    published the version keeps its resulting state and says only that the
+    version was published: the state before it, and the fields that changed
+    with it, describe the draft.
+    """
+    rows = (
+        db.query(EntityChangelog)
+        .filter(EntityChangelog.entity_type == str(entity_type or "").strip().lower())
+        .filter(EntityChangelog.entity_id == int(entity_id or 0))
+        .order_by(desc(EntityChangelog.changed_at))
+        .all()
+    )
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        before = row.before_state if isinstance(row.before_state, dict) else {}
+        after = row.after_state if isinstance(row.after_state, dict) else {}
+        if after.get("is_draft") or (not after and before.get("is_draft")):
+            continue
+        item = _serialise_changelog(row)
+        if before.get("is_draft"):
+            item["before_state"] = None
+            item["changes"] = [
+                change
+                for change in item["changes"]
+                if isinstance(change, dict) and change.get("field") == "is_draft"
+            ]
+        items.append(item)
+    return {
+        "total": len(items),
+        "limit": limit,
+        "offset": offset,
+        "items": items[offset : offset + limit],
+    }
+
+
 def list_entity_changelogs(
     db: Session,
     *,
@@ -388,9 +428,12 @@ def list_entity_changelogs(
     q: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    published_states_only: bool = False,
 ) -> dict[str, Any]:
     limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
+    if published_states_only:
+        return _published_history(db, entity_type, entity_id, limit, offset)
 
     qry = db.query(EntityChangelog)
     if entity_type:
