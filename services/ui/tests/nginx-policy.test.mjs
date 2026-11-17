@@ -70,22 +70,76 @@ test("browsers check the design system for a newer copy before each use", () => 
   }
 });
 
+// The names authenticating proxies commonly put an identity in. The API's
+// default is REMOTE_USER; a deployment that configures another name sets it
+// from its own proxy, and these are the ones a client could otherwise send.
+const IDENTITY_HEADERS = [
+  "REMOTE_USER",
+  "Remote-User",
+  "X-Remote-User",
+  "X-Vouch-User",
+  "X-Forwarded-User",
+  "X-Forwarded-Preferred-Username",
+  "X-Forwarded-Email",
+  "X-Auth-Request-User",
+  "X-Auth-Request-Email",
+  "X-Auth-Request-Preferred-Username",
+  "X-Authenticated-User",
+  "X-Authentik-Username",
+  "X-Webauth-User",
+];
+
+function locationBody(opening) {
+  const start = server.indexOf(opening);
+  assert.notEqual(start, -1, opening);
+  const block = server.slice(start);
+  return block.slice(0, block.indexOf("\n  }"));
+}
+
 test("identity headers a client sends never reach the API", () => {
-  for (const location of ["/v1/", "/ws/"]) {
-    const block = server.slice(server.indexOf(`location ${location} {`));
-    const body = block.slice(0, block.indexOf("\n  }"));
-    for (const header of [
-      "REMOTE_USER",
-      "X-Remote-User",
-      "X-Vouch-User",
-      "X-Forwarded-User",
-    ]) {
+  for (const opening of [
+    "location ^~ /v1/ {",
+    "location ^~ /ws/ {",
+    "location = /_auth_check {",
+    "location = /_auth_check_admin {",
+  ]) {
+    const body = locationBody(opening);
+    for (const header of IDENTITY_HEADERS) {
       assert.ok(
         body.includes(`proxy_set_header ${header} "";`),
-        `${location} ${header}`,
+        `${opening} ${header}`,
       );
     }
   }
+  // Every place that clears one clears them all.
+  for (const header of IDENTITY_HEADERS) {
+    const cleared = conf.split(`proxy_set_header ${header} "";`).length - 1;
+    assert.equal(cleared, 4, header);
+  }
+});
+
+test("an API path is always proxied and never cached, whatever it ends in", () => {
+  // A prefix location marked ^~ is not handed to a regular-expression
+  // location, so /v1/x.html is an API request, not a gated page.
+  assert.ok(server.includes("location ^~ /v1/ {"));
+  assert.ok(server.includes("location ^~ /ws/ {"));
+  assert.ok(!/location \/(v1|ws)\/ \{/.test(server));
+  // nginx applies the first matching pattern of a map: the API rule comes
+  // before the image-suffix rule that would otherwise make /v1/x.png public.
+  const policy = conf.slice(conf.indexOf("map $uri $ospmae_cache_control"));
+  const body = policy.slice(0, policy.indexOf("\n}"));
+  const patterns = body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(
+      (line) => line && !line.startsWith("#") && !line.startsWith("map "),
+    );
+  assert.equal(patterns[0], 'default "";');
+  assert.equal(patterns[1], '~^/v1/ "no-store";');
+  assert.equal(patterns[2], '~^/ws/ "";');
+  const images = patterns.findIndex((line) => line.includes("png|jpe?g"));
+  assert.ok(images > 2);
+  assert.match(patterns[images], /"public, max-age=86400";$/);
 });
 
 test("the design system is pinned by commit, in the manifest and the lock alike", async () => {

@@ -2445,7 +2445,7 @@ function renderQuestions() {
       "d-flex flex-wrap gap-2 align-items-center justify-content-between";
 
     const left = document.createElement("div");
-    left.innerHTML = `<span class="fw-semibold">Thread #${t.id}</span> <span class="text-secondary">• ${statusLabel}</span>`;
+    left.innerHTML = `<span class="fw-semibold">Thread #${escapeHtml(String(t.id))}</span> <span class="text-secondary">• ${statusLabel}</span>`;
 
     const right = document.createElement("div");
     right.className = "text-secondary small";
@@ -2709,12 +2709,14 @@ function renderDepVulnerabilityPanel(res) {
           ? `<div class="mt-1 small">${refs
               .map((r) => {
                 const u = String(r);
-                const safe = escapeHtml(u);
-                // only linkify absolute URLs
-                if (u.startsWith("http://") || u.startsWith("https://")) {
-                  return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${trimLabel(safe, 42)}</a>`;
+                // Only absolute web addresses that pass the shared link
+                // check become links. The label is cut before it is
+                // escaped, so an entity is never cut in half.
+                const href = /^https?:\/\//i.test(u) ? safeHref(u) : "";
+                if (href) {
+                  return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(trimLabel(u, 42))}</a>`;
                 }
-                return `<span class="text-secondary">${trimLabel(safe, 60)}</span>`;
+                return `<span class="text-secondary">${escapeHtml(trimLabel(u, 60))}</span>`;
               })
               .join(" • ")}</div>`
           : "";

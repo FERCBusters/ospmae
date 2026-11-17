@@ -708,3 +708,106 @@ def test_stored_session_identifiers_and_unconfirmed_secrets_are_removed() -> Non
         }
     finally:
         _drop_chain()
+
+
+def test_saved_tokens_are_bound_to_the_repository_their_project_points_at() -> None:
+    """0041: a token saved for a host is bound to one repository where the
+    project's own links name exactly one, and to none where they do not."""
+    cfg = _alembic_config()
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        command.upgrade(cfg, "0040_session_digests")
+        with engine.begin() as conn:
+
+            def project(name: str, *, private=True, token="ciphertext", **columns):
+                values = {
+                    "machine_name": name,
+                    "display_name": name,
+                    "repo_private": private,
+                    "repo_token_host": "github.com" if private else None,
+                    "repo_token_encrypted": token if private else None,
+                    "track_branch": False,
+                    **columns,
+                }
+                names = ", ".join(values)
+                marks = ", ".join(f":{key}" for key in values)
+                return conn.execute(
+                    text(
+                        f"INSERT INTO projects ({names}, branch_poll_interval_hours, "
+                        "release_auto_publish, created_at, updated_at, "
+                        "programming_languages, release_rss_ignore_patterns, "
+                        "supported_formats, supported_issuance_protocols, "
+                        "supported_key_managements, supported_presentation_protocols, "
+                        "supported_profiles, supported_signing_algorithms) "
+                        f"VALUES ({marks}, 24, false, now(), now(), '[]', '[]', '[]', "
+                        "'[]', '[]', '[]', '[]', '[]') RETURNING id"
+                    ),
+                    values,
+                ).scalar_one()
+
+            def version(project_id: int, label: str, link: str | None) -> None:
+                conn.execute(
+                    text(
+                        "INSERT INTO project_versions (project_id, version, "
+                        "link_to_source_code, is_draft, is_latest, dependency_count, "
+                        "vulnerability_count, dependency_discovery_status, created_at, "
+                        "updated_at) VALUES (:p, :v, :l, false, false, 0, 0, "
+                        "'not_run', now(), now())"
+                    ),
+                    {"p": project_id, "v": label, "l": link},
+                )
+
+            one = project("one-repository")
+            version(one, "1.0", "https://github.com/acme/app/releases/tag/v1.0")
+            version(one, "1.1", "https://GitHub.com/Acme/App.git")
+            version(one, "1.2", None)
+            tracked = project(
+                "tracked",
+                track_branch=True,
+                tracked_repo_url="https://github.com/acme/tracked.git",
+                tracked_branch="main",
+            )
+            version(tracked, "main", "https://github.com/acme/elsewhere")
+            two = project("two-repositories")
+            version(two, "1.0", "https://github.com/acme/app")
+            version(two, "2.0", "https://github.com/acme/other")
+            other_host = project("another-host")
+            version(other_host, "1.0", "https://gitlab.com/acme/app")
+            ssh = project("ssh-link")
+            version(ssh, "1.0", "git@github.com:acme/app.git")
+            project("no-links")
+            no_token = project("no-token", token=None)
+            version(no_token, "1.0", "https://github.com/acme/app")
+            public = project("public", private=False)
+            version(public, "1.0", "https://github.com/acme/app")
+        command.upgrade(cfg, "head")
+        with engine.begin() as conn:
+            bound = dict(
+                conn.execute(
+                    text("SELECT machine_name, repo_token_repository FROM projects")
+                ).all()
+            )
+        assert bound == {
+            # Two spellings of one repository are one repository.
+            "one-repository": "https://github.com/Acme/App",
+            "tracked": "https://github.com/acme/tracked",
+            "two-repositories": None,
+            "another-host": None,
+            "ssh-link": None,
+            "no-links": None,
+            "no-token": None,
+            "public": None,
+        }
+        command.downgrade(cfg, "0040_session_digests")
+        with engine.begin() as conn:
+            columns = conn.execute(
+                text(
+                    "SELECT count(*) FROM information_schema.columns WHERE "
+                    "table_name = 'projects' AND column_name = 'repo_token_repository'"
+                )
+            ).scalar_one()
+        assert columns == 0
+    finally:
+        _drop_chain()

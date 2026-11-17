@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
 
 import anyio
 from fastapi import FastAPI, Request, WebSocket
@@ -222,7 +223,7 @@ def _record_request(
         query_string = query_string[:4096]
 
     user_agent = (request.headers.get("user-agent") or "").strip() or None
-    referer = (request.headers.get("referer") or "").strip() or None
+    referer = _referer_for_audit(request.headers.get("referer"))
     if user_agent and len(user_agent) > 256:
         user_agent = user_agent[:256]
     if referer and len(referer) > 512:
@@ -270,6 +271,21 @@ def _bootstrap_catalog_data() -> None:
 
 
 # How often an open notification socket asks whether it is still signed in.
+def _referer_for_audit(value: str | None) -> str | None:
+    """The page a request came from, as the audit trail keeps it: its query
+    redacted like the request's own, and no fragment."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return None
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, redact_query_string(parts.query), "")
+    )
+
+
 _WS_RECHECK_SECONDS = 60.0
 
 
@@ -329,20 +345,26 @@ async def ws_notifications(ws: WebSocket):
         return
 
     try:
+        # The socket was authenticated once, at its handshake. A sign-out,
+        # password change, expiry or deactivation since then ends it, as it
+        # ends the session's requests. The check follows the clock, not the
+        # client's silence: frames from the client do not put it off.
+        checked = time.monotonic()
         while True:
-            # Keep the socket alive and detect disconnects. Client text is
-            # ignored; the server bounds the size of each frame.
-            try:
-                _ = await asyncio.wait_for(
-                    ws.receive_text(), timeout=_WS_RECHECK_SECONDS
-                )
-            except asyncio.TimeoutError:
-                # The socket was authenticated once, at its handshake. A
-                # sign-out, password change, expiry or deactivation since
-                # then ends it here, as it ends the session's requests.
-                if not _socket_still_signed_in(ws, user.id, peer):
-                    await ws.close(code=4401)
-                    break
+            wait = _WS_RECHECK_SECONDS - (time.monotonic() - checked)
+            if wait > 0:
+                # Keep the socket alive and detect disconnects. Client text
+                # is ignored; the server bounds the size of each frame.
+                try:
+                    _ = await asyncio.wait_for(ws.receive_text(), timeout=wait)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            still = await run_in_threadpool(_socket_still_signed_in, ws, user.id, peer)
+            if not still:
+                await ws.close(code=4401)
+                break
+            checked = time.monotonic()
     except WebSocketDisconnect:
         pass
     except Exception:

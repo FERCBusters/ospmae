@@ -147,8 +147,8 @@
           ) => `<tr><td class="text-wrap">${OSPMAE.escapeHtml(fmtDate(n.created_at))}</td>
           <td>${OSPMAE.escapeHtml(n.recipient)}</td>
           <td>${OSPMAE.escapeHtml(n.subject)}</td>
-          <td><span class="badge ${n.status === "sent" ? "text-bg-success" : n.status === "failed" ? "text-bg-danger" : "text-bg-secondary"}">${n.status}</span></td>
-          <td>${n.attempts}</td>
+          <td><span class="badge ${n.status === "sent" ? "text-bg-success" : n.status === "failed" ? "text-bg-danger" : "text-bg-secondary"}">${OSPMAE.escapeHtml(n.status)}</span></td>
+          <td>${Number(n.attempts) || 0}</td>
           <td class="small">${OSPMAE.escapeHtml(n.last_error || "")}</td></tr>`,
         )
         .join("")}</tbody></table></div>`;

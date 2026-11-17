@@ -1085,12 +1085,30 @@
   // The address to link to, or "" when it is not safe to link: http(s)
   // addresses and same-site paths pass, script and data addresses do not.
   // The design system's check is used when the shell has loaded it.
+  // A checked address is also safe to place in an attribute as it is: the
+  // characters that could end one are percent-encoded, which changes no
+  // address a server would have understood.
+  function attributeSafe(href) {
+    return String(href).replace(
+      /["'<>`]/g,
+      (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+  }
+
   function safeHref(url) {
     const fn =
       window.mospUi && typeof window.mospUi.safeExternalHref === "function"
         ? window.mospUi.safeExternalHref
         : null;
-    if (fn) return fn(url) || "";
+    // This page's own rule always applies. The design system's check, once
+    // loaded, can only refuse more: a change in it never widens what a
+    // page links to.
+    const local = locallySafeHref(url);
+    if (!local) return "";
+    return attributeSafe(fn ? fn(url) || "" : local);
+  }
+
+  function locallySafeHref(url) {
     const raw = String(url ?? "").trim();
     if (!raw) return "";
     if (/^(?:javascript|data|vbscript):/i.test(raw)) return "";

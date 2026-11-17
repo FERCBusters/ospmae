@@ -92,10 +92,21 @@ def request_origin_allowed(request, *, require_origin: bool = False) -> bool:
     if not host:
         return False
     try:
-        host_name = urlsplit(f"//{host}").hostname or ""
+        named = urlsplit(f"//{host}")
+        host_name, host_port = named.hostname or "", named.port
     except ValueError:
         return False
-    return bool(host_name) and origin[1] == host_name
+    if not host_name or origin[1] != host_name:
+        return False
+    # Cookies are shared by every port and scheme of a host name, so the
+    # same name is not enough: the Origin's port is the one the request was
+    # addressed to (its scheme's own when Host names none), and where cookies
+    # are Secure the page was served over HTTPS.
+    scheme, _, port = origin
+    default_port = 443 if scheme == "https" else 80
+    if port != (host_port if host_port is not None else default_port):
+        return False
+    return scheme == "https" or not settings.cookie_secure
 
 
 def tokens_match(supplied: str, expected: str) -> bool:

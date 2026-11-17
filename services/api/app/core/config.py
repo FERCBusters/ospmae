@@ -220,6 +220,11 @@ class Settings(BaseSettings):
     celery_broker_url: str = Field(default="")
     celery_result_backend: str = Field(default="")
     celery_timezone: str = Field(default="UTC")
+    # How long a worker task may run before it is stopped: every task, then
+    # the two kinds that clone, scan or fetch for longer.
+    task_time_limit_seconds: int = Field(default=900, ge=120)
+    scan_task_time_limit_seconds: int = Field(default=1800, ge=120)
+    feed_task_time_limit_seconds: int = Field(default=1800, ge=120)
 
     # ---------------------------------------------------------------------
     # Release feed polling (RSS/Atom)

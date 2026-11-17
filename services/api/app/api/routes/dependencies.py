@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,16 +17,20 @@ from app.db.models import (
     Framework,
     FrameworkNode,
     Project,
-    ProjectOwnerGroup,
     ProjectVersion,
     ProjectVersionDependency,
     ProjectVersionFrameworkNode,
     User,
-    UserGroup,
 )
 from app.db.session import get_db
 from app.depscan.scan import repository_url_for_release_link
 from app.security.auth import get_current_user
+from app.security.permissions import PERM_PROJECT_WRITE, has_permission
+from app.security.project_access import (
+    can_view_drafts,
+    ensure_version_visible,
+    owns_project,
+)
 from app.security.roles import ROLE_ADMIN, attach_effective_role
 from app.services.scan_queue import launch_dependency_scan, mark_scan_queued
 
@@ -44,84 +48,13 @@ def _require_admin(db: Session, user: User) -> None:
 
 def _can_view_drafts_for_project(db: Session, user: User, project_id: int) -> bool:
     """Drafts are visible to admins and each project's owners (user or group)."""
-
-    attach_effective_role(db, user)
-    owner = db.query(Project).filter(Project.id == project_id).one_or_none()
-    if owner and owner.created_by_user_id == user.id:
-        return True
-
-    user_groups = {
-        int(gid)
-        for (gid,) in db.query(UserGroup.group_id)
-        .filter(UserGroup.user_id == user.id)
-        .all()
-        if gid is not None
-    }
-    if not user_groups:
-        return False
-    owner_groups = {
-        int(gid)
-        for (gid,) in db.query(ProjectOwnerGroup.group_id)
-        .filter(ProjectOwnerGroup.project_id == project_id)
-        .all()
-        if gid is not None
-    }
-    return bool(user_groups & owner_groups)
-
-
-def _require_admin_or_project_owner(db: Session, user: User, project: Project) -> None:
-    if _is_admin(db, user):
-        return
-    if project.created_by_user_id and int(project.created_by_user_id) == int(user.id):
-        return
-
-    user_groups = {
-        int(gid)
-        for (gid,) in db.query(UserGroup.group_id)
-        .filter(UserGroup.user_id == user.id)
-        .all()
-        if gid is not None
-    }
-    owner_groups = {
-        int(gid)
-        for (gid,) in db.query(ProjectOwnerGroup.group_id)
-        .filter(ProjectOwnerGroup.project_id == project.id)
-        .all()
-        if gid is not None
-    }
-    if user_groups and owner_groups and user_groups.intersection(owner_groups):
-        return
-
-    raise HTTPException(status_code=403, detail="Project owner or admin role required")
+    project = db.query(Project).filter(Project.id == project_id).one_or_none()
+    return project is not None and can_view_drafts(db, user, project)
 
 
 def _version_or_404(
     db: Session, project: Project, user: User, version_id: int | None
 ) -> ProjectVersion:
-    def can_view_drafts() -> bool:
-        eff = attach_effective_role(db, user)
-        if eff == ROLE_ADMIN:
-            return True
-        if project.created_by_user_id == user.id:
-            return True
-        user_groups = {
-            int(gid)
-            for (gid,) in db.query(UserGroup.group_id)
-            .filter(UserGroup.user_id == user.id)
-            .all()
-            if gid is not None
-        }
-        owner_groups = {
-            int(gid)
-            for (gid,) in db.query(ProjectOwnerGroup.group_id)
-            .filter(ProjectOwnerGroup.project_id == project.id)
-            .all()
-            if gid is not None
-        }
-        return bool(
-            user_groups and owner_groups and user_groups.intersection(owner_groups)
-        )
-
     if version_id is not None:
         pv = (
             db.query(ProjectVersion)
@@ -129,17 +62,14 @@ def _version_or_404(
             .filter(ProjectVersion.project_id == project.id)
             .one_or_none()
         )
-        if not pv:
-            raise HTTPException(status_code=404, detail="Project version not found")
-        if bool(getattr(pv, "is_draft", False)) and not can_view_drafts():
-            raise HTTPException(
-                status_code=403, detail="Draft version is not accessible"
-            )
-        return pv
+        return ensure_version_visible(db, user, project, pv)
     pv = (
         db.query(ProjectVersion)
         .filter(ProjectVersion.project_id == project.id)
         .filter(ProjectVersion.is_latest.is_(True))
+        # A draft is never the Latest version; the predicate keeps this read
+        # right even if a row ever said otherwise.
+        .filter(ProjectVersion.is_draft.is_(False))
         .order_by(ProjectVersion.created_at.desc())
         .first()
     )
@@ -428,7 +358,14 @@ def get_project_dependency_graph(
             "dependency_discovery_status": pv.dependency_discovery_status,
             "dependency_discovery_started_at": pv.dependency_discovery_started_at,
             "dependency_discovery_finished_at": pv.dependency_discovery_finished_at,
-            "dependency_discovery_error": pv.dependency_discovery_error,
+            # Detail for those the project belongs to; others learn only
+            # that the scan failed.
+            "dependency_discovery_error": (
+                pv.dependency_discovery_error
+                if not pv.dependency_discovery_error
+                or can_view_drafts(db, user, project)
+                else "The last scan failed"
+            ),
             "dependency_last_commit": pv.dependency_last_commit,
             "dependency_count": pv.dependency_count,
             "vulnerability_count": pv.vulnerability_count,
@@ -474,12 +411,28 @@ def enqueue_dependency_discovery(
     project = db.query(Project).filter(Project.id == pv.project_id).one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    _require_admin_or_project_owner(db, user, project)
+    # A scan clones with the project's credentials and replaces its stored
+    # inventory: it is asked for by those who may change the project, and a
+    # draft's id is not confirmed to anyone else.
+    ensure_version_visible(db, user, project, pv)
+    if not (
+        has_permission(db, user, PERM_PROJECT_WRITE) and owns_project(db, user, project)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Scans are started by those who can edit the project",
+        )
     if not (pv.link_to_source_code or "").strip():
         # A release imported while its repository's host was not yet allowed
         # has no source URL. The project's release feed names the repository,
         # so the scan the owner asks for repairs the version first.
-        derived = repository_url_for_release_link(project.release_rss_feed_url)
+        # A private project's versions live in the repository its token is
+        # for; otherwise the feed's own address names one.
+        derived = (
+            project.repo_token_repository
+            if project.repo_private
+            else repository_url_for_release_link(project.release_rss_feed_url)
+        )
         if derived is None:
             raise HTTPException(
                 status_code=400,
@@ -491,13 +444,22 @@ def enqueue_dependency_discovery(
             )
         pv.link_to_source_code = derived
 
+    # A scan that is running is not queued again beside itself: two workers
+    # would clone and write the same version at once. One that has been
+    # "running" for longer than a scan is allowed was stopped, and may be.
+    started = pv.dependency_discovery_started_at
+    if (
+        pv.dependency_discovery_status == "running"
+        and started is not None
+        and datetime.utcnow() - started
+        < timedelta(seconds=int(settings.scan_task_time_limit_seconds))
+    ):
+        raise HTTPException(
+            status_code=409, detail="A scan of this version is already running"
+        )
+
+    # What the last scan found stays until this one replaces it.
     mark_scan_queued(pv)
-    pv.dependency_last_commit = None
-    pv.dependency_count = 0
-    pv.vulnerability_count = 0
-    db.query(ProjectVersionDependency).filter(
-        ProjectVersionDependency.project_version_id == pv.id
-    ).delete(synchronize_session=False)
     db.commit()
 
     launched = launch_dependency_scan(project_version_id) if run_now else False
@@ -1284,7 +1246,6 @@ def dependency_version_detail(
         scope = name.split("/", 1)[0]
 
     if scope:
-        like = f"{scope}/%"
         pkg_rows = (
             db.query(
                 DependencyPackage.id.label("dependency_id"),
@@ -1292,7 +1253,7 @@ def dependency_version_detail(
                 DependencyPackage.normalized_name.label("normalized_name"),
             )
             .filter(DependencyPackage.ecosystem == dv.ecosystem)
-            .filter(DependencyPackage.name.ilike(like))
+            .filter(DependencyPackage.name.istartswith(f"{scope}/", autoescape=True))
             .order_by(DependencyPackage.name.asc())
             .limit(int(namespace_limit))
             .all()
@@ -1510,6 +1471,26 @@ def dependency_index(
     if ecosystem:
         query = query.filter(DependencyPackage.ecosystem == ecosystem.strip())
 
+    # A package that only draft versions use is not listed: the directory
+    # says nothing about what an unpublished release depends on.
+    def used_by(draft: bool):
+        return (
+            db.query(ProjectVersionDependency.id)
+            .join(
+                DependencyVersion,
+                DependencyVersion.id == ProjectVersionDependency.dependency_version_id,
+            )
+            .join(
+                ProjectVersion,
+                ProjectVersion.id == ProjectVersionDependency.project_version_id,
+            )
+            .filter(DependencyVersion.dependency_id == DependencyPackage.id)
+            .filter(ProjectVersion.is_draft.is_(draft))
+            .exists()
+        )
+
+    query = query.filter(or_(used_by(False), ~used_by(True)))
+
     # Vulnerability filtering has to happen in SQL across the whole result
     # set, not within the page slice, or pages would only short-change
     # themselves: a package with any vulnerable version still counts once.
@@ -1565,15 +1546,21 @@ def dependency_index(
                     ProjectVersion.id == ProjectVersionDependency.project_version_id,
                 )
                 .filter(DependencyVersion.dependency_id.in_(package_ids))
+                .filter(ProjectVersion.is_draft.is_(False))
                 .group_by(DependencyVersion.dependency_id)
                 .all()
             )
         }
         linked_versions = (
             db.query(ProjectVersionDependency.dependency_version_id)
+            .join(
+                ProjectVersion,
+                ProjectVersion.id == ProjectVersionDependency.project_version_id,
+            )
             .filter(
                 ProjectVersionDependency.dependency_version_id == DependencyVersion.id
             )
+            .filter(ProjectVersion.is_draft.is_(False))
             .exists()
         )
         findings = (

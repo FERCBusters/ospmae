@@ -593,3 +593,30 @@ def test_attempts_made_together_cannot_share_one_opening(db):
         admitted = list(pool.map(take, range(20)))
     assert admitted.count(True) == 5
     assert db.query(RateLimitEntry).filter_by(identifier="burst").count() == 5
+
+
+def test_a_sign_in_never_waits_for_a_second_connection_while_holding_one(
+    client, monkeypatch
+):
+    """Sign-ins sent together would otherwise each hold one connection and
+    wait for another until the pool gave out."""
+    from app.api.routes import auth as auth_routes
+    from app.db.session import engine
+
+    make_user("Ivy", PASSWORD, role="viewer")
+    held: list[int] = []
+    real = auth_routes.take_rate_limit
+
+    def watched(*args, **kwargs):
+        held.append(engine.pool.checkedout())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(auth_routes, "take_rate_limit", watched)
+    stranger = browser("9.9.7.2")
+    # Any cookie value makes the sign-in look the device up first.
+    stranger.cookies.set(
+        throttle.device_cookie_name(), "not-a-device", domain="testserver.local"
+    )
+    assert attempt(stranger, "Ivy", WRONG).status_code == 401
+    assert attempt(browser("9.9.7.3"), "Ivy", PASSWORD).status_code == 200
+    assert held == [0, 0]

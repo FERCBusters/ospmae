@@ -810,8 +810,14 @@ def test_a_secret_nobody_confirmed_never_becomes_a_factor(client, db, user):
     )
 
 
-def test_sso_sessions_are_not_subject_to_the_local_ceremony(client, db, user):
-    """A session created by the SSO path keeps working without MFA proofs."""
+def test_sso_sessions_are_not_subject_to_the_local_ceremony(
+    client, db, user, monkeypatch
+):
+    """A session created by the SSO path keeps working without MFA proofs,
+    while its provider is one the installation signs people in with."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "oidc_sso_enabled", True)
     with SessionLocal() as db:
         from app.security.sessions import create_session
 

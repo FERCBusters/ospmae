@@ -189,8 +189,9 @@
           m.framework_machine_name ||
           "—";
         const f = m.filters_json || m.filters || {};
-        const nodeCount = m.node_count ?? f.node_ids?.length ?? 0;
-        const projectCount = m.project_count ?? f.project_ids?.length ?? 0;
+        const nodeCount = Number(m.node_count ?? f.node_ids?.length) || 0;
+        const projectCount =
+          Number(m.project_count ?? f.project_ids?.length) || 0;
         const q = f.q ? `Search: “${escapeHtml(f.q)}”` : "";
 
         return `

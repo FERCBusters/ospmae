@@ -66,7 +66,7 @@
     ),
     repo_private: document.getElementById("repo_private"),
     repoAccessFields: document.getElementById("repoAccessFields"),
-    repo_token_host: document.getElementById("repo_token_host"),
+    repo_token_repository: document.getElementById("repo_token_repository"),
     repo_token: document.getElementById("repo_token"),
     repoTokenStatus: document.getElementById("repoTokenStatus"),
     repoTokenRequired: document.getElementById("repoTokenRequired"),
@@ -266,32 +266,71 @@
     }
   }
 
-  function urlHost(value) {
+  // What separates a repository from a page inside it (a release, a tag, a
+  // tree), as the API reads it.
+  const INSIDE_REPOSITORY = new Set([
+    "-",
+    "releases",
+    "releases.atom",
+    "releases.rss",
+    "tags",
+    "tags.atom",
+    "tags.rss",
+    "tree",
+    "blob",
+    "archive",
+    "commit",
+    "commits",
+  ]);
+
+  // The repository an HTTPS address belongs to, written one way, or "".
+  // The API decides; this is for the suggestion and the hints.
+  function urlRepository(value) {
+    let url;
     try {
-      const url = new URL(String(value || "").trim());
-      return url.protocol === "https:" ? url.hostname.toLowerCase() : "";
+      url = new URL(String(value || "").trim());
     } catch (_) {
       return "";
     }
+    if (url.protocol !== "https:" || url.port || url.username) return "";
+    const segments = [];
+    for (const segment of url.pathname.split("/")) {
+      if (!segment) continue;
+      if (INSIDE_REPOSITORY.has(segment) && segments.length) break;
+      segments.push(segment);
+    }
+    if (segments.length < 2) return "";
+    const last = segments.length - 1;
+    segments[last] = segments[last].replace(/\.git$/i, "");
+    return `https://${url.hostname.toLowerCase()}/${segments.join("/")}`;
   }
 
   // A private repository's token fields appear with the switch. The token is
   // write-only: a saved one is reported, never shown, and an empty field
-  // keeps it unless the host changes.
+  // keeps it unless the repository changes.
   function syncRepoAccessFields() {
     const isPrivate = !!el.repo_private?.checked;
     if (el.repoAccessFields) el.repoAccessFields.hidden = !isPrivate;
     const project = state.editingProject;
-    const savedHost = project?.repo_token_set ? project.repo_token_host : "";
-    if (isPrivate && el.repo_token_host && !el.repo_token_host.value) {
-      el.repo_token_host.value =
-        urlHost(el.tracked_repo_url?.value) ||
-        urlHost(currentLatestVersion()?.link_to_source_code) ||
+    const savedRepo = project?.repo_token_set
+      ? project.repo_token_repository || ""
+      : "";
+    if (
+      isPrivate &&
+      el.repo_token_repository &&
+      !el.repo_token_repository.value
+    ) {
+      el.repo_token_repository.value =
+        urlRepository(el.tracked_repo_url?.value) ||
+        urlRepository(currentLatestVersion()?.link_to_source_code) ||
         "";
     }
-    const host = (el.repo_token_host?.value || "").trim().toLowerCase();
-    const tokenNeeded = isPrivate && (!savedHost || host !== savedHost);
-    if (el.repo_token_host) el.repo_token_host.required = isPrivate;
+    const typed = (el.repo_token_repository?.value || "").trim();
+    const same =
+      !!savedRepo &&
+      (urlRepository(typed) || typed).toLowerCase() === savedRepo.toLowerCase();
+    const tokenNeeded = isPrivate && !same;
+    if (el.repo_token_repository) el.repo_token_repository.required = isPrivate;
     if (el.repo_token) {
       el.repo_token.required = tokenNeeded;
       el.repo_token.placeholder = tokenNeeded
@@ -300,11 +339,13 @@
     }
     if (el.repoTokenRequired) el.repoTokenRequired.hidden = !tokenNeeded;
     if (el.repoTokenStatus) {
-      el.repoTokenStatus.textContent = savedHost
-        ? host === savedHost
-          ? "A token is saved for this host. Enter a new one to replace it."
-          : "The saved token is for another host; enter the token for this one."
-        : "A read-only token for this repository, such as a fine-grained personal access token.";
+      el.repoTokenStatus.textContent = savedRepo
+        ? same
+          ? "A token is saved for this repository. Enter a new one to replace it."
+          : "The saved token is for another repository; enter the token for this one."
+        : project?.repo_token_set
+          ? "The saved token is not yet bound to a repository: enter the repository and the token again."
+          : "A read-only token for this repository, such as a fine-grained personal access token.";
     }
   }
 
@@ -593,8 +634,8 @@
         !featureOn("dependency_scans") && !project?.track_branch;
     syncTrackingFields();
     if (el.repo_private) el.repo_private.checked = !!project?.repo_private;
-    if (el.repo_token_host)
-      el.repo_token_host.value = project?.repo_token_host || "";
+    if (el.repo_token_repository)
+      el.repo_token_repository.value = project?.repo_token_repository || "";
     if (el.repo_token_username)
       el.repo_token_username.value = project?.repo_token_username || "";
     if (el.repo_token) el.repo_token.value = "";
@@ -650,7 +691,8 @@
         Number.parseInt(el.branch_poll_interval_hours?.value || "", 10) ||
         undefined,
       repo_private: !!el.repo_private?.checked,
-      repo_token_host: (el.repo_token_host?.value || "").trim() || null,
+      repo_token_repository:
+        (el.repo_token_repository?.value || "").trim() || null,
       repo_token_username: (el.repo_token_username?.value || "").trim() || null,
       repo_token: (el.repo_token?.value || "").trim() || undefined,
 
@@ -682,7 +724,7 @@
     }
     if (!payload.repo_private) {
       // Turning private off deletes the saved token on the server.
-      delete payload.repo_token_host;
+      delete payload.repo_token_repository;
       delete payload.repo_token_username;
       delete payload.repo_token;
     }
@@ -1263,7 +1305,7 @@
 
     el.track_branch?.addEventListener("change", syncTrackingFields);
     el.repo_private?.addEventListener("change", syncRepoAccessFields);
-    el.repo_token_host?.addEventListener("input", syncRepoAccessFields);
+    el.repo_token_repository?.addEventListener("input", syncRepoAccessFields);
 
     el.saveProjectBtn.addEventListener("click", () => {
       OSPMAE.runBusy(el.saveProjectBtn, "Saving…", saveProject).catch((err) =>

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from billiard.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import get_task_logger
 from sqlalchemy import func, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.celery_app import celery_app
+from app.celery_app import celery_app, task_limits
 from app.core.config import settings
 from app.db.models import (
     DependencyPackage,
@@ -45,8 +49,27 @@ def _clean_display_value(raw: Any, *, max_length: int = _VALUE_MAX_LENGTH) -> st
     return s[:max_length]
 
 
+def _plain(raw: Any, max_length: int) -> str:
+    """Identifier text as stored: no control characters, cut to its column."""
+    s = "".join(ch for ch in str(raw or "") if ord(ch) >= 32 and ord(ch) != 0x7F)
+    return s.strip()[:max_length]
+
+
+# Column widths the scanner- and lockfile-supplied identifiers are cut to.
+_NAME_CHARS = 255
+_ECOSYSTEM_CHARS = 32
+_VERSION_CHARS = 200
+_VULNERABILITY_ID_CHARS = 64
+_SEVERITY_CHARS = 16
+_SOURCE_FILE_CHARS = 500
+_SOURCE_FILES_PER_DEPENDENCY = 50
+# The most distinct dependencies one scan stores. Each is a few statements in
+# one transaction, on tables every project shares.
+MAX_DEPENDENCIES_PER_SCAN = 50_000
+
+
 def _normalize(dep_name: str) -> str:
-    return str(dep_name or "").strip().lower()
+    return _plain(dep_name, _NAME_CHARS).lower()
 
 
 def _upsert_dependency(db: Session, ecosystem: str, name: str) -> DependencyPackage:
@@ -77,7 +100,7 @@ def _upsert_dependency(db: Session, ecosystem: str, name: str) -> DependencyPack
 def _upsert_dependency_version(
     db: Session, dep: DependencyPackage, version: str
 ) -> DependencyVersion:
-    ver = str(version or "").strip()[:200]
+    ver = _plain(version, _VERSION_CHARS)
     dv = (
         db.query(DependencyVersion)
         .filter(DependencyVersion.dependency_id == dep.id)
@@ -98,17 +121,11 @@ def _apply_dependencies(
     project_version_id: int,
     discovered: list[DiscoveredDependency],
 ) -> int:
-    # Replace existing mappings (idempotent refresh).
-    db.query(ProjectVersionDependency).filter(
-        ProjectVersionDependency.project_version_id == project_version_id
-    ).delete(synchronize_session=False)
-    db.flush()
-
     merged: dict[tuple[str, str, str], dict] = {}
     for d in discovered:
-        eco = str(d.ecosystem).strip().lower()
-        name = str(d.name).strip()
-        ver = str(d.version or "").strip()
+        eco = _plain(d.ecosystem, _ECOSYSTEM_CHARS).lower()
+        name = _plain(d.name, _NAME_CHARS)
+        ver = _plain(d.version, _VERSION_CHARS)
         if not (eco and name):
             continue
         key = (eco, _normalize(name), ver)
@@ -125,11 +142,23 @@ def _apply_dependencies(
         # If any parser says "direct", treat as direct.
         if not d.is_indirect:
             slot["is_indirect"] = False
-        try:
-            src = str(d.source_file)
+        src = _plain(d.source_file, _SOURCE_FILE_CHARS)
+        if src and len(slot["sources"]) < _SOURCE_FILES_PER_DEPENDENCY:
             slot["sources"].add(src)
-        except Exception:
-            pass
+
+    if len(merged) > MAX_DEPENDENCIES_PER_SCAN:
+        # Refused before anything is written: packages and versions are
+        # shared rows, and what the last scan found stays in place.
+        raise ValueError(
+            f"The repository lists {len(merged):,} dependencies; one scan "
+            f"stores at most {MAX_DEPENDENCIES_PER_SCAN:,}"
+        )
+
+    # Replace existing mappings (idempotent refresh).
+    db.query(ProjectVersionDependency).filter(
+        ProjectVersionDependency.project_version_id == project_version_id
+    ).delete(synchronize_session=False)
+    db.flush()
 
     count = 0
     for slot in merged.values():
@@ -184,10 +213,10 @@ def _apply_vulns(db: Session, *, findings: list, project_version_id: int) -> int
     seen: set[tuple[int, str, str]] = set()
 
     for f in findings:
-        eco = str(getattr(f, "ecosystem", "") or "").strip().lower()
+        eco = _plain(getattr(f, "ecosystem", ""), _ECOSYSTEM_CHARS).lower()
         pkg = _clean_display_value(getattr(f, "package", ""))
-        ver = str(getattr(f, "version", "") or "").strip()[:100]
-        vuln_id = str(getattr(f, "vulnerability_id", "") or "").strip()[:100]
+        ver = _plain(getattr(f, "version", ""), 100)
+        vuln_id = _plain(getattr(f, "vulnerability_id", ""), _VULNERABILITY_ID_CHARS)
         if not (eco and pkg and vuln_id):
             continue
 
@@ -198,9 +227,11 @@ def _apply_vulns(db: Session, *, findings: list, project_version_id: int) -> int
             continue
         seen.add(dedupe_key)
 
-        severity = _clean_display_value(str(getattr(f, "severity", "") or "")[:40])
+        severity = _clean_display_value(
+            getattr(f, "severity", ""), max_length=_SEVERITY_CHARS
+        )
         title = _clean_display_value(str(getattr(f, "title", "") or "")[:500])
-        fixed = str(getattr(f, "fixed_version", "") or "").strip()[:100]
+        fixed = _plain(getattr(f, "fixed_version", ""), 100)
         references = [
             _clean_display_value(str(r or "")[:500])[:500]
             for r in (list(getattr(f, "references", []) or []))[:10]
@@ -264,8 +295,30 @@ def _count_project_version_vulns(db: Session, *, project_version_id: int) -> int
     return int(vuln_count or 0)
 
 
+_TEMP_PATH = re.compile(re.escape(tempfile.gettempdir()) + r"/[^\s'\"]*")
+
+
+def _scan_error_text(exc: BaseException) -> str:
+    """What is stored, and shown to the project's owners, about a failed scan.
+
+    A refusal OSPMAE raised itself and a failed git command are kept, with
+    credentials masked and the worker's own directories left out: they tell
+    an owner what to correct. A stop at the time limit says so. Anything else
+    (a database or scanner error) is named by its kind only; its detail, which
+    can carry statements and their values, stays in the worker log.
+    """
+    if isinstance(exc, (SoftTimeLimitExceeded, subprocess.TimeoutExpired)):
+        return "The scan ran past its time limit and was stopped"
+    if isinstance(exc, (ValueError, RuntimeError)) and not isinstance(
+        exc, SQLAlchemyError
+    ):
+        return _TEMP_PATH.sub("<scan directory>", redact_url(str(exc)))[:2000]
+    return f"The scan failed ({type(exc).__name__})"
+
+
 @celery_app.task(
-    name="app.tasks.dependency_discovery.discover_project_version_dependencies"
+    name="app.tasks.dependency_discovery.discover_project_version_dependencies",
+    **task_limits(settings.scan_task_time_limit_seconds),
 )
 def discover_project_version_dependencies(project_version_id: int) -> dict:
     from app.core.features import is_enabled
@@ -406,13 +459,13 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
                 .values(
                     dependency_discovery_status="error",
                     dependency_discovery_finished_at=datetime.utcnow(),
-                    dependency_discovery_error=redact_url(str(exc))[:2000],
+                    dependency_discovery_error=_scan_error_text(exc),
                 )
             )
             db.commit()
         except Exception:
             db.rollback()
-        return {"ok": False, "error": redact_url(str(exc))[:2000]}
+        return {"ok": False, "error": _scan_error_text(exc)}
     finally:
         try:
             if repo_dir:

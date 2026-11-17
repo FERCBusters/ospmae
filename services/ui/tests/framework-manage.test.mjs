@@ -421,6 +421,62 @@ test("a framework in use is deleted only after a second confirmation", async (t)
   assert.deepEqual(page.toasts(), [["success", "Framework deleted"]]);
 });
 
+test("a node projects map to is deleted only after a second confirmation", async (t) => {
+  let asked = 0;
+  const page = await manage(t, {
+    hooks: {
+      "DELETE /v1/framework-nodes/33": () => {
+        asked += 1;
+        return asked === 1
+          ? [
+              409,
+              {
+                detail:
+                  "Node is referenced by 2 project mappings. Retry with ?force=true to delete it and those mappings.",
+              },
+            ]
+          : [200, { ok: true }];
+      },
+    },
+  });
+  await page.click(page.doc.querySelector('[data-pick="33"]'));
+  await page.click("nodeDeleteBtn");
+  assert.equal(page.record.confirms.length, 2);
+  assert.match(
+    page.record.confirms[1],
+    /^Node is referenced by 2 project mappings\..*\n\nDelete anyway\?/s,
+  );
+  assert.deepEqual(
+    page.asked().filter((r) => r.startsWith("DELETE")),
+    [
+      "DELETE /v1/framework-nodes/33",
+      "DELETE /v1/framework-nodes/33?force=true",
+    ],
+  );
+  assert.deepEqual(page.toasts(), [["info", "Node deleted"]]);
+});
+
+test("declining the second confirmation leaves a mapped node in place", async (t) => {
+  const answers = [true, false];
+  const page = await manage(t, {
+    confirm: () => answers.shift(),
+    hooks: {
+      "DELETE /v1/framework-nodes/33": () => [
+        409,
+        { detail: "Node is referenced by 1 project mappings." },
+      ],
+    },
+  });
+  await page.click(page.doc.querySelector('[data-pick="33"]'));
+  await page.click("nodeDeleteBtn");
+  assert.equal(page.record.confirms.length, 2);
+  assert.deepEqual(
+    page.asked().filter((r) => r.startsWith("DELETE")),
+    ["DELETE /v1/framework-nodes/33"],
+  );
+  assert.deepEqual(page.toasts(), []);
+});
+
 test("failures while saving or deleting a framework are reported", async (t) => {
   const page = await manage(t, {
     hooks: {

@@ -92,6 +92,9 @@ def deliver_pending(limit: int = 10) -> int:
                 # retain only the exception class name.
                 row.last_error = type(error).__name__[:100]
                 row.status = "failed" if row.attempts >= _MAX_ATTEMPTS else "pending"
+                if row.status == "failed":
+                    # Nothing will send it now; a link in it is not kept.
+                    row.body = ""
                 row.next_attempt_at = _now() + timedelta(
                     seconds=min(3600, 60 * 2 ** (row.attempts - 1))
                 )

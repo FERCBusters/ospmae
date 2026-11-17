@@ -147,13 +147,42 @@ def parse_yarn_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]
     return out
 
 
+# The most nodes one lockfile may hold: far above any real lockfile within
+# the byte limit, and a ceiling on what a crafted one can make the loader
+# build.
+_YAML_MAX_NODES = 1_000_000
+
+
+def _load_plain_yaml(text: str):
+    """Load YAML that uses no aliases, as a pnpm lockfile is written.
+
+    An alias makes a small file stand for a large structure (a few hundred
+    bytes of nested merge keys cost seconds and megabytes), so a document
+    that holds one is refused, as is one with more nodes than any lockfile
+    has. The caller reads a refusal as a malformed lockfile.
+    """
+
+    class PlainLoader(yaml.SafeLoader):
+        nodes = 0
+
+        def compose_node(self, parent, index):
+            if self.check_event(yaml.AliasEvent):
+                raise yaml.YAMLError("YAML aliases are not accepted in a lockfile")
+            self.nodes += 1
+            if self.nodes > _YAML_MAX_NODES:
+                raise yaml.YAMLError("The lockfile holds too many values")
+            return super().compose_node(parent, index)
+
+    return yaml.load(text, Loader=PlainLoader)  # noqa: S506 - a SafeLoader subclass
+
+
 def parse_pnpm_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
     if yaml is None:
         return []
     raw = _bounded_read(path, max_bytes)
     if raw is None:
         return []
-    data = yaml.safe_load(raw.decode("utf-8", errors="replace"))
+    data = _load_plain_yaml(raw.decode("utf-8", errors="replace"))
     out: list[DiscoveredDependency] = []
     if not isinstance(data, dict):
         return out

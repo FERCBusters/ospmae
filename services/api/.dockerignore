@@ -1,0 +1,8 @@
+# Kept out of the API image's build context.
+.env
+.env.*
+tests
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache

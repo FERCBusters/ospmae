@@ -114,3 +114,164 @@ def test_features_endpoint_requires_authentication(client):
         "comparisons",
         "release_feed",
     }
+
+
+# ---------------------------------------------------------------------------
+# An administrator through a group counts as one, on every path.
+# ---------------------------------------------------------------------------
+
+
+def _direct_and_inheriting_admins():
+    """A: administrator by role. B: role inherit, administrator through the
+    Operators group."""
+    from tests.support import make_group, signed_in
+
+    a, a_id = signed_in("admin")
+    b, b_id = signed_in("inherit")
+    operators = make_group("Operators", role="admin", members=[b_id])
+    assert b.get("/v1/admin/users").status_code == 200
+    return a, a_id, b, b_id, operators
+
+
+def _admins(db) -> int:
+    from app.security.roles import active_admin_count
+
+    db.expire_all()
+    return active_admin_count(db)
+
+
+def test_an_inheriting_administrator_lets_the_direct_one_step_down(db):
+    from tests.support import csrf
+
+    a, a_id, b, _b_id, _group = _direct_and_inheriting_admins()
+    assert _admins(db) == 2
+    stepped = b.patch(
+        f"/v1/admin/users/{a_id}", json={"role": "viewer"}, headers=csrf(b)
+    )
+    assert stepped.status_code == 200, stepped.text
+    assert _admins(db) == 1
+    assert a.get("/v1/admin/users").status_code == 403
+
+
+def test_the_last_administrator_cannot_be_removed_through_its_group(db):
+    from tests.support import csrf, ok
+
+    a, a_id, b, b_id, group = _direct_and_inheriting_admins()
+    ok(b.patch(f"/v1/admin/users/{a_id}", json={"role": "viewer"}, headers=csrf(b)))
+
+    # B is now the only administrator, and only through Operators.
+    refusals = [
+        b.patch(f"/v1/admin/groups/{group}", json={"role": "viewer"}, headers=csrf(b)),
+        b.patch(f"/v1/admin/groups/{group}", json={"role": None}, headers=csrf(b)),
+        b.delete(f"/v1/admin/groups/{group}", headers=csrf(b)),
+        b.put(
+            f"/v1/admin/users/{b_id}/access",
+            json={"group_ids": [], "permission_ids": []},
+            headers=csrf(b),
+        ),
+        b.patch(f"/v1/admin/users/{b_id}", json={"role": "viewer"}, headers=csrf(b)),
+    ]
+    assert [r.status_code for r in refusals] == [409] * 5, [r.text for r in refusals]
+    assert _admins(db) == 1
+    assert b.get("/v1/admin/users").status_code == 200
+    # Nothing of a refused change was kept.
+    groups = ok(b.get("/v1/admin/groups"))["items"]
+    assert [(g["name"], g["role"]) for g in groups] == [("Operators", "admin")]
+    access = ok(b.get(f"/v1/admin/users/{b_id}/access"))
+    assert access["group_ids"] == [group]
+
+    # A change that leaves B an administrator is still made.
+    renamed = b.patch(
+        f"/v1/admin/groups/{group}", json={"name": "Ops"}, headers=csrf(b)
+    )
+    assert renamed.status_code == 200, renamed.text
+    # With a second administrator back, each of those changes is allowed.
+    ok(b.patch(f"/v1/admin/users/{a_id}", json={"role": "admin"}, headers=csrf(b)))
+    ok(b.patch(f"/v1/admin/groups/{group}", json={"role": "viewer"}, headers=csrf(b)))
+    assert _admins(db) == 1
+    assert b.get("/v1/admin/users").status_code == 403
+
+
+def test_an_inactive_or_directly_ranked_member_of_an_admin_group_is_not_counted(db):
+    from app.db.models import User
+
+    from tests.support import make_group, signed_in
+
+    _a, _a_id = signed_in("admin")
+    _viewer, viewer_id = signed_in("viewer")
+    _gone, gone_id = signed_in("inherit")
+    make_group("Operators", role="admin", members=[viewer_id, gone_id])
+    assert _admins(db) == 2
+    db.query(User).filter(User.id == gone_id).update({User.is_active: False})
+    db.commit()
+    # The viewer's own role wins over the group's; the inactive account is out.
+    assert _admins(db) == 1
+
+
+def test_two_demotions_at_once_cannot_both_pass(db):
+    """Each administrator demotes the other; the second waits for the first
+    and then finds itself the last one."""
+    import threading
+
+    from app.db.session import SessionLocal
+    from app.security.roles import lock_admin_changes
+
+    from tests.support import csrf, signed_in
+
+    a, a_id = signed_in("admin")
+    b, b_id = signed_in("admin")
+    holder = SessionLocal()
+    lock_admin_changes(holder)
+    results: dict[str, int] = {}
+
+    def demote(name, client, target):
+        results[name] = client.patch(
+            f"/v1/admin/users/{target}", json={"role": "viewer"}, headers=csrf(client)
+        ).status_code
+
+    threads = [
+        threading.Thread(target=demote, args=("a", a, b_id)),
+        threading.Thread(target=demote, args=("b", b, a_id)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=0.5)
+    # Both wait while another change holds the lock.
+    assert results == {}
+    holder.rollback()
+    holder.close()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert sorted(results.values()) == [200, 409]
+    assert _admins(db) == 1
+
+
+def test_an_administrators_reset_ends_sessions_opened_through_a_provider(
+    db, monkeypatch
+):
+    from app.core.config import settings
+    from app.db.models import Session as SessionRow
+
+    from tests.support import csrf, ok, signed_in
+
+    monkeypatch.setattr(settings, "oidc_sso_enabled", True)
+    admin, _ = signed_in("admin")
+    target, target_id = signed_in("viewer")
+    # One of the account's sessions was opened by single sign-on.
+    other, _ = signed_in("viewer")
+    row = db.query(SessionRow).filter(SessionRow.user_id == target_id).one()
+    row.auth_method = "oidc"
+    db.commit()
+    assert target.get("/v1/me").status_code == 200
+
+    ok(
+        admin.post(
+            f"/v1/admin/users/{target_id}/password",
+            json={"new_password": "A-fresh-passphrase-for-tests-9!"},
+            headers=csrf(admin),
+        )
+    )
+    assert db.query(SessionRow).filter(SessionRow.user_id == target_id).count() == 0
+    assert target.get("/v1/me").status_code == 401
+    assert other.get("/v1/me").status_code == 200

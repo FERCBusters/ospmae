@@ -49,6 +49,8 @@ class RepoCredential:
     host: str
     username: str
     token: str = field(repr=False)
+    # The one repository the token is used for; without it, for none.
+    repository: str = ""
 
 
 def _cipher() -> Fernet:
@@ -98,6 +100,93 @@ def clean_host(value: str | None) -> str | None:
     return host
 
 
+# What separates a repository from a page inside it on the forges OSPMAE
+# clones from: /owner/repo/releases/tag/v1, /owner/repo/tree/main,
+# /group/sub/project/-/tags/v1 and the like.
+_INSIDE_REPOSITORY = frozenset(
+    {
+        "-",
+        "releases",
+        "releases.atom",
+        "releases.rss",
+        "tags",
+        "tags.atom",
+        "tags.rss",
+        "tree",
+        "blob",
+        "archive",
+        "commit",
+        "commits",
+    }
+)
+
+
+def repository_of(url: str | None) -> str | None:
+    """The repository an HTTPS address belongs to, written one way.
+
+    ``https://<host>/<path>``: lower-case host, no ``.git``, no trailing
+    slash, and nothing after the repository (a release, tag or tree page is
+    reduced to its repository). None for anything that is not an HTTPS
+    address of a repository: another scheme, a port, credentials, a query,
+    or no path.
+    """
+    text = (url or "").strip()
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower().rstrip(".")
+    if (
+        parts.scheme != "https"
+        or not _HOST.fullmatch(host)
+        or port not in (None, 443)
+        or parts.username
+        or parts.password
+        or parts.query
+        or parts.fragment
+    ):
+        return None
+    segments: list[str] = []
+    for segment in parts.path.split("/"):
+        if not segment:
+            continue
+        if segment in _INSIDE_REPOSITORY and segments:
+            break
+        segments.append(segment)
+    if segments and segments[-1].lower().endswith(".git"):
+        segments[-1] = segments[-1][:-4]
+    # An owner and a repository at the least.
+    if len(segments) < 2 or any(s in {".", ".."} for s in segments):
+        return None
+    return f"https://{host}/{'/'.join(segments)}"
+
+
+def same_repository(a: str | None, b: str | None) -> bool:
+    """Whether two addresses name one repository. Forges read owner and
+    repository names without regard to case."""
+    first, second = repository_of(a), repository_of(b)
+    return (
+        first is not None
+        and second is not None
+        and (first.casefold() == second.casefold())
+    )
+
+
+def clean_repository(value: str | None) -> str | None:
+    """The repository a token is entered for, or None for nothing entered."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    repository = repository_of(text)
+    if repository is None or len(repository) > 600:
+        raise ValueError(
+            "Enter the repository's HTTPS address, such as "
+            "https://github.com/owner/repository"
+        )
+    return repository
+
+
 def clean_username(value: str | None) -> str | None:
     name = (value or "").strip()
     if not name:
@@ -123,27 +212,59 @@ def project_credential(project) -> RepoCredential | None:
     host = getattr(project, "repo_token_host", None)
     if not ciphertext or not host:
         raise RepoTokenUnavailable("The private repository has no access token")
+    repository = repository_of(getattr(project, "repo_token_repository", None))
+    if repository is None:
+        # A token saved before tokens were bound to a repository is not
+        # used until someone who can edit the project says which one.
+        raise RepoTokenUnavailable(
+            "Say which repository the access token is for on the project, "
+            "and enter the token again"
+        )
     username = getattr(project, "repo_token_username", None) or default_username(host)
     if not username:
         raise RepoTokenUnavailable("The private repository's token has no account name")
-    return RepoCredential(host=host, username=username, token=decrypt_token(ciphertext))
+    return RepoCredential(
+        host=host,
+        username=username,
+        token=decrypt_token(ciphertext),
+        repository=repository,
+    )
 
 
 def git_auth_env(credential: RepoCredential, url: str) -> dict[str, str]:
-    """Environment entries that authenticate git's HTTPS requests to one host.
+    """Environment entries that authenticate git's HTTPS requests to the
+    one repository the token is for.
 
-    The header is scoped to ``https://<host>/``, so git sends it to no other
-    destination, and redirects stay disabled for every clone.
+    A clone of anything else is refused before git runs. The header is
+    scoped to the repository being cloned, so git sends it to no other
+    destination, on that host or elsewhere, and redirects stay disabled for
+    every clone.
     """
     parts = urlsplit(url)
-    if parts.scheme != "https" or (parts.hostname or "").lower() != credential.host:
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    if (
+        parts.scheme != "https"
+        or (parts.hostname or "").lower() != credential.host
+        or port not in (None, 443)
+    ):
         raise ValueError(
             f"This project's access token is used only over HTTPS with "
             f"{credential.host}; the repository URL is elsewhere"
         )
+    if not same_repository(url, credential.repository):
+        raise ValueError(
+            f"This project's access token is for {credential.repository}; "
+            "the repository URL is elsewhere"
+        )
     basic = base64.b64encode(f"{credential.username}:{credential.token}".encode())
+    # git sends the header to addresses under this one only: the repository
+    # being cloned, not everything on its host.
+    repository = f"https://{credential.host}{parts.path.rstrip('/')}"
     return {
         "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": f"http.https://{credential.host}/.extraHeader",
+        "GIT_CONFIG_KEY_0": f"http.{repository}.extraHeader",
         "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic.decode()}",
     }

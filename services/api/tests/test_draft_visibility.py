@@ -53,7 +53,7 @@ def test_lenses_and_the_catalogue_show_no_draft_to_anyone_whatever_they_ask(db):
     viewer, _ = signed_in("viewer")
     # The draft is closed to the viewer where it is asked for directly.
     refused = viewer.get(f"/v1/project-versions/{world['draft']}/framework-nodes")
-    assert refused.status_code == 403, refused.text
+    assert refused.status_code == 404, refused.text
 
     for reader in (viewer, world["admin"]):
         for latest_only in ("true", "false"):
@@ -152,7 +152,7 @@ def test_a_shared_manifest_gives_a_draft_only_to_those_who_may_read_the_draft(db
     direct = outsider.get(
         f"/v1/projects/{alpha}/manifest/export", params={"version_id": draft}
     )
-    assert direct.status_code == 403, direct.text
+    assert direct.status_code == 404, direct.text
     assert _exported(outsider, manifest_id) == []
 
     # Once the saver leaves the owner group the draft is closed to them too,
@@ -194,7 +194,7 @@ def test_a_published_versions_history_leaves_out_what_it_held_as_a_draft(db):
     )
     viewer, _ = signed_in("viewer")
     url = f"/v1/project-versions/{draft}/changelog"
-    assert viewer.get(url).status_code == 403
+    assert viewer.get(url).status_code == 404
 
     ok(
         owner.put(
@@ -227,9 +227,63 @@ def test_a_published_versions_history_leaves_out_what_it_held_as_a_draft(db):
     assert publication["after_state"]["notes"] == "public notes"
     assert publication["after_state"]["is_draft"] is False
     assert [change["field"] for change in publication["changes"]] == ["is_draft"]
+    # Its summary names no field the publishing request changed besides.
+    assert publication["summary"] == "Version published"
+    assert [item["summary"] for item in full["items"]].count("Version published") == 0
 
     # Paging counts what this reader can see.
     page = ok(viewer.get(url, params={"limit": 1, "offset": 1}))
     assert (page["total"], len(page["items"])) == (2, 1)
     assert page["items"][0]["after_state"]["notes"] == "public notes"
     assert ok(viewer.get(url, params={"offset": 2}))["items"] == []
+
+
+def test_the_dependency_directory_lists_nothing_only_a_draft_uses(db):
+    admin, _ = signed_in("admin")
+    alpha = make_project(admin, "alpha")["id"]
+    published = make_version(admin, alpha, "1.0.0")["id"]
+    draft = make_version(admin, alpha, DRAFT, is_draft=True)["id"]
+    record_dependency(published, "pypi", "requests", "2.0")
+    record_dependency(draft, "pypi", "requests", "3.0")
+    record_dependency(
+        draft,
+        "pypi",
+        "unreleased-sdk",
+        "0.1",
+        vulnerabilities=[("CVE-1", "High", None)],
+    )
+    viewer, _ = signed_in("viewer")
+
+    for reader in (viewer, admin):
+        listing = ok(reader.get("/v1/dependencies"))
+        assert [item["name"] for item in listing["dependencies"]] == ["requests"]
+        assert listing["total"] == 1
+        [requests] = listing["dependencies"]
+        # One project uses it, counted once, through its published version.
+        assert requests["used_by_count"] == 1
+        assert requests["vulnerability_count"] == 0
+        assert (
+            ok(reader.get("/v1/dependencies", params={"q": "unreleased"}))[
+                "dependencies"
+            ]
+            == []
+        )
+        assert (
+            ok(reader.get("/v1/dependencies", params={"vulnerable": "true"}))[
+                "dependencies"
+            ]
+            == []
+        )
+
+    # Published, the draft's packages are listed like any other.
+    ok(
+        admin.put(
+            f"/v1/project-versions/{draft}",
+            json={"is_draft": False},
+            headers=csrf(admin),
+        )
+    )
+    names = [
+        item["name"] for item in ok(viewer.get("/v1/dependencies"))["dependencies"]
+    ]
+    assert names == ["requests", "unreleased-sdk"]

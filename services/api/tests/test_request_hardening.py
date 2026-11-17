@@ -585,6 +585,18 @@ def test_handshakes_need_the_application_origin(client, fresh_allowances):
         r".*.*.*=",
         r"\w*\d*[a-z]*x",
         r"(?:ab)*+a*(?:ab)?a*a*!",
+        # The same shapes over characters far from ASCII: what two repeats
+        # share is judged on the characters the pattern itself names.
+        "(?:[^\\x00-\\u017f]{1,32}){1,32}$",
+        "(?:\u044f{1,32}){1,32}$",
+        "(?:[\u4e00-\u4e10]{1,9}){1,9}!",
+        "[\u4e00-\u4e10]*[\u4e08-\u4e20]*\u4e09*!",
+        "(?i)(?:\u03a9{1,9}[\u03c0-\u03cf]{1,9}){1,9}!",
+        "(?:\\d{1,9}\u0663{1,9}){1,9}!",
+        # A lookaround's repeats run over the same text as those around it.
+        r"a*(?=a*a*x)a*$",
+        r"a*(?=a*x)a*a*$",
+        r"(?!a*b)a*(?<=a*)a*!",
     ],
 )
 def test_patterns_that_can_backtrack_without_bound_are_refused(pattern):
@@ -619,6 +631,13 @@ def test_patterns_that_can_backtrack_without_bound_are_refused(pattern):
         # Possessive repeats commit, so they share nothing.
         r"a*+a*+a*+!",
         r"(?:a{1,2})++!",
+        # Other scripts, kept apart as any repeats are.
+        "\u044f+-\u044f+-\u044f+",
+        "[\u0430-\u044f]+\\d+",
+        "(?:[\u4e00-\u4e10]{1,9}-){1,9}!",
+        # The usual way to say "not a pre-release".
+        r"^(?!.*beta).*$",
+        r"^v\d+(?=\.)",
     ],
 )
 def test_bounded_patterns_are_accepted(pattern):
@@ -627,6 +646,100 @@ def test_bounded_patterns_are_accepted(pattern):
         {"match_type": "regex", "pattern": pattern}
     )
     assert payload.pattern == pattern
+
+
+def test_a_project_keeps_a_bounded_number_of_ignore_patterns():
+    from app.api.payloads import ProjectUpdatePayload
+    from app.security.regex_shape import MAX_IGNORE_PATTERNS
+    from app.tasks import release_feed as rf
+
+    rules = [{"match_type": "contains", "pattern": f"rc{n}"} for n in range(51)]
+    kept = ProjectUpdatePayload.model_validate(
+        {"release_rss_ignore_patterns": rules[:MAX_IGNORE_PATTERNS]}
+    )
+    assert len(kept.release_rss_ignore_patterns) == 50
+    for too_many in (rules, "\n".join(f"rc{n}" for n in range(51))):
+        with pytest.raises(ValidationError, match="at most 50 ignore patterns"):
+            ProjectUpdatePayload.model_validate(
+                {"release_rss_ignore_patterns": too_many}
+            )
+    # A longer list saved before the limit is read up to it.
+    stored = Project(id=3, release_rss_ignore_patterns=[f"rc{n}" for n in range(80)])
+    assert len(rf._normalised_release_ignore_patterns(stored)) == 50
+    assert rf._release_feed_entry_is_ignored(stored, {"title": "v1-rc49"}, "v1") is True
+    assert (
+        rf._release_feed_entry_is_ignored(stored, {"title": "v1-rc50x"}, "v1") is True
+    )
+    assert rf._release_feed_entry_is_ignored(stored, {"title": "v1-rc7"}, "v1") is True
+    assert rf._release_feed_entry_is_ignored(stored, {"title": "v1-rd"}, "v1") is False
+
+
+def test_slow_rules_cost_a_project_a_fixed_budget_not_one_deadline_each(monkeypatch):
+    """Rules that reach the deadline are counted: each is tried once in a
+    run, and together they spend a budget after which no rule is tried."""
+    import re
+
+    from app.security import regex_shape
+    from app.tasks import release_feed as rf
+
+    searched: list[str] = []
+
+    def timed_out(compiled, text, seconds=regex_shape.SEARCH_SECONDS):
+        searched.append(compiled.pattern)
+        return (
+            None if compiled.pattern.startswith("slow") else bool(compiled.search(text))
+        )
+
+    monkeypatch.setattr(rf, "search_within", timed_out)
+    monkeypatch.setattr(rf, "compile_supplied_pattern", lambda p, f: re.compile(p, f))
+    monkeypatch.setattr(rf.log, "warning", lambda *a: None)
+    rules = [{"match_type": "regex", "pattern": f"slow{n}"} for n in range(30)]
+    rules.append({"match_type": "regex", "pattern": "nightly"})
+    project = Project(id=9, release_rss_ignore_patterns=rules)
+    budget = rf.MatchBudget(seconds=5 * regex_shape.SEARCH_SECONDS)
+
+    entry = {"title": "v1.0.0-nightly", "link": "", "id": ""}
+    # Five deadlines spend the budget; the rules after them, the good one
+    # included, are not consulted, and the entry is taken.
+    assert rf._release_feed_entry_is_ignored(project, entry, "v1.0.0", budget) is False
+    assert searched == [f"slow{n}" for n in range(5)]
+    assert budget.spent
+    # Nothing more is searched for this project in this run.
+    assert rf._release_feed_entry_is_ignored(project, entry, "v1.0.1", budget) is False
+    assert len(searched) == 5
+
+    # With room in the budget a slow rule is tried once, and the others
+    # still decide.
+    searched.clear()
+    roomy = rf.MatchBudget()
+    few = Project(id=9, release_rss_ignore_patterns=rules[:2] + rules[-1:])
+    assert rf._release_feed_entry_is_ignored(few, entry, "v1.0.0", roomy) is True
+    assert rf._release_feed_entry_is_ignored(few, entry, "v1.0.1", roomy) is True
+    # Each slow rule once; the good rule against the label and then the
+    # title of both entries.
+    assert searched == ["slow0", "slow1"] + ["nightly"] * 4
+    assert not roomy.spent
+
+
+def test_a_deadline_that_fires_as_the_search_returns_is_still_a_stop():
+    import re
+    import signal
+
+    from app.security import regex_shape
+
+    class Slow:
+        pattern = "x"
+
+        def search(self, text):
+            # The timer goes off after the search has its answer.
+            signal.raise_signal(signal.SIGALRM)
+            return re.match("x", "x")
+
+    before = signal.getsignal(signal.SIGALRM)
+    assert regex_shape.search_within(Slow(), "x") is None
+    # The handler and the timer are as they were.
+    assert signal.getsignal(signal.SIGALRM) is before
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 
 def test_a_stored_pattern_that_fails_the_checks_is_skipped_never_run():
@@ -793,6 +906,62 @@ def test_an_open_socket_ends_when_its_session_does(fresh_allowances, monkeypatch
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
         assert closed.value.code == 4401
+    assert user.id not in hub._connections
+
+
+def test_a_socket_that_keeps_talking_is_checked_as_often_as_a_quiet_one(
+    fresh_allowances, monkeypatch
+):
+    """Frames from the client do not put the check off: a socket that sends
+    one every few milliseconds still ends when its session does."""
+    import threading
+
+    from app.realtime.notifications import hub
+    from app.security.auth import session_cookie_name
+
+    monkeypatch.setattr(main_module, "_WS_RECHECK_SECONDS", 0.2)
+    checks: list[float] = []
+    real = main_module._socket_still_signed_in
+
+    def counted(*args):
+        checks.append(time.monotonic())
+        return real(*args)
+
+    monkeypatch.setattr(main_module, "_socket_still_signed_in", counted)
+    client, user = auth_client(role="viewer")
+    name = session_cookie_name()
+    headers = {
+        "X-Test-Peer": "127.0.0.1",
+        "Origin": "https://testserver",
+        "Cookie": f"{name}={client.cookies.get(name)}",
+    }
+    with client.websocket_connect("/ws/notifications", headers=headers) as ws:
+        talking = threading.Event()
+
+        def chatter():
+            while not talking.is_set():
+                try:
+                    ws.send_text("still here")
+                except Exception:
+                    return
+                time.sleep(0.01)
+
+        thread = threading.Thread(target=chatter, daemon=True)
+        thread.start()
+        try:
+            time.sleep(0.7)
+            # Checked on the clock while frames kept arriving.
+            assert len(checks) >= 2
+            assert user.id in hub._connections
+            with SessionLocal() as s:
+                s.query(SessionRow).filter_by(user_id=user.id).delete()
+                s.commit()
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_text()
+            assert closed.value.code == 4401
+        finally:
+            talking.set()
+            thread.join(timeout=2)
     assert user.id not in hub._connections
 
 

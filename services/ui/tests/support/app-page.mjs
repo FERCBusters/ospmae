@@ -298,7 +298,11 @@ export async function appPage(t, htmlName, scripts, options = {}) {
       installBrowser(window, record, options);
       window.confirm = (message) => {
         record.confirms = [...(record.confirms || []), message];
-        return options.confirm !== false;
+        // A function answers each question in turn; otherwise every
+        // question gets the same answer.
+        return typeof options.confirm === "function"
+          ? options.confirm(message)
+          : options.confirm !== false;
       };
       options.setup?.(window);
     },

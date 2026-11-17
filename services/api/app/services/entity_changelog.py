@@ -43,6 +43,7 @@ _CHANGE_FIELD_LABELS = {
     "branch_poll_interval_hours": "Branch re-scan interval (hours)",
     "repo_private": "Private repository",
     "repo_token_host": "Access token host",
+    "repo_token_repository": "Access token repository",
     "repo_token_username": "Access token account",
     "repo_token_updated_at": "Access token saved",
     "status": "Status",
@@ -268,6 +269,7 @@ def project_changelog_state(
         # The token itself is never recorded; when it was saved is.
         "repo_private": bool(project.repo_private),
         "repo_token_host": project.repo_token_host,
+        "repo_token_repository": project.repo_token_repository,
         "repo_token_username": project.repo_token_username,
         "repo_token_updated_at": (
             project.repo_token_updated_at.isoformat()
@@ -405,6 +407,9 @@ def _published_history(
         item = _serialise_changelog(row)
         if before.get("is_draft"):
             item["before_state"] = None
+            # The stored summary lists every field the publishing request
+            # changed; those are the draft's too.
+            item["summary"] = "Version published"
             item["changes"] = [
                 change
                 for change in item["changes"]

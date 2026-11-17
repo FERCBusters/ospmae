@@ -205,6 +205,23 @@ def test_the_browser_that_starts_a_sign_in_finishes_it(monkeypatch):
     assert sign_in_rows() == [(user.username, "method=oidc&outcome=success")]
 
 
+@pytest.mark.parametrize("end_session, kept", [("", False), (ISSUER + "/logout", True)])
+def test_the_providers_token_is_kept_only_for_its_own_sign_out(
+    monkeypatch, end_session, kept
+):
+    from app.db.models import Session as SessionRow
+
+    monkeypatch.setattr(settings, "oidc_end_session_endpoint", end_session)
+    user = linked()
+    c = browser()
+    state, nonce, _started = start(c)
+    token = signed(nonce)
+    assert callback(c, state, token, monkeypatch).status_code == 302
+    with SessionLocal() as db:
+        row = db.query(SessionRow).filter_by(user_id=user.id).one()
+        assert row.oidc_id_token == (token if kept else None)
+
+
 def test_the_older_sign_in_addresses_are_bound_to_the_browser_too(monkeypatch):
     """/v1/auth/oidc/start and /callback are the same sign-in under its
     earlier address."""

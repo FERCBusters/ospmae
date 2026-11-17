@@ -1,0 +1,12 @@
+# The UI image is built with the repository root as its context. Nothing
+# here is copied into an image; it is kept from the builder altogether.
+.git
+.env
+.env.*
+!.env.example
+test-results
+**/node_modules
+**/__pycache__
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache

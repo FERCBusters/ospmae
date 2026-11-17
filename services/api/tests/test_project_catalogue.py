@@ -486,7 +486,7 @@ def test_mapping_needs_ownership_and_drafts_stay_private(admin, taxonomy):
     assert refused.status_code == 403
     for path in ("framework-nodes", "capabilities", "changelog"):
         assert (
-            other.get(f"/v1/project-versions/{draft['id']}/{path}").status_code == 403
+            other.get(f"/v1/project-versions/{draft['id']}/{path}").status_code == 404
         )
         assert (
             owner.get(f"/v1/project-versions/{draft['id']}/{path}").status_code == 200
@@ -558,7 +558,7 @@ def test_the_graph_serves_a_chosen_version_and_guards_drafts(admin, taxonomy):
     )
     assert admin.get(base, params={"version_id": 999999}).status_code == 404
     viewer, _ = signed_in("viewer")
-    assert viewer.get(base, params={"version_id": draft["id"]}).status_code == 403
+    assert viewer.get(base, params={"version_id": draft["id"]}).status_code == 404
     assert ok(viewer.get(base))["version"]["version"] == "2.0.0"
 
     # A project with only a draft shows it to its owner and nothing to others.

@@ -313,3 +313,34 @@ def test_go_mod_and_sum_parsing(tmp_path):
     p2 = _write(tmp_path, "go.sum", b"golang.org/x/text v0.14.0 h1:abc=\n")
     deps = parse_lockfile(p2, max_bytes=100_000)
     assert any(d.name.startswith("golang.org") for d in deps)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/.//evil.example/x",
+        "/..//evil.example",
+        "/a/..//evil.example",
+        "/%2e//evil.example",
+        "/%2E%2e//evil.example",
+        "/a/./b",
+        "/a/..",
+        "/.",
+    ],
+)
+def test_a_route_with_a_dot_segment_is_not_a_route(path):
+    """A browser resolves the segment first, and "/.//host" becomes "//host"."""
+    assert safe_relative_route_path(path) is None
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/project.html?id=3&tab=../x",
+        "/dependencies.html#./section",
+        "/a.b/c..d/.hidden",
+        "/files/v1.2.3/notes...txt",
+    ],
+)
+def test_dots_that_are_not_segments_are_kept(path):
+    assert safe_relative_route_path(path) == path

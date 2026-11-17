@@ -28,6 +28,8 @@ from re import (  # type: ignore[attr-defined]  # CPython's parser has no stub
 REPEATS_HELD = 1024
 # The longest pattern accepted.
 MAX_PATTERN_CHARS = 256
+# The most ignore rules one project keeps: each is tried against every entry.
+MAX_IGNORE_PATTERNS = 50
 _ONE_CHARACTER = {_parser.ANY, _parser.IN, _parser.LITERAL, _parser.NOT_LITERAL}
 _REPEATS = (_parser.MAX_REPEAT, _parser.MIN_REPEAT, _parser.POSSESSIVE_REPEAT)
 _HELD_REPEAT = (
@@ -57,8 +59,57 @@ def _one_character(items) -> bool:
 
 
 # Characters a one-character item is tried against to decide whether two items
-# can match the same text: ASCII, Latin-1 and Latin Extended-A.
-_SAMPLE = [chr(code) for code in range(0x180)]
+# can match the same text: ASCII, Latin-1 and Latin Extended-A, then one
+# character from each way the classes \d, \s and \w and their opposites meet
+# beyond those (a digit, a space, a letter, and one that is none of them).
+# check_pattern_shape adds every character and range end the pattern itself
+# names, so two items that meet only beyond the sample are still seen to.
+_SAMPLE = [chr(code) for code in range(0x180)] + [
+    "\u0663",
+    "\u2003",
+    "\u4e2d",
+    "\U0001f600",
+]
+
+
+def _named_characters(items) -> set[str]:
+    """Every character a pattern names outside the sample: literals, and the
+    ends of class ranges, each with its other-case forms."""
+    found: set[str] = set()
+
+    def note(code: int) -> None:
+        ch = chr(code)
+        found.update((ch, ch.lower(), ch.upper()))
+
+    def walk(seq) -> None:
+        for op, value in seq:
+            if op in (_parser.LITERAL, _parser.NOT_LITERAL):
+                note(value)
+            elif op == _parser.RANGE:
+                note(value[0])
+                note(value[1])
+            elif op == _parser.IN:
+                walk(value)
+            elif op in _REPEATS:
+                walk(value[2])
+            elif op == _parser.SUBPATTERN:
+                walk(value[-1])
+            elif op == _parser.ATOMIC_GROUP:
+                walk(value)
+            elif op == _parser.BRANCH:
+                for branch in value[1]:
+                    walk(branch)
+            elif op in (_parser.ASSERT, _parser.ASSERT_NOT):
+                walk(value[1])
+            elif op == _parser.GROUPREF_EXISTS:
+                walk(value[1])
+                if value[2] is not None:
+                    walk(value[2])
+
+    walk(items)
+    return {ch for ch in found if len(ch) == 1}
+
+
 # Adjacent repeats that can match the same text split it between them in as
 # many ways as its length allows, once per repeat: two is quadratic in the
 # text, and each further one multiplies that by the text's length again.
@@ -70,7 +121,8 @@ def _characters(state, items) -> frozenset[str] | None:
     if not _one_character(items):
         return None
     one = _compiler.compile(_parser.SubPattern(state, list(items)))
-    return frozenset(ch for ch in _SAMPLE if one.fullmatch(ch))
+    sample = getattr(state, "ospmae_sample", _SAMPLE)
+    return frozenset(ch for ch in sample if one.fullmatch(ch))
 
 
 def _first_characters(state, item) -> frozenset[str] | None:
@@ -122,6 +174,13 @@ def check_pattern_shape(pattern: str, flags: int = 0) -> None:
     except (re.error, RecursionError) as exc:
         raise ValueError(f"invalid regex pattern: {exc}") from exc
     state = parsed.state
+    # The characters items are compared on: the fixed sample and whatever
+    # this pattern names beyond it.
+    setattr(  # noqa: B010 - the parser's state carries the sample to helpers
+        state,
+        "ospmae_sample",
+        _SAMPLE + sorted(_named_characters(parsed) - set(_SAMPLE)),
+    )
 
     def consumes(item) -> bool:
         return _parser.SubPattern(state, [item]).getwidth()[0] > 0
@@ -139,13 +198,28 @@ def check_pattern_shape(pattern: str, flags: int = 0) -> None:
     def varying(item) -> bool:
         return item[0] in _REPEATS[:2] and item[1][0] != item[1][1]
 
+    def in_sequence(items, looking: bool = False) -> list:
+        """The sequence as the matcher walks it: plain groups opened out, and
+        each lookaround's body in place, marked. A lookaround's repeats run
+        over the same text as the repeats around it; what else it holds
+        moves the match nowhere."""
+        out: list = []
+        for item in items:
+            if item[0] == _parser.SUBPATTERN:
+                out.extend(in_sequence(item[1][-1], looking))
+            elif item[0] in (_parser.ASSERT, _parser.ASSERT_NOT):
+                out.extend(in_sequence(item[1][1], True))
+            else:
+                out.append((item, looking))
+        return out
+
     def shared(items, limit: int, message: str) -> None:
         """Refuse `limit` or more repeats in a row that can match the same
         text with nothing between them that none of them can match."""
         # For each varying repeat met: the characters it can match, or None
         # where that is not plain to see.
         run: list[frozenset[str] | None] = []
-        for item in flat(items):
+        for item, looking in in_sequence(items):
             if varying(item):
                 body = item[1][2]
                 # A repeat shares text with an earlier one when what it can
@@ -163,7 +237,7 @@ def check_pattern_shape(pattern: str, flags: int = 0) -> None:
                 ):
                     raise ValueError(message)
                 run.append(_all_characters(state, body))
-            elif run and consumes(item):
+            elif run and not looking and consumes(item):
                 # Text that must be here, and that no repeat before it can
                 # match, ends what those repeats share with later ones.
                 first = _first_characters(state, item)
@@ -248,8 +322,10 @@ def _past_deadline(_signum, _frame) -> None:
     raise _SearchDeadline
 
 
-# How long one search of one text may run. A pattern that passes the shape
-# check searches a 1024-character window in well under a millisecond.
+# How long one search of one text may run. Most patterns that pass the shape
+# check search a 1024-character window in well under a millisecond; the two
+# adjacent repeats the check allows (".*rc.*") can take the square of the
+# text's length on text built for it, and end here.
 SEARCH_SECONDS = 0.25
 
 
@@ -266,11 +342,16 @@ def search_within(
     if threading.current_thread() is not threading.main_thread():
         return compiled.search(text) is not None
     previous = signal.signal(signal.SIGALRM, _past_deadline)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
     try:
-        return compiled.search(text) is not None
-    except _SearchDeadline:
-        return None
+        try:
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            found = compiled.search(text) is not None
+            # Disarmed while the deadline can still be caught here: a timer
+            # that fires as the search returns ends in the same place.
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            return found
+        except _SearchDeadline:
+            return None
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)

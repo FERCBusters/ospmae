@@ -4,10 +4,12 @@ import csv
 import io
 import json
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
 from io import BytesIO
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -56,10 +58,18 @@ from app.security.permissions import (
     PERM_PROJECT_WRITE,
     has_permission,
 )
+from app.security.project_access import (
+    can_view_drafts,
+    owns_project,
+    project_owner_group_ids,
+    user_group_ids,
+    version_not_found,
+)
 from app.security.repo_credentials import (
     RepoTokenUnavailable,
     default_username,
     encrypt_token,
+    same_repository,
 )
 from app.security.roles import ROLE_ADMIN, attach_effective_role
 from app.services.branch_tracking import (
@@ -80,6 +90,7 @@ from app.services.notification_recipients import (
 )
 from app.services.project_notifications import notify_subscribers_published
 from app.services.scan_queue import (
+    automatic_scans_enabled,
     launch_dependency_scan,
     launch_release_discovery,
     mark_scan_queued,
@@ -99,17 +110,7 @@ logger = logging.getLogger(__name__)
 
 def _can_view_drafts(db: Session, user: User, project: Project) -> bool:
     """Drafts are visible to admins and project owners (user or group)."""
-
-    effective_role = attach_effective_role(db, user)
-    if effective_role == ROLE_ADMIN:
-        return True
-
-    if project.created_by_user_id == user.id:
-        return True
-
-    user_groups = _user_group_ids(db, user.id)
-    owner_groups = _project_owner_group_ids(db, project.id)
-    return bool(user_groups and owner_groups and user_groups.intersection(owner_groups))
+    return can_view_drafts(db, user, project)
 
 
 def _is_subscribed(db: Session, *, user_id: int, project_id: int) -> bool:
@@ -147,6 +148,10 @@ def _normalize_csv_ints(value: str | None) -> list[int]:
 
 _EXCEL_FORMULA_PREFIXES = ("=", "+", "-", "@")
 
+# Characters that start Markdown or HTML markup inside a table cell: emphasis,
+# code, links and images, tags, entities, and the cell delimiter.
+_MARKDOWN_SPECIAL = re.compile(r"[\\`*_\[\]<&|]")
+
 
 def _excel_safe_cell(value: str) -> str:
     """Prevent spreadsheet/CSV formula injection when opened in Excel.
@@ -157,7 +162,9 @@ def _excel_safe_cell(value: str) -> str:
     s = str(value or "")
     if not s:
         return s
-    if s[:1] in _EXCEL_FORMULA_PREFIXES or s.startswith("	"):
+    # A spreadsheet skips leading line breaks, tabs and spaces before it
+    # decides whether a cell is a formula.
+    if s[:1] in "\t\r\n" or s.lstrip("\t\r\n ")[:1] in _EXCEL_FORMULA_PREFIXES:
         return "'" + s
     return s
 
@@ -204,23 +211,11 @@ def _require_manifest_access(db: Session, user: User) -> None:
 
 
 def _user_group_ids(db: Session, user_id: int) -> set[int]:
-    return {
-        int(gid)
-        for (gid,) in db.query(UserGroup.group_id)
-        .filter(UserGroup.user_id == user_id)
-        .all()
-        if gid is not None
-    }
+    return user_group_ids(db, user_id)
 
 
 def _project_owner_group_ids(db: Session, project_id: int) -> set[int]:
-    return {
-        int(gid)
-        for (gid,) in db.query(ProjectOwnerGroup.group_id)
-        .filter(ProjectOwnerGroup.project_id == project_id)
-        .all()
-        if gid is not None
-    }
+    return project_owner_group_ids(db, project_id)
 
 
 def _ensure_project_manage_access(db: Session, user: User, project: Project) -> None:
@@ -229,16 +224,7 @@ def _ensure_project_manage_access(db: Session, user: User, project: Project) -> 
     # Admin can always manage. Every other role -- maintainer included -- is
     # restricted to projects they (or one of their groups) created, so a
     # granted project.write permission never widens object scope.
-    effective_role = attach_effective_role(db, user)
-    if effective_role == ROLE_ADMIN:
-        return
-
-    if project.created_by_user_id == user.id:
-        return
-
-    user_groups = _user_group_ids(db, user.id)
-    owner_groups = _project_owner_group_ids(db, project.id)
-    if user_groups and owner_groups and user_groups.intersection(owner_groups):
+    if owns_project(db, user, project):
         return
 
     raise HTTPException(
@@ -248,15 +234,11 @@ def _ensure_project_manage_access(db: Session, user: User, project: Project) -> 
 
 
 def _can_run_dependency_discovery(db: Session, user: User, project: Project) -> bool:
-    effective_role = attach_effective_role(db, user)
-    if effective_role == ROLE_ADMIN:
-        return True
-    if project.created_by_user_id == user.id:
-        return True
-
-    user_groups = _user_group_ids(db, user.id)
-    owner_groups = _project_owner_group_ids(db, project.id)
-    return bool(user_groups and owner_groups and user_groups.intersection(owner_groups))
+    """A scan clones with the project's credentials and replaces its stored
+    inventory, so it is asked for by those who may change the project."""
+    return has_permission(db, user, PERM_PROJECT_WRITE) and owns_project(
+        db, user, project
+    )
 
 
 def _set_project_owner_groups(
@@ -408,6 +390,7 @@ def _serialize_project(
     *,
     latest_version: ProjectVersion | None,
     capability_paths: list[str] | None = None,
+    scan_detail: bool = False,
 ) -> dict:
     owner_group_ids = [
         int(link.group_id)
@@ -440,6 +423,7 @@ def _serialize_project(
         # The token is write-only: only whether one is saved is reported.
         "repo_private": bool(project.repo_private),
         "repo_token_host": project.repo_token_host,
+        "repo_token_repository": project.repo_token_repository,
         "repo_token_username": project.repo_token_username,
         "repo_token_set": bool(project.repo_token_encrypted),
         "supported_profiles": _clean_tag_list(project.supported_profiles),
@@ -455,7 +439,9 @@ def _serialize_project(
             project.supported_signing_algorithms
         ),
         "latest_version": (
-            _serialize_version(latest_version) if latest_version else None
+            _serialize_version(latest_version, scan_detail=scan_detail)
+            if latest_version
+            else None
         ),
         "capability_paths": capability_paths or [],
         "created_by_user_id": project.created_by_user_id,
@@ -465,9 +451,22 @@ def _serialize_project(
     }
 
 
-def _serialize_version(version: ProjectVersion | None) -> dict | None:
+# What a reader who does not own the project is told about a failed scan.
+# The stored text can name the repository, quote the remote server and
+# describe the worker; it is for those who can act on it.
+SCAN_FAILED = "The last scan failed"
+
+
+def _serialize_version(
+    version: ProjectVersion | None, *, scan_detail: bool = False
+) -> dict | None:
+    """A version as the API returns it. ``scan_detail`` is set for readers
+    the project belongs to; anyone else learns only that a scan failed."""
     if not version:
         return None
+    scan_error = getattr(version, "dependency_discovery_error", None)
+    if scan_error and not scan_detail:
+        scan_error = SCAN_FAILED
     return {
         "id": version.id,
         "project_id": version.project_id,
@@ -487,9 +486,7 @@ def _serialize_version(version: ProjectVersion | None) -> dict | None:
         "dependency_discovery_finished_at": getattr(
             version, "dependency_discovery_finished_at", None
         ),
-        "dependency_discovery_error": getattr(
-            version, "dependency_discovery_error", None
-        ),
+        "dependency_discovery_error": scan_error,
         "dependency_last_commit": getattr(version, "dependency_last_commit", None),
         "dependency_count": int(getattr(version, "dependency_count", 0) or 0),
         "vulnerability_count": int(getattr(version, "vulnerability_count", 0) or 0),
@@ -898,10 +895,27 @@ def _require_branch_tracking_fields(project: Project) -> None:
         )
 
 
+def _require_in_project_repository(project: Project, url: str | None, what: str):
+    """A private project lives in one repository, the one its access token
+    is for: its versions and its tracked branch are there and nowhere else,
+    so nothing a project editor enters aims the token at another."""
+    if not project.repo_private or not (url or "").strip():
+        return
+    if not same_repository(url, project.repo_token_repository):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{what} must be in {project.repo_token_repository}, the "
+                "repository this private project's access token is for"
+            ),
+        )
+
+
 _REPO_ACCESS_FIELDS = (
     "repo_private",
     "repo_token",
     "repo_token_host",
+    "repo_token_repository",
     "repo_token_username",
 )
 
@@ -909,9 +923,10 @@ _REPO_ACCESS_FIELDS = (
 def _apply_repo_access(project: Project, changes: dict) -> None:
     """Apply a request's private-repository settings to a project.
 
-    A token is bound to the host it is entered for: changing the host needs
-    the token entered again, so a saved token never follows a host it was
-    not typed for. Making the repository public deletes the token.
+    A token is bound to the repository it is entered for: changing the
+    repository needs the token entered again, so a saved token never follows
+    a repository it was not typed for, and no clone of anything else carries
+    it. Making the repository public deletes the token.
     """
 
     requested = changes.get("repo_private")
@@ -919,21 +934,33 @@ def _apply_repo_access(project: Project, changes: dict) -> None:
     if not private:
         project.repo_private = False
         project.repo_token_host = None
+        project.repo_token_repository = None
         project.repo_token_username = None
         project.repo_token_encrypted = None
         project.repo_token_updated_at = None
         return
 
     token = changes.get("repo_token")
-    host = changes.get("repo_token_host", project.repo_token_host)
-    if not host:
+    repository = changes.get("repo_token_repository") or project.repo_token_repository
+    if not repository:
         raise HTTPException(
-            status_code=422, detail="Enter the host the access token is for"
+            status_code=422, detail="Enter the repository the access token is for"
         )
-    if host != project.repo_token_host and not token and project.repo_token_encrypted:
+    host = urlsplit(repository).hostname or ""
+    named_host = changes.get("repo_token_host")
+    if named_host and named_host != host:
         raise HTTPException(
             status_code=422,
-            detail="Enter the access token again for the new host",
+            detail=f"The repository is on {host}, not {named_host}",
+        )
+    if (
+        not same_repository(repository, project.repo_token_repository)
+        and not token
+        and project.repo_token_encrypted
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Enter the access token again for this repository",
         )
     username = changes.get("repo_token_username", project.repo_token_username)
     if not username and default_username(host) is None:
@@ -954,6 +981,7 @@ def _apply_repo_access(project: Project, changes: dict) -> None:
         )
     project.repo_private = True
     project.repo_token_host = host
+    project.repo_token_repository = repository
     project.repo_token_username = username or None
 
 
@@ -1055,6 +1083,10 @@ def create_project(
         project,
         payload.model_dump(include=set(_REPO_ACCESS_FIELDS), exclude_unset=True),
     )
+    if project.track_branch:
+        _require_in_project_repository(
+            project, project.tracked_repo_url, "The tracked repository"
+        )
     if is_tracking(project):
         # Committed with the project, so the poller never sees a tracked
         # branch that this request is about to scan as overdue.
@@ -1263,6 +1295,7 @@ def get_project(
         },
         **_serialize_project(
             project,
+            scan_detail=can_view_drafts,
             latest_version=latest_published,
             capability_paths=(
                 capability_paths_by_version.get(latest_published.id, [])
@@ -1276,7 +1309,7 @@ def get_project(
         ),
         "versions": [
             {
-                **_serialize_version(v),  # type: ignore[dict-item]  # values are JSON-serialised
+                **_serialize_version(v, scan_detail=can_view_drafts),  # type: ignore[dict-item]  # values are JSON-serialised
                 "capability_paths": capability_paths_by_version.get(v.id, []),
             }
             for v in versions
@@ -1315,7 +1348,7 @@ def list_project_versions(
         "can_view_drafts": bool(can_view_drafts),
         "items": [
             {
-                **_serialize_version(v),  # type: ignore[dict-item]  # values are JSON-serialised
+                **_serialize_version(v, scan_detail=can_view_drafts),  # type: ignore[dict-item]  # values are JSON-serialised
                 "capability_paths": capability_paths_by_version.get(v.id, []),
             }
             for v in versions
@@ -1354,7 +1387,7 @@ def get_project_version_changelog(
     if bool(getattr(version, "is_draft", False)) and not _can_view_drafts(
         db, user, project
     ):
-        raise HTTPException(status_code=403, detail="Draft version is not accessible")
+        raise version_not_found()
     return list_entity_changelogs(
         db,
         entity_type="project_version",
@@ -1424,9 +1457,16 @@ def update_project(
             value = _clean_tag_list(value)
         elif key == "release_rss_ignore_patterns":
             value = clean_release_feed_ignore_patterns(value)
+        elif key in {"display_name", "machine_name"} and isinstance(value, str):
+            # Stored as create_project stores them.
+            value = value.strip()
         setattr(project, key, value)
 
     _require_branch_tracking_fields(project)
+    if project.track_branch:
+        _require_in_project_repository(
+            project, project.tracked_repo_url, "The tracked repository"
+        )
     tracking_target_changed = is_tracking(project) and before_tracking != (
         True,
         project.tracked_repo_url,
@@ -1489,7 +1529,10 @@ def update_project(
             latest.id, []
         )
     return _serialize_project(
-        project, latest_version=latest, capability_paths=capability_paths
+        project,
+        latest_version=latest,
+        capability_paths=capability_paths,
+        scan_detail=True,
     )
 
 
@@ -1664,6 +1707,9 @@ def create_project_version(
     requested_latest = payload.is_latest
     is_latest = False if is_draft else bool(requested_latest is True)
 
+    _require_in_project_repository(
+        project, payload.link_to_source_code, "A version's source code link"
+    )
     version = ProjectVersion(
         project_id=project_id,
         version=version_name,
@@ -1677,8 +1723,7 @@ def create_project_version(
 
     auto_discovery = bool(
         _can_run_dependency_discovery(db, user, project)
-        and getattr(settings, "dependency_discovery_enabled", True)
-        and getattr(settings, "dependency_discovery_auto_enqueue", True)
+        and automatic_scans_enabled(db)
         and str(payload.link_to_source_code or "").strip()
     )
     if auto_discovery:
@@ -1744,7 +1789,7 @@ def create_project_version(
     for scan_id in scan_ids:
         launch_dependency_scan(scan_id)
 
-    return _serialize_version(version)
+    return _serialize_version(version, scan_detail=True)
 
 
 @router.put("/v1/project-versions/{version_id}")
@@ -1792,10 +1837,13 @@ def update_project_version(
         version.is_draft = bool(is_draft_update)
 
     new_link = str(version.link_to_source_code or "").strip()
+    if new_link != old_link:
+        _require_in_project_repository(
+            project, new_link, "A version's source code link"
+        )
     auto_discovery = bool(
         _can_run_dependency_discovery(db, user, project)
-        and getattr(settings, "dependency_discovery_enabled", True)
-        and getattr(settings, "dependency_discovery_auto_enqueue", True)
+        and automatic_scans_enabled(db)
         and new_link
         and new_link != old_link
     )
@@ -1859,7 +1907,7 @@ def update_project_version(
     for scan_id in scan_ids:
         launch_dependency_scan(scan_id)
 
-    return _serialize_version(version)
+    return _serialize_version(version, scan_detail=True)
 
 
 @router.delete("/v1/project-versions/{version_id}")
@@ -1897,7 +1945,10 @@ def delete_project_version(
     return Response(status_code=204)
 
 
-@router.get("/v1/project-versions/{version_id}/framework-nodes")
+@router.get(
+    "/v1/project-versions/{version_id}/framework-nodes",
+    dependencies=[Depends(require_feature("frameworks"))],
+)
 def get_project_version_framework_nodes(
     version_id: int,
     framework_id: int | None = Query(default=None),
@@ -1909,7 +1960,7 @@ def get_project_version_framework_nodes(
     if bool(getattr(version, "is_draft", False)) and not _can_view_drafts(
         db, user, project
     ):
-        raise HTTPException(status_code=403, detail="Draft version is not accessible")
+        raise version_not_found()
 
     framework = _ensure_framework(db, framework_id)
 
@@ -1960,7 +2011,10 @@ def get_project_version_framework_nodes(
 
 
 # Backwards-compatible alias (treated as framework-nodes)
-@router.get("/v1/project-versions/{version_id}/capabilities")
+@router.get(
+    "/v1/project-versions/{version_id}/capabilities",
+    dependencies=[Depends(require_feature("frameworks"))],
+)
 def get_project_version_capabilities(
     version_id: int,
     framework_id: int | None = Query(default=None),
@@ -1975,7 +2029,10 @@ def get_project_version_capabilities(
     )
 
 
-@router.put("/v1/project-versions/{version_id}/framework-nodes")
+@router.put(
+    "/v1/project-versions/{version_id}/framework-nodes",
+    dependencies=[Depends(require_feature("frameworks"))],
+)
 def set_project_version_framework_nodes(
     request: Request,
     version_id: int,
@@ -2038,7 +2095,10 @@ def set_project_version_framework_nodes(
 
 
 # Backwards-compatible alias (payload.framework_id is optional; defaults to UWRA)
-@router.put("/v1/project-versions/{version_id}/capabilities")
+@router.put(
+    "/v1/project-versions/{version_id}/capabilities",
+    dependencies=[Depends(require_feature("frameworks"))],
+)
 def set_project_version_capabilities(
     request: Request,
     version_id: int,
@@ -2088,9 +2148,7 @@ def get_project_graph(
             and bool(getattr(any_match, "is_draft", False))
             and not can_view_drafts
         ):
-            raise HTTPException(
-                status_code=403, detail="Draft version is not accessible"
-            )
+            raise version_not_found()
         target_version = next((v for v in versions if v.id == version_id), None)
         if not target_version:
             raise HTTPException(status_code=404, detail="Version not found for project")
@@ -2195,7 +2253,7 @@ def get_project_graph(
             "id": project.id,
             "display_name": project.display_name or project.machine_name,
         },
-        "version": _serialize_version(target_version),
+        "version": _serialize_version(target_version, scan_detail=can_view_drafts),
         "nodes": graph_nodes,
         "links": graph_links,
         "capability_tree": selected_tree,
@@ -2575,9 +2633,11 @@ def _manifest_json_payload(rows: list[dict]) -> dict[str, Any]:
 
 def _manifest_markdown(rows: list[dict]) -> str:
     def esc(value: Any) -> str:
-        # Escape table delimiter for Markdown table cells.
-        # Use a raw string to avoid Python's "invalid escape sequence" warning.
-        return str(value if value is not None else "").replace("|", r"\|")
+        # A cell is one line of plain text: line breaks would end the table
+        # row, and Markdown or HTML characters in a name would be read as
+        # markup by whatever renders the export.
+        text = " ".join(str(value if value is not None else "").splitlines())
+        return _MARKDOWN_SPECIAL.sub(r"\\\g<0>", text)
 
     # Primary project table.
     lines = [
@@ -2890,20 +2950,32 @@ def _manifest_xlsx(rows: list[dict]) -> bytes:
     return buffer.getvalue()
 
 
+def _attachment(name: str, extension: str) -> dict[str, str]:
+    """A download's Content-Disposition.
+
+    The plain file name is ASCII, which is all a header value may carry; a
+    name with other letters is also given in the encoded form browsers
+    prefer (RFC 5987), so it is kept rather than failing the response.
+    """
+    wanted = (name or "project-manifest").strip() or "project-manifest"
+    kept = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in wanted)
+    plain = "".join(ch if ch.isascii() else "-" for ch in kept)
+    value = f'attachment; filename="{plain}.{extension}"'
+    if kept != plain:
+        value += f"; filename*=UTF-8''{quote(kept, safe='')}.{extension}"
+    return {"Content-Disposition": value}
+
+
 def _manifest_response(rows: list[dict], *, fmt: str, name: str) -> Response:
-    safe_name = (name or "project-manifest").strip() or "project-manifest"
-    safe_name = "".join(
-        ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in safe_name
-    )
 
     if fmt == "json":
         # Ensure datetimes (eg vulnerability created_at) are JSON-serialisable.
         body = json.dumps(jsonable_encoder(_manifest_json_payload(rows)), indent=2)
-        headers = {"Content-Disposition": f'attachment; filename="{safe_name}.json"'}
+        headers = _attachment(name, "json")
         return Response(content=body, media_type="application/json", headers=headers)
 
     if fmt in {"xlsx", "spreadsheet"}:
-        headers = {"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'}
+        headers = _attachment(name, "xlsx")
         return Response(
             content=_manifest_xlsx(rows),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2924,14 +2996,14 @@ def _manifest_response(rows: list[dict], *, fmt: str, name: str) -> Response:
                     _excel_safe_cell("; ".join(row.get("capabilities", []))),
                 ]
             )
-        headers = {"Content-Disposition": f'attachment; filename="{safe_name}.csv"'}
+        headers = _attachment(name, "csv")
         return Response(
             content=output.getvalue(), media_type="text/csv", headers=headers
         )
 
     if fmt == "markdown":
         body = _manifest_markdown(rows)
-        headers = {"Content-Disposition": f'attachment; filename="{safe_name}.md"'}
+        headers = _attachment(name, "md")
         return Response(content=body, media_type="text/markdown", headers=headers)
 
     raise HTTPException(
@@ -3141,9 +3213,7 @@ def export_project_manifest(
             and bool(getattr(any_match, "is_draft", False))
             and not can_view_drafts
         ):
-            raise HTTPException(
-                status_code=403, detail="Draft version is not accessible"
-            )
+            raise version_not_found()
         target_version = next(
             (v for v in versions if int(v.id) == int(version_id)), None
         )
@@ -3268,9 +3338,7 @@ def save_project_manifest(
             and bool(getattr(any_match, "is_draft", False))
             and not can_view_drafts
         ):
-            raise HTTPException(
-                status_code=403, detail="Draft version is not accessible"
-            )
+            raise version_not_found()
         target_version = next(
             (v for v in versions if int(v.id) == int(version_id)), None
         )

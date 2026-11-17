@@ -70,7 +70,9 @@ class Upstream:
         self.connections: list[str] = []
 
     def serve(self, url: str, body: bytes = b"", status: int = 200, headers=None):
-        self.routes[url] = httpx.Response(status, content=body, headers=headers or {})
+        # The body is kept as given: one served with a Content-Encoding is
+        # sent in that encoding, not decoded here.
+        self.routes[url] = (status, body, dict(headers or {}))
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         # The connection arrives at an address; the Host header names the
@@ -85,9 +87,10 @@ class Upstream:
             return httpx.Response(404)
         if isinstance(answer, Exception):
             raise answer
-        return httpx.Response(
-            answer.status_code, content=answer.content, headers=dict(answer.headers)
-        )
+        # The body arrives as a stream, as it does from a real server: the
+        # fetch reads and decodes it itself.
+        status, body, headers = answer
+        return httpx.Response(status, stream=httpx.ByteStream(body), headers=headers)
 
 
 @pytest.fixture()
@@ -1242,3 +1245,214 @@ def test_a_rule_that_runs_past_its_allowance_is_skipped_not_waited_for(monkeypat
     # The timer is gone afterwards and an ordinary rule still decides.
     assert regex_shape.search_within(re.compile("rc\\d+"), "v1.0.0-rc1") is True
     assert regex_shape.search_within(re.compile("rc\\d+"), "v1.0.0") is False
+
+
+# ---------------------------------------------------------------------------
+# What a feed host can send beyond the feed itself.
+# ---------------------------------------------------------------------------
+
+
+def _fetch(url: str = FEED):
+    with outbound.public_client(timeout=5) as client:
+        return rf._safe_fetch_feed(client, url, {})
+
+
+def test_a_compressed_feed_is_read_and_its_limit_is_on_the_decoded_size(
+    upstream, monkeypatch
+):
+    import gzip
+    import zlib
+
+    body = atom(atom_entry("v1.0.0", 1))
+    for encoding, packed in (
+        ("gzip", gzip.compress(body)),
+        ("deflate", zlib.compress(body)),
+    ):
+        upstream.serve(FEED, packed, headers={"Content-Encoding": encoding})
+        _resp, content, _final = _fetch()
+        assert content == body
+
+    # Forty thousand bytes on the wire that decode to forty million: the
+    # fetch stops at the limit and never holds the whole expansion.
+    bomb = gzip.compress(b"\0" * 40_000_000)
+    assert len(bomb) < 50_000
+    upstream.serve(FEED, bomb, headers={"Content-Encoding": "gzip"})
+    seen: list[int] = []
+    real = rf._feed_inflater
+
+    def watched(encoding):
+        inflater = real(encoding)
+
+        class Watch:
+            unconsumed_tail = b""
+
+            def decompress(self, data, limit):
+                out = inflater.decompress(data, limit)
+                self.unconsumed_tail = inflater.unconsumed_tail
+                seen.append(len(out))
+                return out
+
+        return Watch()
+
+    monkeypatch.setattr(rf, "_feed_inflater", watched)
+    with pytest.raises(ValueError, match="too large"):
+        _fetch()
+    assert sum(seen) == settings.release_feed_max_bytes + 1
+
+
+def test_a_feed_in_an_encoding_that_was_not_asked_for_is_refused(upstream):
+    upstream.serve(FEED, b"\x0b\x02\x80ok\x03", headers={"Content-Encoding": "br"})
+    with pytest.raises(ValueError, match="unsupported content encoding"):
+        _fetch()
+
+
+@pytest.mark.parametrize(
+    "value, kept",
+    [
+        ('"abc"', '"abc"'),
+        ('  W/"0815"  ', 'W/"0815"'),
+        ("Fri, 20 Mar 2026 10:00:00 GMT", "Fri, 20 Mar 2026 10:00:00 GMT"),
+        ("", None),
+        (None, None),
+        ('"' + "a" * 254 + '"', None),
+        ('"café"', None),
+        ('"a\x7fb"', None),
+        ('"a\tb"', None),
+    ],
+)
+def test_only_a_validator_that_can_be_sent_back_is_kept(value, kept):
+    assert rf._feed_validator(value) == kept
+
+
+def test_a_validator_that_cannot_be_stored_does_not_stop_the_poll(
+    upstream, scans, discoveries, owner
+):
+    client, _ = owner
+    upstream.serve(
+        FEED,
+        atom(atom_entry("v1.0.0", 1)),
+        headers={"ETag": '"' + "e" * 300 + '"', "Last-Modified": "x" * 300},
+    )
+    pid = make_project(client, "feeder", release_rss_feed_url=FEED)["id"]
+    assert discoveries.run(pid)["created"] == 1
+    state = feed_state(pid)
+    assert state.release_rss_last_etag is None
+    assert state.release_rss_last_modified is None
+    # The next poll sends no validator and still reads the feed.
+    upstream.serve(
+        FEED,
+        atom(atom_entry("v1.1.0", 2), atom_entry("v1.0.0", 1)),
+        headers={"ETag": '"next"'},
+    )
+    upstream.requests.clear()
+    rf.poll_release_feeds.run()
+    [request] = upstream.requests
+    assert "if-none-match" not in request.headers
+    assert "if-modified-since" not in request.headers
+    assert set(versions(pid)) == {"v1.0.0", "v1.1.0"}
+    assert feed_state(pid).release_rss_last_etag == '"next"'
+
+
+def test_a_first_import_takes_the_newest_releases_only(
+    upstream, scans, discoveries, owner, monkeypatch
+):
+    client, _ = owner
+    monkeypatch.setattr(rf, "DISCOVERY_MAX_ENTRIES", 3)
+    upstream.serve(FEED, atom(*(atom_entry(f"v1.{n}.0", n) for n in range(1, 9))))
+    pid = make_project(client, "feeder", release_rss_feed_url=FEED)["id"]
+    result = discoveries.run(pid)
+    assert result["created"] == 3
+    rows = versions(pid)
+    assert set(rows) == {"v1.6.0", "v1.7.0", "v1.8.0"}
+    assert rows["v1.8.0"].is_latest
+
+
+# ---------------------------------------------------------------------------
+# A private project's token and what a feed links to.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entry_link",
+    [
+        "https://github.com/other/private/releases/tag/v9",
+        f"{REPO}/releases/tag/v9",
+        None,
+    ],
+)
+def test_a_private_projects_feed_releases_are_in_its_own_repository(entry_link):
+    """A private project lives in the repository its token is for: whatever
+    a feed entry links to, the version it creates is scanned there."""
+    bound = "https://github.com/acme/app"
+    project = Project(
+        id=1,
+        repo_private=True,
+        repo_token_repository=bound,
+        release_rss_feed_url=f"{REPO}/releases.atom",
+    )
+    inherited = ProjectVersion(link_to_source_code="https://github.com/acme/old")
+    for source in (None, inherited):
+        assert rf._source_code_url_for_entry(project, entry_link, source) == bound
+
+
+def test_a_private_project_without_a_bound_repository_takes_none_from_a_feed():
+    project = Project(
+        id=1, repo_private=True, release_rss_feed_url=f"{REPO}/releases.atom"
+    )
+    link = "https://github.com/other/private/releases/tag/v9"
+    assert rf._source_code_url_for_entry(project, link, None) is None
+
+
+def test_a_public_projects_feed_entry_names_its_repository():
+    project = Project(
+        id=1, repo_private=False, release_rss_feed_url=f"{REPO}/releases.atom"
+    )
+    link = "https://github.com/other/repo/releases/tag/v9"
+    assert (
+        rf._source_code_url_for_entry(project, link, None)
+        == "https://github.com/other/repo"
+    )
+    assert rf._source_code_url_for_entry(project, None, None) == REPO
+
+
+def test_a_project_with_a_blank_feed_address_takes_its_turn(upstream, scans, owner):
+    client, _ = owner
+    blank = make_project(client, "blank")["id"]
+    with SessionLocal() as s:
+        s.get(Project, blank).release_rss_feed_url = "   "
+        s.commit()
+    assert feed_state(blank).release_rss_last_checked_at is None
+    rf.poll_release_feeds.run()
+    # Checked, so it no longer sorts ahead of every project that has a feed.
+    assert feed_state(blank).release_rss_last_checked_at is not None
+    assert upstream.requests == []
+
+
+def test_a_project_deleted_while_its_feed_fails_does_not_end_the_poll(
+    upstream, scans, discoveries, owner, monkeypatch
+):
+    client, _ = owner
+    upstream.serve(FEED, atom(atom_entry("v1.0.0", 1)))
+    other_feed = "https://feeds.example.org/other.atom"
+    upstream.serve(other_feed, atom(atom_entry("v2.0.0", 2)))
+    doomed = make_project(client, "doomed", release_rss_feed_url=FEED)["id"]
+    kept = make_project(client, "kept", release_rss_feed_url=other_feed)["id"]
+    for pid in (doomed, kept):
+        discoveries.run(pid)
+    upstream.serve(FEED, atom(atom_entry("v1.1.0", 3), atom_entry("v1.0.0", 1)))
+    upstream.serve(other_feed, atom(atom_entry("v2.1.0", 4), atom_entry("v2.0.0", 2)))
+    real = rf._guess_version_from_entry
+
+    def deleted_under_it(title, link):
+        if "v1.1.0" in str(title):
+            with SessionLocal() as s:
+                s.query(Project).filter(Project.id == doomed).delete()
+                s.commit()
+            raise RuntimeError("the feed's content could not be handled")
+        return real(title, link)
+
+    monkeypatch.setattr(rf, "_guess_version_from_entry", deleted_under_it)
+    rf.poll_release_feeds.run()
+    with SessionLocal() as s:
+        assert s.get(Project, doomed) is None
+    assert "v2.1.0" in versions(kept)

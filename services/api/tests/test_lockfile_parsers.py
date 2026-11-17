@@ -241,3 +241,49 @@ def test_records_name_their_source_file(tmp_path):
 )
 def test_credentials_in_urls_are_masked(text, expected):
     assert redact_url(text) == expected
+
+
+def _nested_merge_keys(levels: int) -> str:
+    """A pnpm-lock.yaml of a few hundred bytes whose merge keys each take in
+    the previous anchor twice: loaded with aliases, every level multiplies
+    the work of the one before."""
+    lines = ["a0: &a0 {x: 1}"]
+    for n in range(1, levels + 1):
+        lines.append(f"a{n}: &a{n} {{<<: [*a{n - 1}, *a{n - 1}], k{n}: 1}}")
+    lines.append("packages:")
+    lines.append("  /react@18.2.0: {}")
+    return "\n".join(lines) + "\n"
+
+
+def test_a_lockfile_with_yaml_aliases_is_not_expanded(tmp_path):
+    import time
+
+    from app.depscan import parsers
+
+    text = _nested_merge_keys(40)
+    assert len(text) < 2500
+    started = time.perf_counter()
+    assert _found(tmp_path, "pnpm-lock.yaml", text) == []
+    # Refused at the first alias: forty levels would otherwise never finish.
+    assert time.perf_counter() - started < 1
+    # A plain anchor that nothing refers to is harmless and still read.
+    plain = "anchored: &a {x: 1}\npackages:\n  /react@18.2.0: {}\n"
+    assert _found(tmp_path, "pnpm-lock.yaml", plain) == [
+        ("npm", "react", "18.2.0", True)
+    ]
+    with pytest.raises(parsers.yaml.YAMLError, match="aliases"):
+        parsers._load_plain_yaml("a: &a 1\nb: *a\n")
+
+
+def test_a_lockfile_with_more_values_than_any_lockfile_has_is_refused(
+    tmp_path, monkeypatch
+):
+    from app.depscan import parsers
+
+    monkeypatch.setattr(parsers, "_YAML_MAX_NODES", 50)
+    small = "packages:\n" + "".join(f"  /p{n}@1.0.0: {{}}\n" for n in range(20))
+    assert len(_found(tmp_path, "pnpm-lock.yaml", small)) == 20
+    large = "packages:\n" + "".join(f"  /p{n}@1.0.0: {{}}\n" for n in range(40))
+    assert _found(tmp_path, "pnpm-lock.yaml", large) == []
+    with pytest.raises(parsers.yaml.YAMLError, match="too many values"):
+        parsers._load_plain_yaml(large)

@@ -221,3 +221,47 @@ def test_a_referenced_framework_needs_force_to_delete(admin):
     with SessionLocal() as db:
         assert db.get(Framework, fw["id"]) is None
         assert db.query(ProjectVersionFrameworkNode).count() == 0
+
+
+def test_a_mapped_node_is_deleted_only_when_asked_twice(db):
+    from app.db.models import FrameworkNode, ProjectVersionFrameworkNode
+
+    from tests.support import (
+        csrf,
+        make_framework,
+        make_node,
+        make_project,
+        make_version,
+        map_nodes,
+        ok,
+        signed_in,
+    )
+
+    admin, _ = signed_in("admin")
+    fw = make_framework(admin)["id"]
+    wallet = make_node(admin, fw, "wallet")["id"]
+    spare = make_node(admin, fw, "spare")["id"]
+    pid = make_project(admin, "alpha")["id"]
+    vid = make_version(admin, pid, "1.0.0")["id"]
+    map_nodes(admin, vid, fw, [wallet])
+
+    # An unmapped node goes at once.
+    ok(admin.delete(f"/v1/framework-nodes/{spare}", headers=csrf(admin)))
+    # A mapped one is refused with the number of mappings it would take.
+    refused = admin.delete(f"/v1/framework-nodes/{wallet}", headers=csrf(admin))
+    assert refused.status_code == 409
+    assert refused.json()["detail"].startswith(
+        "Node is referenced by 1 project mappings."
+    )
+    assert db.query(FrameworkNode).filter_by(id=wallet).count() == 1
+    assert db.query(ProjectVersionFrameworkNode).count() == 1
+
+    ok(
+        admin.delete(
+            f"/v1/framework-nodes/{wallet}",
+            params={"force": "true"},
+            headers=csrf(admin),
+        )
+    )
+    assert db.query(FrameworkNode).filter_by(id=wallet).count() == 0
+    assert db.query(ProjectVersionFrameworkNode).count() == 0

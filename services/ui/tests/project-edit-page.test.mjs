@@ -323,12 +323,16 @@ test("tracking a branch swaps the release fields for required branch fields", as
   assert.equal(page.$("tracked_branch").required, false);
 });
 
-test("a private repository asks for a host and token, suggested from what is known", async (t) => {
+test("a private repository asks for its address and a token, suggested from what is known", async (t) => {
   const page = await editor(t);
   await page.tick("repo_private", true);
   assert.equal(page.$("repoAccessFields").hidden, false);
-  // No tracked repository yet: the Latest version's source host is offered.
-  assert.equal(page.$("repo_token_host").value, "git.example.org");
+  // No tracked repository yet: the Latest version's repository is offered.
+  assert.equal(
+    page.$("repo_token_repository").value,
+    "https://git.example.org/acme/wallet",
+  );
+  assert.equal(page.$("repo_token_repository").required, true);
   assert.equal(page.$("repo_token").required, true);
   assert.equal(page.$("repoTokenRequired").hidden, false);
   assert.match(
@@ -343,30 +347,37 @@ test("a private repository asks for a host and token, suggested from what is kno
   assert.deepEqual(
     [
       sent.repo_private,
-      sent.repo_token_host,
+      sent.repo_token_repository,
       sent.repo_token_username,
       sent.repo_token,
     ],
-    [true, "git.example.org", "bot", "secret"],
+    [true, "https://git.example.org/acme/wallet", "bot", "secret"],
   );
+  // The host is the repository's own; it is not sent beside it.
+  assert.equal("repo_token_host" in sent, false);
   // The token is write-only: the form comes back without it.
   assert.equal(page.$("repo_token").value, "");
 });
 
-test("a saved token is kept unless the host changes", async (t) => {
-  const page = await editor(t, {
-    project: {
-      ...PROJECT,
-      track_branch: true,
-      tracked_repo_url: "https://code.example.net/acme/wallet",
-      tracked_branch: "main",
-      branch_poll_interval_hours: 12,
-      repo_private: true,
-      repo_token_set: true,
-      repo_token_host: "code.example.net",
-      repo_token_username: "bot",
-    },
-  });
+const PRIVATE = {
+  ...PROJECT,
+  track_branch: true,
+  tracked_repo_url: "https://code.example.net/acme/wallet",
+  tracked_branch: "main",
+  branch_poll_interval_hours: 12,
+  repo_private: true,
+  repo_token_set: true,
+  repo_token_host: "code.example.net",
+  repo_token_repository: "https://code.example.net/acme/wallet",
+  repo_token_username: "bot",
+};
+
+test("a saved token is kept unless the repository changes", async (t) => {
+  const page = await editor(t, { project: PRIVATE });
+  assert.equal(
+    page.$("repo_token_repository").value,
+    "https://code.example.net/acme/wallet",
+  );
   assert.equal(page.$("repo_token").required, false);
   assert.equal(
     page.$("repo_token").placeholder,
@@ -375,38 +386,86 @@ test("a saved token is kept unless the host changes", async (t) => {
   assert.equal(page.$("repoTokenRequired").hidden, true);
   assert.match(
     page.$("repoTokenStatus").textContent,
-    /^A token is saved for this host\./,
+    /^A token is saved for this repository\./,
   );
 
-  await page.type("repo_token_host", "Other.example.net");
+  // The same repository written another way is still the saved one.
+  for (const same of [
+    "https://Code.Example.net/Acme/Wallet.git",
+    "https://code.example.net/acme/wallet/releases/tag/v1",
+    " https://code.example.net/acme/wallet/ ",
+  ]) {
+    await page.type("repo_token_repository", same);
+    assert.equal(page.$("repo_token").required, false, same);
+  }
+
+  await page.type(
+    "repo_token_repository",
+    "https://code.example.net/acme/other",
+  );
   assert.equal(page.$("repo_token").required, true);
   assert.equal(page.$("repo_token").placeholder, "");
   assert.match(
     page.$("repoTokenStatus").textContent,
-    /^The saved token is for another host/,
+    /^The saved token is for another repository/,
   );
 
   await page.click("saveProjectBtn");
   const sent = page.sent("PUT", "/v1/projects/1")[0];
-  assert.equal(sent.repo_token_host, "Other.example.net");
+  assert.equal(
+    sent.repo_token_repository,
+    "https://code.example.net/acme/other",
+  );
   assert.equal("repo_token" in sent, false);
 });
 
-test("the host suggestion prefers the tracked repository and ignores non-https addresses", async (t) => {
+test("a token saved before tokens were bound asks for its repository", async (t) => {
+  const page = await editor(t, {
+    project: { ...PRIVATE, track_branch: false, repo_token_repository: null },
+  });
+  // Nothing is bound yet; what the project points at is offered.
+  assert.equal(
+    page.$("repo_token_repository").value,
+    "https://code.example.net/acme/wallet",
+  );
+  assert.equal(page.$("repo_token").required, true);
+  assert.match(
+    page.$("repoTokenStatus").textContent,
+    /^The saved token is not yet bound to a repository/,
+  );
+});
+
+test("the repository suggestion prefers the tracked repository and offers only repositories", async (t) => {
   const page = await editor(t, {
     project: {
       ...PROJECT,
       versions: [
-        { ...VERSIONS[0], link_to_source_code: "http://plain.example.org/x" },
+        { ...VERSIONS[0], link_to_source_code: "http://plain.example.org/x/y" },
       ],
     },
   });
   await page.tick("repo_private", true);
-  assert.equal(page.$("repo_token_host").value, "");
+  assert.equal(page.$("repo_token_repository").value, "");
+  // Not repositories: no owner and name, a port, credentials, not an address.
+  for (const other of [
+    "https://code.example.net/only-owner",
+    "https://code.example.net:8443/acme/wallet",
+    "https://bot@code.example.net/acme/wallet",
+    "not an address",
+  ]) {
+    await page.tick("repo_private", false);
+    page.$("tracked_repo_url").value = other;
+    await page.tick("repo_private", true);
+    assert.equal(page.$("repo_token_repository").value, "", other);
+  }
   await page.tick("repo_private", false);
-  page.$("tracked_repo_url").value = "https://Code.Example.net/acme/wallet";
+  page.$("tracked_repo_url").value =
+    "https://Code.Example.net/acme/wallet.git/-/tags/v1";
   await page.tick("repo_private", true);
-  assert.equal(page.$("repo_token_host").value, "code.example.net");
+  assert.equal(
+    page.$("repo_token_repository").value,
+    "https://code.example.net/acme/wallet",
+  );
 });
 
 test("branch tracking is hidden without dependency scans unless already in use", async (t) => {

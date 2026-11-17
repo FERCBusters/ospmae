@@ -332,8 +332,9 @@ def test_a_draft_is_exported_and_saved_only_by_those_who_may_see_it(catalogue):
         ),
     ):
         refused = call(architect)
-        assert refused.status_code == 403
-        assert refused.json()["detail"] == "Draft version is not accessible"
+        # The same answer as for a version that does not exist.
+        assert refused.status_code == 404
+        assert refused.json()["detail"] == "Project version not found"
         assert call(admin).status_code == 200
     # Without naming it, the architect gets the published Latest.
     (row,) = architect.get(f"/v1/projects/{alpha}/manifest/export").json()["items"]
@@ -694,3 +695,95 @@ def test_release_dates_survive_the_snapshot_round_trip(catalogue):
         (item,) = s.get(Manifest, saved["id"]).items
         version = s.get(ProjectVersion, catalogue["alpha_v"])
         assert item.latest_release_date == version.release_date == datetime(2026, 3, 4)
+
+
+# ---------------------------------------------------------------------------
+# What a name can do to an export.
+# ---------------------------------------------------------------------------
+
+
+def test_a_markdown_cell_is_one_line_of_plain_text():
+    from app.api.routes.projects import _manifest_markdown
+
+    hostile = "Alpha\r\n\n# Owned <script>alert(1)</script> [x](javascript:1) |`*_&amp;"
+    body = _manifest_markdown(
+        [
+            {
+                "project_id": 1,
+                "display_name": hostile,
+                "organisation": "Acme\nCorp",
+                "capability_ids": [],
+            }
+        ]
+    )
+    row = next(line for line in body.splitlines() if line.startswith("| Alpha"))
+    # One row, with every character that starts markup escaped.
+    assert row.startswith(
+        "| Alpha  # Owned \\<script>alert(1)\\</script> \\[x\\](javascript:1) "
+        "\\|\\`\\*\\_\\&amp; | Acme Corp |"
+    )
+    assert "\n# Owned" not in body
+    assert "<script>" not in body.replace("\\<script>", "")
+
+
+@pytest.mark.parametrize(
+    "value, guarded",
+    [
+        ("=1+1", True),
+        ("+1", True),
+        ("-1", True),
+        ("@SUM(A1)", True),
+        ("\t=1+1", True),
+        ("\r=1+1", True),
+        ("\n=1+1", True),
+        ("  =1+1", True),
+        ("\r\n\t @cmd", True),
+        ("\nplain", True),
+        ("plain = text", False),
+        ("  plain", False),
+        ("", False),
+    ],
+)
+def test_a_cell_a_spreadsheet_would_read_as_a_formula_is_quoted(value, guarded):
+    from app.api.routes.projects import _excel_safe_cell
+
+    assert _excel_safe_cell(value) == ("'" + value if guarded else value)
+
+
+@pytest.mark.parametrize(
+    "name, header",
+    [
+        ("Q3 stack", 'attachment; filename="Q3-stack.json"'),
+        ("", 'attachment; filename="project-manifest.json"'),
+        (
+            "Über stack",
+            "attachment; filename=\"-ber-stack.json\"; filename*=UTF-8''%C3%9Cber-stack.json",
+        ),
+        (
+            "計画",
+            "attachment; filename=\"--.json\"; filename*=UTF-8''%E8%A8%88%E7%94%BB.json",
+        ),
+        ('a"b\r\nSet-Cookie: x', 'attachment; filename="a-b--Set-Cookie--x.json"'),
+    ],
+)
+def test_a_download_is_named_in_a_header_any_name_fits(name, header):
+    from app.api.routes.projects import _manifest_response
+
+    response = _manifest_response([], fmt="json", name=name)
+    assert response.headers["content-disposition"] == header
+    # The header is one a server can send: Latin-1 throughout.
+    response.headers["content-disposition"].encode("latin-1")
+
+
+def test_a_manifest_with_a_name_outside_latin_1_still_downloads(catalogue):
+    admin = catalogue["admin"]
+    saved = ok(
+        admin.post(
+            "/v1/manifests",
+            json={"name": "計画 2026", "framework_id": catalogue["fw"]},
+            headers=csrf(admin),
+        )
+    )
+    export = admin.get(f"/v1/manifests/{saved['id']}/export", params={"format": "json"})
+    assert export.status_code == 200, export.text
+    assert "filename*=UTF-8''" in export.headers["content-disposition"]

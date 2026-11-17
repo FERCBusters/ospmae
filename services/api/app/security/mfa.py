@@ -23,15 +23,16 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.db.models import MfaChallenge, MfaCredential, MfaRecoveryCode, User
 from app.security.client_addr import request_allowance_key
+from app.security.csrf import host_bound_cookie_name
 from app.security.rate_limit import take_rate_limit
 
 COOKIE = "ospmae_mfa_pending"
 
 
 def cookie_name() -> str:
-    if settings.public_base_url.startswith("https://"):
-        return "__Host-" + COOKIE
-    return COOKIE
+    """Host-bound where the other cookies are: named by the same rule, so the
+    prefix and the Secure attribute never disagree."""
+    return host_bound_cookie_name(COOKIE)
 
 
 def _now() -> datetime:
@@ -55,6 +56,9 @@ TTL = 300
 # the account then accepts no code until CODE_LOCKOUT has passed.
 CODE_ATTEMPTS = 5
 CODE_LOCKOUT = timedelta(hours=1)
+# Wrong codes are remembered this long after the latest one, so a few tries
+# an hour, kept up, still spend the allowance and reach the owner's notice.
+CODE_MEMORY = timedelta(hours=24)
 _MFA_WINDOW_SECONDS = 300
 # Ceremony steps each address and each account may make in that window.
 ADDRESS_STEPS = 40
@@ -124,8 +128,14 @@ def local_session_allowed(db, user, session):
     removed, so every other browser session of the account ends with the
     enrolment bump that made the versions disagree.
     """
-    if (session.auth_method or "local") not in {"local"}:
-        return True
+    method = session.auth_method or "local"
+    if method not in {"local"}:
+        # A session opened through a provider lasts while that provider is
+        # one this installation still signs people in with.
+        from app.security.oidc import get_sso_provider
+
+        provider = get_sso_provider(method)
+        return provider is not None and provider.enabled
     if int(session.mfa_version) != int(user.mfa_version):
         return False
     if user.mfa_enabled or required(db, user):
@@ -159,9 +169,9 @@ def limit(request, user_id=None):
         raise HTTPException(429, "Too many verification attempts; try again later")
 
 
-def _code_failures_current(user) -> bool:
+def _since_last_wrong_code(user) -> timedelta | None:
     since = user.mfa_code_failures_since
-    return since is not None and _now() - since < CODE_LOCKOUT
+    return None if since is None else _now() - since
 
 
 def codes_refused(user) -> bool:
@@ -169,7 +179,12 @@ def codes_refused(user) -> bool:
 
     The caller holds the account's row lock, as every ceremony step does.
     """
-    return _code_failures_current(user) and user.mfa_code_failures >= CODE_ATTEMPTS
+    elapsed = _since_last_wrong_code(user)
+    return (
+        elapsed is not None
+        and elapsed < CODE_LOCKOUT
+        and user.mfa_code_failures >= CODE_ATTEMPTS
+    )
 
 
 def record_wrong_code(user) -> bool:
@@ -177,14 +192,19 @@ def record_wrong_code(user) -> bool:
 
     The refusal that follows lasts CODE_LOCKOUT from the code that spent it.
     """
-    if not _code_failures_current(user):
+    elapsed = _since_last_wrong_code(user)
+    served_refusal = (
+        elapsed is not None
+        and user.mfa_code_failures >= CODE_ATTEMPTS
+        and elapsed >= CODE_LOCKOUT
+    )
+    if elapsed is None or elapsed >= CODE_MEMORY or served_refusal:
         user.mfa_code_failures = 0
-        user.mfa_code_failures_since = _now()
     user.mfa_code_failures += 1
-    if user.mfa_code_failures < CODE_ATTEMPTS:
-        return False
+    # The time of the latest wrong code: the count is forgotten CODE_MEMORY
+    # after it, and a refusal lasts CODE_LOCKOUT from it.
     user.mfa_code_failures_since = _now()
-    return True
+    return user.mfa_code_failures >= CODE_ATTEMPTS
 
 
 def clear_wrong_codes(user) -> None:

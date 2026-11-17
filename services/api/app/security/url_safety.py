@@ -4,7 +4,7 @@ import ipaddress
 import re
 import socket
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from xml.parsers import expat
 
 _DISALLOWED_SCHEMES_RE = re.compile(r"^(?:javascript|data|vbscript):", re.IGNORECASE)
@@ -229,5 +229,10 @@ def safe_relative_route_path(value: str | None) -> str | None:
     if "://" in raw:
         return None
     if any(ord(ch) in _BAD_ROUTE_CHARS for ch in raw):
+        return None
+    # A browser resolves dot segments before it navigates, so "/.//host"
+    # arrives as "//host": no route here is written with one, encoded or not.
+    path = raw.split("?", 1)[0].split("#", 1)[0]
+    if any(unquote(segment) in {".", ".."} for segment in path.split("/")):
         return None
     return raw

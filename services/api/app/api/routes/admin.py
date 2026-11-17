@@ -40,7 +40,12 @@ from app.security import sign_in_throttle as throttle
 from app.security.auth import create_user, get_password_hash, get_user_by_email
 from app.security.client_addr import request_client_address
 from app.security.permissions import PERM_AUDITTRAIL_READ, has_permission
-from app.security.roles import attach_effective_role, normalize_role
+from app.security.roles import (
+    active_admin_count,
+    attach_effective_role,
+    lock_admin_changes,
+    normalize_role,
+)
 from app.security.sessions import end_all_sessions
 from app.services import security_notifications
 from app.services.entity_changelog import (
@@ -53,6 +58,14 @@ from app.tasks.notifications import kick_delivery
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _ensure_an_admin_remains(db: Session, detail: str) -> None:
+    """Refuse a pending change that leaves no active administrator, counting
+    accounts that hold the role through a group as well as directly."""
+    if active_admin_count(db) == 0:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=detail)
 
 
 def require_audit_access(
@@ -161,22 +174,8 @@ def update_user_route(
         )
 
     # Safety: don't allow demoting or deactivating the last active admin, the
-    # same guard the delete path applies.
-    if (
-        (u.role or "").lower() == "admin"
-        and bool(u.is_active)
-        and (new_role != "admin" or not new_is_active)
-    ):
-        active_admins = (
-            db.query(User.id)
-            .filter(User.role == "admin", User.is_active.is_(True))
-            .count()
-        )
-        if active_admins <= 1:
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot demote or deactivate the last active admin user",
-            )
+    # same guard every path that can remove an administrator applies.
+    lock_admin_changes(db)
 
     if payload.email is not None:
         email = None
@@ -201,6 +200,9 @@ def update_user_route(
         u.is_active = new_is_active
 
     db.add(u)
+    _ensure_an_admin_remains(
+        db, "Cannot demote or deactivate the last active admin user"
+    )
     db.commit()
     db.refresh(u)
     eff = attach_effective_role(db, u)
@@ -224,7 +226,7 @@ def set_user_password_route(
 ):
     """An administrator's password reset, as KEEN's.
 
-    The account's local sessions and every browser's recognition end, its
+    The account's sessions and every browser's recognition end, its
     sign-in throttle starts afresh, and its owner is mailed a notice.
     """
     target = (
@@ -242,7 +244,10 @@ def set_user_password_route(
         )
     except ValueError as problem:
         raise HTTPException(status_code=400, detail=str(problem)) from problem
-    target.mfa_version += 1
+    # Every session ends, whichever way it was signed in: a reset answers a
+    # suspected takeover, and a session opened through a provider is as much
+    # part of one as a password session.
+    end_all_sessions(db, target)
     db.query(LoginDevice).filter(LoginDevice.user_id == target.id).delete(
         synchronize_session=False
     )
@@ -277,18 +282,9 @@ def delete_user_route(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Safety: don't allow deleting the last active admin.
-    if (u.role or "").lower() == "admin" and bool(u.is_active):
-        active_admins = (
-            db.query(User.id)
-            .filter(User.role == "admin", User.is_active.is_(True))
-            .count()
-        )
-        if active_admins <= 1:
-            raise HTTPException(
-                status_code=409, detail="Cannot delete the last active admin user"
-            )
-
+    lock_admin_changes(db)
     db.delete(u)
+    _ensure_an_admin_remains(db, "Cannot delete the last active admin user")
     db.commit()
     return {"status": "ok", "deleted_user_id": user_id}
 
@@ -344,18 +340,14 @@ def set_user_access(
 
     # Safety: stripping the last active admin's own access would lock the
     # installation out; refuse the change and ask for another admin.
+    lock_admin_changes(db)
     if (
         (u.role or "").lower() == "admin"
         and bool(u.is_active)
         and not permission_ids
         and not group_ids
     ):
-        active_admins = (
-            db.query(User.id)
-            .filter(User.role == "admin", User.is_active.is_(True))
-            .count()
-        )
-        if active_admins <= 1:
+        if active_admin_count(db) <= 1:
             raise HTTPException(
                 status_code=409,
                 detail="Cannot strip access from the last active admin user",
@@ -385,6 +377,9 @@ def set_user_access(
     for pid in permission_ids:
         db.add(UserPermission(user_id=user_id, permission_id=pid))
 
+    # An account that is an administrator through a group stays one, or
+    # another administrator exists.
+    _ensure_an_admin_remains(db, "Cannot strip access from the last active admin user")
     db.commit()
     db.refresh(u)
 
@@ -494,6 +489,9 @@ def update_group(
             g.role = nr
 
     db.add(g)
+    if "role" in body:
+        lock_admin_changes(db)
+        _ensure_an_admin_remains(db, "This group gives the last active admin its role")
     db.commit()
     db.refresh(g)
     return _group_to_dict(g)
@@ -513,7 +511,9 @@ def delete_group(
     if not g:
         raise HTTPException(status_code=404, detail="group not found")
 
+    lock_admin_changes(db)
     db.delete(g)
+    _ensure_an_admin_remains(db, "This group gives the last active admin its role")
     db.commit()
     return {"status": "ok", "deleted_group_id": group_id}
 

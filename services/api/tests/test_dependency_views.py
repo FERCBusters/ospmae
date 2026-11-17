@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from app.api.routes.dependencies import _dependency_namespace
 from app.core.config import settings
-from app.db.models import ProjectVersion, ProjectVersionDependency
+from app.db.models import Group, ProjectVersion, ProjectVersionDependency, UserGroup
 from app.db.session import SessionLocal
 
 from tests.support import (
@@ -173,7 +173,7 @@ def test_dependency_graph_serves_the_chosen_version_and_guards_drafts(admin, sca
     assert chosen["version"]["is_latest"] is False
 
     viewer, _ = signed_in("viewer")
-    assert viewer.get(base, params={"version_id": draft["id"]}).status_code == 403
+    assert viewer.get(base, params={"version_id": draft["id"]}).status_code == 404
     assert ok(viewer.get(base))["version"]["version"] == "1.0.0"
     assert admin.get(base, params={"version_id": 999999}).status_code == 404
     # A version of another project is not found under this one.
@@ -200,7 +200,7 @@ def test_draft_graphs_open_to_the_owner_and_the_owning_group(admin):
         assert client.get(path, params={"version_id": draft["id"]}).status_code == 200
     stranger, stranger_id = signed_in("maintainer")
     make_group("Elsewhere", members=[stranger_id])
-    assert stranger.get(path, params={"version_id": draft["id"]}).status_code == 403
+    assert stranger.get(path, params={"version_id": draft["id"]}).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,9 @@ def test_draft_graphs_open_to_the_owner_and_the_owning_group(admin):
 # ---------------------------------------------------------------------------
 
 
-def test_a_requested_scan_clears_the_old_result_and_launches(admin, scanned, scans):
+def test_a_requested_scan_keeps_the_old_result_until_it_is_replaced(
+    admin, scanned, scans
+):
     vid = scanned["version"]
     set_scan_state(
         vid,
@@ -219,6 +221,11 @@ def test_a_requested_scan_clears_the_old_result_and_launches(admin, scanned, sca
         dependency_last_commit="abc123",
         dependency_discovery_error="old",
     )
+    with SessionLocal() as s:
+        kept = (
+            s.query(ProjectVersionDependency).filter_by(project_version_id=vid).count()
+        )
+    assert kept > 0
     path = f"/v1/project-versions/{vid}/dependency-discovery"
     assert ok(admin.post(path, headers=csrf(admin))) == {
         "queued": True,
@@ -229,12 +236,13 @@ def test_a_requested_scan_clears_the_old_result_and_launches(admin, scanned, sca
     with SessionLocal() as s:
         version = s.get(ProjectVersion, vid)
         assert version.dependency_discovery_status == "queued"
-        assert (version.dependency_count, version.vulnerability_count) == (0, 0)
-        assert version.dependency_last_commit is None
         assert version.dependency_discovery_error is None
+        # What the last scan found is still there to read while this one runs.
+        assert (version.dependency_count, version.vulnerability_count) == (5, 2)
+        assert version.dependency_last_commit == "abc123"
         assert (
             s.query(ProjectVersionDependency).filter_by(project_version_id=vid).count()
-            == 0
+            == kept
         )
 
     # Queued without launching: the dispatcher picks it up.
@@ -270,11 +278,30 @@ def test_only_owners_start_scans_and_only_where_there_is_source(
 
     stranger, _ = signed_in("maintainer")
     assert stranger.post(path, headers=csrf(stranger)).status_code == 403
+    # A member of the owning group who cannot edit the project cannot have
+    # it cloned either.
+    refused = colleague.post(path, headers=csrf(colleague))
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == (
+        "Scans are started by those who can edit the project"
+    )
     assert scans.launched == []
-    # The owner, a member of the owning group and an administrator may.
-    for client in (owner, colleague, admin):
+    # The owner, an editor in the owning group and an administrator may.
+    editor, editor_id = signed_in("maintainer")
+    with SessionLocal() as s:
+        team = s.query(Group).filter_by(name="Team").one()
+        s.add(UserGroup(user_id=editor_id, group_id=team.id))
+        s.commit()
+    for client in (owner, editor, admin):
         assert client.post(path, headers=csrf(client)).status_code == 200
     assert scans.launched == [version["id"]] * 3
+    # A draft's scan route tells a stranger nothing about the draft.
+    draft = make_version(owner, pid, "2.0.0", is_draft=True)
+    hidden = stranger.post(
+        f"/v1/project-versions/{draft['id']}/dependency-discovery",
+        headers=csrf(stranger),
+    )
+    assert hidden.status_code == 404
     assert (
         admin.post(
             "/v1/project-versions/999999/dependency-discovery", headers=csrf(admin)

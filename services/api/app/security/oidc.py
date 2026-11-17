@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.email_address import single_mailbox
 from app.db.models import OidcLoginState, User, UserIdentity, UserSsoEmail
+from app.security.csrf import host_bound_cookie_name
 
 log = logging.getLogger(__name__)
 
@@ -442,7 +443,7 @@ def pop_login_state(db: Session, *, state: str) -> OidcLoginState | None:
 def sso_binding_cookie() -> str:
     """The cookie that binds a sign-in to the browser that started it:
     host-bound (``__Host-``) where cookies are Secure."""
-    return "__Host-ospmae_sso" if settings.cookie_secure else "ospmae_sso"
+    return host_bound_cookie_name("ospmae_sso")
 
 
 def _browser_state(provider_key: str, secret: str) -> str:

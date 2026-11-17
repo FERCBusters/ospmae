@@ -11,6 +11,7 @@ from celery.utils.log import get_task_logger
 from app.core.config import settings
 from app.depscan.ecosystems import ecosystem, purl_type
 from app.depscan.parsers import DiscoveredDependency
+from app.depscan.scan import SCANNER_CWD, scanner_env
 
 log = get_task_logger(__name__)
 
@@ -81,6 +82,8 @@ def scan_syft(repo_root: Path) -> list[DiscoveredDependency] | None:
         text=True,
         check=False,
         timeout=_scan_timeout_seconds(),
+        env=scanner_env(),
+        cwd=SCANNER_CWD,
     )
     if proc.returncode != 0:
         log.warning(

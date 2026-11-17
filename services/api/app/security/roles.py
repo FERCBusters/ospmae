@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.models import Group, User, UserGroup
@@ -74,6 +75,50 @@ def resolve_group_role(db: Session, user_id: int) -> str | None:
     if not held:
         return None
     return max(held, key=lambda role: (_ROLE_PRECEDENCE[role], role == ROLE_MAINTAINER))
+
+
+# One number for the advisory lock every administrator-affecting change takes.
+_ADMIN_CHANGE_LOCK = 0x4F53504D4145
+
+
+def lock_admin_changes(db: Session) -> None:
+    """Serialise changes that can remove an administrator.
+
+    Held to the end of the transaction, so two changes that would each leave
+    the other account as the last administrator cannot both pass their check.
+    """
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ADMIN_CHANGE_LOCK})
+
+
+def active_admin_count(db: Session) -> int:
+    """Active accounts that are administrators in effect: by their own role,
+    or by inheriting it from a group."""
+    db.flush()
+    admin_groups = [
+        group_id
+        for group_id, raw in db.query(Group.id, Group.role).all()
+        if canonicalize_role(raw) == ROLE_ADMIN
+    ]
+    inheriting = (
+        {
+            user_id
+            for (user_id,) in db.query(UserGroup.user_id)
+            .filter(UserGroup.group_id.in_(admin_groups))
+            .all()
+        }
+        if admin_groups
+        else set()
+    )
+    count = 0
+    for user_id, raw in (
+        db.query(User.id, User.role).filter(User.is_active.is_(True)).all()
+    ):
+        direct = canonicalize_role(raw)
+        if direct == ROLE_ADMIN:
+            count += 1
+        elif direct in (None, ROLE_INHERIT) and user_id in inheriting:
+            count += 1
+    return count
 
 
 def attach_effective_role(db: Session, user: User) -> str:

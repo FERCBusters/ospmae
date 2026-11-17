@@ -175,7 +175,7 @@ def test_draft_versions_are_invisible_to_plain_viewers(client):
     r = login(client, "DraftViewer", "Real-passphrase-1!")
     assert r.status_code == 200
     r = client.get(f"/v1/project-versions/{version_id}/changelog")
-    assert r.status_code == 403, "drafts stay invisible outside owners/admin"
+    assert r.status_code == 404, "drafts stay invisible outside owners/admin"
 
     make_user("DraftAdmin2", "Admin-passphrase-1!", role="admin")
     r = login(client, "DraftAdmin2", "Admin-passphrase-1!")

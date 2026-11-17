@@ -134,9 +134,9 @@ async function load(controls) {
         (d) => `<tr>
         <td><a class="text-decoration-none" href="/dependencies.html?id=${encodeURIComponent(d.public_id)}">${escapeHtml(d.name)}</a></td>
         <td>${escapeHtml(d.ecosystem)}</td>
-        <td class="text-end">${d.version_count}</td>
-        <td class="text-end">${d.used_by_count}</td>
-        <td>${d.vulnerability_count ? `<span class="badge text-bg-warning">${d.vulnerability_count}</span>` : '<span class="badge text-bg-success">clean</span>'}</td>
+        <td class="text-end">${Number(d.version_count) || 0}</td>
+        <td class="text-end">${Number(d.used_by_count) || 0}</td>
+        <td>${Number(d.vulnerability_count) ? `<span class="badge text-bg-warning">${Number(d.vulnerability_count)}</span>` : '<span class="badge text-bg-success">clean</span>'}</td>
         <td><a class="btn btn-sm btn-outline-primary" href="/dependencies.html?id=${encodeURIComponent(d.public_id)}">Open</a></td>
       </tr>`,
       )

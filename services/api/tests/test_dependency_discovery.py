@@ -408,3 +408,88 @@ def test_the_dispatcher_hands_over_what_is_still_queued(scanner, monkeypatch):
         "ok": False,
         "reason": "dependency_scans feature disabled",
     }
+
+
+@pytest.mark.parametrize(
+    "error, stored",
+    [
+        (
+            RuntimeError(
+                "Command failed (128): git clone -- https://bot:s3cr3t@github.com/o/r "
+                "/tmp/ospmae-scan-abc123/repo\nremote: Repository not found."
+            ),
+            "Command failed (128): git clone -- https://***:***@github.com/o/r "
+            "<scan directory>\nremote: Repository not found.",
+        ),
+        (ValueError("Repo host not allowed: evil.example"), None),
+        (
+            __import__("subprocess").TimeoutExpired(["git", "clone"], 180),
+            "The scan ran past its time limit and was stopped",
+        ),
+        (
+            __import__("billiard").exceptions.SoftTimeLimitExceeded(),
+            "The scan ran past its time limit and was stopped",
+        ),
+        (
+            __import__("sqlalchemy").exc.DataError(
+                "INSERT INTO dependency_packages (name) VALUES (%(name)s)",
+                {"name": "secret-internal-package"},
+                Exception("value too long"),
+            ),
+            "The scan failed (DataError)",
+        ),
+        (KeyError("artifacts"), "The scan failed (KeyError)"),
+    ],
+)
+def test_a_stored_scan_error_says_what_an_owner_can_act_on(error, stored):
+    from app.depscan.parsers import redact_url
+    from app.tasks.dependency_discovery import _scan_error_text
+
+    text = _scan_error_text(error)
+    if stored is None:
+        assert text == str(error)
+    elif "***" in stored:
+        # Credentials are masked however the redactor writes the mask, and
+        # the worker's directory is not named.
+        assert "s3cr3t" not in text and "/tmp/" not in text
+        assert text == redact_url(str(error)).replace(
+            "/tmp/ospmae-scan-abc123/repo", "<scan directory>"
+        )
+    else:
+        assert text == stored
+    assert "secret-internal-package" not in text
+
+
+def test_only_the_projects_owners_read_why_a_scan_failed(scanner):
+    from tests.support import ok, signed_in
+
+    vid = queued_version()
+    scanner.clone_error = RuntimeError(
+        "Command failed (128): git ls-remote https://github.com/example/repo\n"
+        "remote: Invalid username or token."
+    )
+    assert run(vid)["ok"] is False
+    version = state(vid)
+    pid = version.project_id
+    admin, _ = signed_in("admin")
+    viewer, _ = signed_in("viewer")
+
+    def texts(reader):
+        project = ok(reader.get(f"/v1/projects/{pid}"))
+        graph = ok(
+            reader.get(
+                f"/v1/projects/{pid}/dependency-graph", params={"version_id": vid}
+            )
+        )
+        listed = ok(reader.get(f"/v1/projects/{pid}/versions"))["items"]
+        return {
+            next(v for v in project["versions"] if v["id"] == vid)[
+                "dependency_discovery_error"
+            ],
+            graph["version"]["dependency_discovery_error"],
+            next(v for v in listed if v["id"] == vid)["dependency_discovery_error"],
+        }
+
+    assert texts(admin) == {version.dependency_discovery_error}
+    assert "remote: Invalid username or token." in version.dependency_discovery_error
+    assert texts(viewer) == {"The last scan failed"}

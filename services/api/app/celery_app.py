@@ -51,7 +51,18 @@ celery_app.conf.update(
     # A hand-off from a request waits at most this long for the broker; the
     # work stays queued in the database for the beat dispatchers.
     broker_connection_timeout=3,
+    # No task runs without an end. At the soft limit the task is told to
+    # stop (a scan records that as its error); at the hard limit its process
+    # is replaced. Scans and feed polls carry their own, longer limits.
+    task_soft_time_limit=max(1, int(settings.task_time_limit_seconds) - 60),
+    task_time_limit=int(settings.task_time_limit_seconds),
 )
+
+
+def task_limits(seconds: int) -> dict[str, int]:
+    """Soft and hard limits for a task allowed ``seconds`` in all."""
+    hard = max(120, int(seconds))
+    return {"soft_time_limit": hard - 60, "time_limit": hard}
 
 
 # Periodically dispatch queued dependency discovery jobs. The schedule and

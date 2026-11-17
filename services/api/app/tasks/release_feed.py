@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 import xml.etree.ElementTree as ET
+import zlib
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -13,7 +14,7 @@ from celery.utils.log import get_task_logger
 from sqlalchemy import func, true
 from sqlalchemy.exc import IntegrityError
 
-from app.celery_app import celery_app
+from app.celery_app import celery_app, task_limits
 from app.core.config import settings
 from app.db.models import (
     Project,
@@ -26,7 +27,12 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.depscan.scan import repository_url_for_release_link
 from app.security.outbound import public_client
-from app.security.regex_shape import compile_supplied_pattern, search_within
+from app.security.regex_shape import (
+    MAX_IGNORE_PATTERNS,
+    SEARCH_SECONDS,
+    compile_supplied_pattern,
+    search_within,
+)
 from app.security.url_safety import (
     contains_xml_dtd_or_entity,
     parse_xml_without_dtd,
@@ -63,6 +69,9 @@ _MATCH_WINDOW_CHARS = 1024
 # answers a few bytes at a time cannot hold a worker; each read waits at most
 # _READ_SECONDS.
 FEED_FETCH_SECONDS = 60
+
+# The most releases one first import of a feed creates.
+DISCOVERY_MAX_ENTRIES = 50
 _READ_SECONDS = 20
 
 
@@ -103,18 +112,56 @@ def _safe_fetch_feed(
             if resp.status_code != 200:
                 return resp, None, current
 
+            # The size limit is on the decoded feed, and is applied while
+            # decoding: a small compressed answer cannot expand past it.
+            inflate = _feed_inflater(resp.headers.get("content-encoding"))
             buf = bytearray()
-            for chunk in resp.iter_bytes():
-                if not chunk:
-                    continue
-                buf.extend(chunk)
-                if len(buf) > max_bytes:
-                    raise ValueError("Release feed response too large")
+            for chunk in resp.iter_raw():
                 if time.monotonic() > deadline:
                     raise ValueError("Release feed took too long")
+                if not chunk:
+                    continue
+                if inflate is None:
+                    buf.extend(chunk)
+                else:
+                    data = chunk
+                    while data:
+                        buf.extend(inflate.decompress(data, max_bytes + 1 - len(buf)))
+                        if len(buf) > max_bytes:
+                            break
+                        data = inflate.unconsumed_tail
+                if len(buf) > max_bytes:
+                    raise ValueError("Release feed response too large")
             return resp, bytes(buf), current
 
     raise ValueError("Too many redirects while fetching release feed")
+
+
+def _feed_inflater(content_encoding: str | None):
+    """A bounded decoder for the encodings a feed fetch asks for, or None for
+    an answer sent as it is. Any other encoding is refused."""
+    encoding = (content_encoding or "").strip().lower()
+    if encoding in ("", "identity"):
+        return None
+    if encoding in ("gzip", "x-gzip", "deflate"):
+        # 47: read a gzip or a zlib header, whichever the answer carries.
+        return zlib.decompressobj(47)
+    raise ValueError("Release feed uses an unsupported content encoding")
+
+
+# Validators replayed as request headers on the next poll.
+_VALIDATOR_CHARS = 255
+
+
+def _feed_validator(value: str | None) -> str | None:
+    """An ETag or Last-Modified value fit to store and send back: printable
+    ASCII within the column, or nothing."""
+    text = (value or "").strip()
+    if not text or len(text) > _VALIDATOR_CHARS:
+        return None
+    if not all(32 <= ord(ch) < 127 for ch in text):
+        return None
+    return text
 
 
 def _utcnow_naive() -> datetime:
@@ -288,7 +335,8 @@ def _normalised_release_ignore_patterns(project: Project) -> list[dict[str, Any]
         return []
 
     patterns: list[dict[str, Any]] = []
-    for raw in raw_patterns:
+    # Rules saved before the limit existed are read up to it.
+    for raw in raw_patterns[:MAX_IGNORE_PATTERNS]:
         if isinstance(raw, str):
             text = raw.strip()
             if not text:
@@ -325,9 +373,39 @@ def _normalised_release_ignore_patterns(project: Project) -> list[dict[str, Any]
     return patterns
 
 
+# Matching time one project's rules may use in one poll or first import,
+# beyond which its remaining entries are taken without consulting them.
+MATCH_BUDGET_SECONDS = 5.0
+
+
+class MatchBudget:
+    """What one project's ignore rules have cost in this run.
+
+    A rule that reaches its deadline is not tried again in the run, and when
+    the deadlines add up to the budget no further rule is: the per-search
+    limit is then not multiplied by the number of rules and entries.
+    """
+
+    def __init__(self, seconds: float = MATCH_BUDGET_SECONDS) -> None:
+        self.left = float(seconds)
+        self.dropped: set[tuple[str, int]] = set()
+
+    @property
+    def spent(self) -> bool:
+        return self.left <= 0
+
+    def stopped(self, pattern: str, flags: int, seconds: float) -> None:
+        self.dropped.add((pattern, flags))
+        self.left -= seconds
+
+
 def _release_feed_entry_is_ignored(
-    project: Project, entry: dict[str, Any], version_name: str
+    project: Project,
+    entry: dict[str, Any],
+    version_name: str,
+    budget: MatchBudget | None = None,
 ) -> bool:
+    budget = budget if budget is not None else MatchBudget()
     patterns = _normalised_release_ignore_patterns(project)
     if not patterns:
         return False
@@ -350,6 +428,8 @@ def _release_feed_entry_is_ignored(
 
         if match_type == "regex":
             flags = 0 if case_sensitive else re.IGNORECASE
+            if budget.spent or (pattern, flags) in budget.dropped:
+                continue
             try:
                 # Patterns saved before the shape checks existed are checked
                 # again here; one that fails is skipped, never run.
@@ -366,10 +446,14 @@ def _release_feed_entry_is_ignored(
                     # The shape check passed the pattern, yet it ran past its
                     # allowance on this text: the rule is skipped, so one
                     # project's rule cannot hold the worker.
+                    budget.stopped(pattern, flags, SEARCH_SECONDS)
                     log.warning(
                         "Release-feed ignore regex stopped at its time limit "
-                        "for project_id=%s",
+                        "for project_id=%s%s",
                         project.id,
+                        "; its rules are set aside for the rest of this run"
+                        if budget.spent
+                        else "",
                     )
                     break
                 if found:
@@ -396,14 +480,19 @@ def _source_code_url_for_entry(
     preferred over the release's own.
     """
 
-    derived = repository_url_for_release_link(link) or repository_url_for_release_link(
-        project.release_rss_feed_url
+    from_entry = repository_url_for_release_link(link)
+    from_feed = repository_url_for_release_link(project.release_rss_feed_url)
+    inherited = (
+        (inheritance_source.link_to_source_code or "").strip() or None
+        if inheritance_source is not None
+        else None
     )
-    if derived:
-        return derived
-    if inheritance_source is not None:
-        return (inheritance_source.link_to_source_code or "").strip() or None
-    return None
+    if getattr(project, "repo_private", False):
+        # A private project lives in the one repository its access token is
+        # for. What a feed entry links to is the feed's to choose, so it
+        # never names the repository: every release is in the project's own.
+        return getattr(project, "repo_token_repository", None) or None
+    return from_entry or from_feed or inherited
 
 
 def _owner_emails(db, project: Project) -> list[str]:
@@ -567,7 +656,10 @@ def _best_version_for_capability_inheritance(
     return row[0] if row else None
 
 
-@celery_app.task(name="app.tasks.release_feed.poll_release_feeds")
+@celery_app.task(
+    name="app.tasks.release_feed.poll_release_feeds",
+    **task_limits(settings.feed_task_time_limit_seconds),
+)
 def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
     """Poll configured release feeds and add the new releases they announce.
 
@@ -610,9 +702,15 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
             for project in projects:
                 # One project's feed never stops the poll for the others:
                 # whatever its content raises is logged and left behind.
+                # Read now: after a rollback the row is loaded again, and a
+                # project deleted meanwhile would raise from the handler.
+                project_id = int(project.id)
                 try:
                     url = str(project.release_rss_feed_url or "").strip()
                     if not url:
+                        # A blank address still takes its turn, or it would
+                        # head every cycle's list.
+                        _mark_feed_checked(db, project_id)
                         continue
 
                     checked += 1
@@ -651,8 +749,8 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                         db.commit()
                         continue
 
-                    etag = resp.headers.get("etag")
-                    last_mod = resp.headers.get("last-modified")
+                    etag = _feed_validator(resp.headers.get("etag"))
+                    last_mod = _feed_validator(resp.headers.get("last-modified"))
                     if etag:
                         project.release_rss_last_etag = etag
                     if last_mod:
@@ -729,6 +827,7 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                         db, project.id, published_only=auto_publish
                     )
 
+                    budget = MatchBudget()
                     for entry in new_entries:
                         title = str(entry.get("title") or "").strip()
                         link = entry.get("link")
@@ -736,7 +835,9 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                         if not version_name or not _usable_version_label(version_name):
                             continue
 
-                        if _release_feed_entry_is_ignored(project, entry, version_name):
+                        if _release_feed_entry_is_ignored(
+                            project, entry, version_name, budget
+                        ):
                             ignored += 1
                             log.info(
                                 "Ignoring release-feed entry for project_id=%s version=%s due to configured ignore pattern",
@@ -851,6 +952,7 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                         log.exception(
                             "Integrity error while creating release feed versions"
                         )
+                        _mark_feed_checked(db, project_id)
                         continue
 
                     if scan_id is not None:
@@ -922,9 +1024,9 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                 except Exception:
                     db.rollback()
                     log.exception(
-                        "Release feed poll failed for project_id=%s", project.id
+                        "Release feed poll failed for project_id=%s", project_id
                     )
-                    _mark_feed_checked(db, project.id)
+                    _mark_feed_checked(db, project_id)
 
         try:
             from app.tasks.notifications import kick_delivery
@@ -943,7 +1045,10 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
         db.close()
 
 
-@celery_app.task(name="app.tasks.release_feed.discover_project_release_feed")
+@celery_app.task(
+    name="app.tasks.release_feed.discover_project_release_feed",
+    **task_limits(settings.feed_task_time_limit_seconds),
+)
 def discover_project_release_feed(project_id: int) -> dict[str, Any]:
     """Initial release discovery for a fresh or newly feed-enabled project.
 
@@ -991,8 +1096,8 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
                 "status_code": int(resp.status_code or 0),
             }
 
-        etag = resp.headers.get("etag")
-        last_mod = resp.headers.get("last-modified")
+        etag = _feed_validator(resp.headers.get("etag"))
+        last_mod = _feed_validator(resp.headers.get("last-modified"))
         if etag:
             project.release_rss_last_etag = etag
         if last_mod:
@@ -1024,6 +1129,9 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             )
         )
 
+        # A first import takes the newest releases, not a feed's whole length.
+        entries = entries[-DISCOVERY_MAX_ENTRIES:]
+
         # Discovery publishes what it imports.
         inheritance_source = _best_version_for_capability_inheritance(
             db, project.id, published_only=True
@@ -1031,6 +1139,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
         newest_id = str(entries[-1].get("id") or "").strip() or None
         newest_version: ProjectVersion | None = None
 
+        budget = MatchBudget()
         for entry in entries:
             title = str(entry.get("title") or "").strip()
             link = entry.get("link")
@@ -1038,7 +1147,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             if not version_name or not _usable_version_label(version_name):
                 continue
 
-            if _release_feed_entry_is_ignored(project, entry, version_name):
+            if _release_feed_entry_is_ignored(project, entry, version_name, budget):
                 ignored += 1
                 continue
 

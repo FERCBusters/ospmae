@@ -44,7 +44,7 @@ def _body(**overrides):
         "machine_name": "private",
         "display_name": "Private",
         "repo_private": True,
-        "repo_token_host": "github.com",
+        "repo_token_repository": REPO,
         "repo_token": TOKEN,
     }
     body.update(overrides)
@@ -128,35 +128,61 @@ def test_an_empty_token_keeps_the_saved_one_and_a_new_one_replaces_it():
     assert "repo_token_updated_at" in labels
 
 
-def test_a_token_does_not_follow_a_new_host_unless_entered_again():
+def test_a_token_does_not_follow_a_new_repository_unless_entered_again():
     c, _ = auth_client(role="admin")
     created = _create(c)
+    assert created["repo_token_repository"] == REPO
+    assert created["repo_token_host"] == "github.com"
+    other = "https://github.com/example/other-private-repo"
     response = c.put(
         f"/v1/projects/{created['id']}",
-        json={"repo_private": True, "repo_token_host": "gitlab.com"},
+        json={"repo_private": True, "repo_token_repository": other},
         headers=_csrf(c),
     )
     assert response.status_code == 422
     assert response.json() == {
-        "detail": "Enter the access token again for the new host"
+        "detail": "Enter the access token again for this repository"
     }
-    assert _stored(created["id"]).repo_token_host == "github.com"
+    assert _stored(created["id"]).repo_token_repository == REPO
+
+    # The same repository written another way is the same repository.
+    response = c.put(
+        f"/v1/projects/{created['id']}",
+        json={
+            "repo_private": True,
+            "repo_token_repository": REPO.replace("example", "Example") + ".git/",
+        },
+        headers=_csrf(c),
+    )
+    assert response.status_code == 200, response.text
 
     response = c.put(
         f"/v1/projects/{created['id']}",
         json={
             "repo_private": True,
-            "repo_token_host": "gitlab.com",
+            "repo_token_repository": "https://gitlab.com/group/sub/project",
             "repo_token": "glpat-new",
         },
         headers=_csrf(c),
     )
     assert response.status_code == 200, response.text
     stored = _stored(created["id"])
-    assert (stored.repo_token_host, decrypt_token(stored.repo_token_encrypted)) == (
-        "gitlab.com",
-        "glpat-new",
+    assert (
+        stored.repo_token_repository,
+        stored.repo_token_host,
+        decrypt_token(stored.repo_token_encrypted),
+    ) == ("https://gitlab.com/group/sub/project", "gitlab.com", "glpat-new")
+
+    # A host named beside the repository has to be the repository's own.
+    response = c.put(
+        f"/v1/projects/{created['id']}",
+        json={"repo_private": True, "repo_token_host": "github.com"},
+        headers=_csrf(c),
     )
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "The repository is on gitlab.com, not github.com"
+    }
 
 
 def test_making_the_repository_public_deletes_the_token():
@@ -196,9 +222,12 @@ def test_an_update_without_repository_fields_leaves_them_alone():
     ("overrides", "detail"),
     [
         ({"repo_token": None}, "Enter an access token for the private repository"),
-        ({"repo_token_host": None}, "Enter the host the access token is for"),
         (
-            {"repo_token_host": "codeberg.org"},
+            {"repo_token_repository": None},
+            "Enter the repository the access token is for",
+        ),
+        (
+            {"repo_token_repository": "https://codeberg.org/example/private-repo"},
             "Enter the account name the token belongs to on codeberg.org",
         ),
     ],
@@ -217,6 +246,15 @@ def test_incomplete_private_settings_are_refused(overrides, detail):
     [
         {"repo_token_host": "evil.example"},
         {"repo_token_host": "github.com/x"},
+        # Not a repository on an allowed host, over HTTPS.
+        {"repo_token_repository": "https://evil.example/owner/repo"},
+        {"repo_token_repository": "http://github.com/owner/repo"},
+        {"repo_token_repository": "https://github.com/only-an-owner"},
+        {"repo_token_repository": "https://github.com:8443/owner/repo"},
+        {"repo_token_repository": "https://bot:pw@github.com/owner/repo"},
+        {"repo_token_repository": "https://github.com/owner/repo?x=1"},
+        {"repo_token_repository": "https://github.com/owner/../repo"},
+        {"repo_token_repository": "git@github.com:owner/repo.git"},
         {"repo_token": "has a space"},
         {"repo_token_username": "a:b"},
         {"repo_token": "x" * 1025},
@@ -226,8 +264,8 @@ def test_malformed_private_settings_are_refused_without_echo(overrides):
     c, _ = auth_client(role="admin")
     response = c.post("/v1/projects", json=_body(**overrides), headers=_csrf(c))
     assert response.status_code == 422
-    for value in overrides.values():
-        if value not in {"github.com/x", "evil.example"}:
+    for key, value in overrides.items():
+        if key in {"repo_token", "repo_token_username"}:
             assert value not in response.text
 
 
@@ -278,15 +316,17 @@ def test_account_names_default_per_host(host, username, expected):
     project = Project(
         repo_private=True,
         repo_token_host=host,
+        repo_token_repository=f"https://{host}/example/private-repo",
         repo_token_username=username,
         repo_token_encrypted=encrypt_token(TOKEN),
     )
     credential = project_credential(project)
-    assert (credential.host, credential.username, credential.token) == (
-        host,
-        expected,
-        TOKEN,
-    )
+    assert (
+        credential.host,
+        credential.username,
+        credential.token,
+        credential.repository,
+    ) == (host, expected, TOKEN, f"https://{host}/example/private-repo")
 
 
 def test_public_projects_have_no_credential():
@@ -296,33 +336,48 @@ def test_public_projects_have_no_credential():
 # --- Git ---------------------------------------------------------------------
 
 
-CREDENTIAL = RepoCredential(host="github.com", username="x-access-token", token=TOKEN)
+CREDENTIAL = RepoCredential(
+    host="github.com", username="x-access-token", token=TOKEN, repository=REPO
+)
 
 
-def test_the_token_is_a_header_scoped_to_its_host():
+def test_the_token_is_a_header_scoped_to_the_repository_being_cloned():
     env = git_auth_env(CREDENTIAL, REPO)
     basic = base64.b64encode(f"x-access-token:{TOKEN}".encode()).decode()
     assert env == {
         "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
+        "GIT_CONFIG_KEY_0": f"http.{REPO}.extraHeader",
         "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
     }
-    # git reads the scoped header from its environment.
-    shown = subprocess.run(
-        ["git", "config", "--get-urlmatch", "http.extraHeader", f"{REPO}.git"],
-        env={**scan_mod._git_env(), **env},
-        capture_output=True,
-        text=True,
-        check=True,
+
+    def header_for(address: str) -> str:
+        # git reads the scoped header from its environment.
+        shown = subprocess.run(
+            ["git", "config", "--get-urlmatch", "http.extraHeader", address],
+            env={**scan_mod._git_env(), **env},
+            capture_output=True,
+            text=True,
+        )
+        return shown.stdout.strip()
+
+    # The requests a clone of this repository makes carry it.
+    assert header_for(REPO) == f"Authorization: Basic {basic}"
+    assert header_for(f"{REPO}/info/refs?service=git-upload-pack") == (
+        f"Authorization: Basic {basic}"
     )
-    assert shown.stdout.strip() == f"Authorization: Basic {basic}"
-    elsewhere = subprocess.run(
-        ["git", "config", "--get-urlmatch", "http.extraHeader", "https://gitlab.com/x"],
-        env={**scan_mod._git_env(), **env},
-        capture_output=True,
-        text=True,
-    )
-    assert elsewhere.stdout == ""
+    # Nothing else does: another repository on the host, one whose name
+    # begins the same way, the host itself, or another host.
+    owner = REPO.rsplit("/", 1)[0]
+    for elsewhere in (
+        f"{owner}/other-private-repo",
+        f"{REPO}-internal",
+        "https://github.com/",
+        "https://gitlab.com/x",
+    ):
+        assert header_for(elsewhere) == "", elsewhere
+    # A clone address written with .git is scoped as written.
+    dotted = git_auth_env(CREDENTIAL, f"{REPO}.git/")
+    assert dotted["GIT_CONFIG_KEY_0"] == f"http.{REPO}.git.extraHeader"
 
 
 @pytest.mark.parametrize(
@@ -338,6 +393,21 @@ def test_the_token_is_a_header_scoped_to_its_host():
 def test_the_token_is_never_sent_elsewhere_or_unencrypted(url):
     with pytest.raises(ValueError, match="only over HTTPS with github.com"):
         git_auth_env(CREDENTIAL, url)
+
+
+def test_a_private_project_names_its_repository_in_what_it_returns_and_records():
+    c, _ = auth_client(role="admin")
+    created = _create(c)
+    assert created["repo_token_repository"] == REPO
+    fetched = c.get(f"/v1/projects/{created['id']}").json()
+    assert fetched["repo_token_repository"] == REPO
+    with SessionLocal() as db:
+        states = [
+            row.after_state
+            for row in db.query(EntityChangelog).filter_by(entity_type="project")
+        ]
+    assert [state["repo_token_repository"] for state in states] == [REPO]
+    assert TOKEN not in str(states)
 
 
 def test_clones_carry_the_token_only_in_their_environment(monkeypatch):
@@ -385,13 +455,196 @@ def test_a_public_clone_carries_no_credential(monkeypatch):
     assert seen and all("GIT_CONFIG_COUNT" not in env for env in seen)
 
 
-def test_a_mismatched_source_url_fails_before_any_git(monkeypatch):
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.com/example/x",
+        # Another repository the same token may well be able to read.
+        "https://github.com/example/other-private-repo",
+        "https://github.com/example/private-repo-internal",
+        "https://github.com/example",
+        "https://github.com/example/other-private-repo/releases/tag/v1.0.0",
+    ],
+)
+def test_a_clone_of_anything_but_the_tokens_repository_fails_before_any_git(
+    monkeypatch, url
+):
     def fake_run(cmd, **kwargs):
         raise AssertionError("git must not run")
 
     monkeypatch.setattr(scan_mod.subprocess, "run", fake_run)
-    with pytest.raises(ValueError):
-        scan_mod.clone_repo("https://gitlab.com/example/x", credential=CREDENTIAL)
+    with pytest.raises(ValueError, match="is for|only over HTTPS"):
+        scan_mod.clone_repo(url, credential=CREDENTIAL)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        REPO,
+        f"{REPO}.git",
+        f"{REPO}/",
+        REPO.replace("example", "Example"),
+        f"{REPO}/releases/tag/v1.0.0",
+    ],
+)
+def test_the_tokens_repository_is_recognised_however_it_is_written(url):
+    clone_url, _tag = scan_mod._extract_repo_and_tag(url)
+    env = git_auth_env(CREDENTIAL, clone_url)
+    assert env["GIT_CONFIG_KEY_0"].startswith("http.https://github.com/")
+
+
+def test_a_credential_without_a_repository_authenticates_nothing():
+    unbound = RepoCredential(host="github.com", username="x", token=TOKEN)
+    with pytest.raises(ValueError, match="the repository URL is elsewhere"):
+        git_auth_env(unbound, REPO)
+
+
+def test_a_token_saved_before_tokens_were_bound_is_not_used(monkeypatch):
+    """A project migrated without a repository for its token: its scan stops
+    with what to do, and git never runs."""
+    import app.tasks.dependency_discovery as dd
+
+    monkeypatch.setattr(
+        dd, "clone_repo", lambda *a, **k: (_ for _ in ()).throw(AssertionError)
+    )
+    with SessionLocal() as db:
+        project = Project(
+            machine_name="legacy",
+            display_name="Legacy",
+            repo_private=True,
+            repo_token_host="github.com",
+            repo_token_encrypted=encrypt_token(TOKEN),
+        )
+        db.add(project)
+        db.flush()
+        version = ProjectVersion(
+            project_id=project.id,
+            version="1.0.0",
+            link_to_source_code=REPO,
+            dependency_discovery_status="queued",
+        )
+        db.add(version)
+        db.commit()
+        version_id = version.id
+    assert dd.discover_project_version_dependencies.run(version_id)["ok"] is False
+    with SessionLocal() as db:
+        stored = db.get(ProjectVersion, version_id)
+        assert stored.dependency_discovery_error == (
+            "Say which repository the access token is for on the project, "
+            "and enter the token again"
+        )
+
+
+def test_a_private_projects_versions_and_branch_live_in_its_repository():
+    c, _ = auth_client(role="admin")
+    created = _create(c)
+    pid = created["id"]
+    other = "https://github.com/example/other-private-repo"
+    detail = (
+        f"must be in {REPO}, the repository this private project's access token is for"
+    )
+
+    def new_version(label, link):
+        return c.post(
+            f"/v1/projects/{pid}/versions",
+            json={"version": label, "link_to_source_code": link},
+            headers=_csrf(c),
+        )
+
+    refused = new_version("1.0.0", other)
+    assert refused.status_code == 422
+    assert refused.json() == {"detail": f"A version's source code link {detail}"}
+    # In the repository, as a plain address, a release page, or with no link.
+    kept = [
+        new_version("1.0.0", REPO),
+        new_version("1.1.0", f"{REPO}/releases/tag/v1.1.0"),
+        new_version("1.2.0", None),
+    ]
+    assert [r.status_code for r in kept] == [200, 200, 200], [r.text for r in kept]
+    vid = kept[0].json()["id"]
+    moved = c.put(
+        f"/v1/project-versions/{vid}",
+        json={"link_to_source_code": f"{other}/releases/tag/v9"},
+        headers=_csrf(c),
+    )
+    assert moved.status_code == 422
+    assert moved.json() == {"detail": f"A version's source code link {detail}"}
+    # Other edits to a version are unaffected.
+    noted = c.put(
+        f"/v1/project-versions/{vid}", json={"notes": "checked"}, headers=_csrf(c)
+    )
+    assert noted.status_code == 200, noted.text
+
+    tracking = {"track_branch": True, "tracked_branch": "main"}
+    elsewhere = c.put(
+        f"/v1/projects/{pid}",
+        json={**tracking, "tracked_repo_url": other},
+        headers=_csrf(c),
+    )
+    assert elsewhere.status_code == 422
+    assert elsewhere.json() == {"detail": f"The tracked repository {detail}"}
+    assert _stored(pid).track_branch is False
+
+
+def test_a_public_projects_versions_may_link_anywhere_allowed():
+    c, _ = auth_client(role="admin")
+    created = _create(c, repo_private=False, repo_token=None)
+    response = c.post(
+        f"/v1/projects/{created['id']}/versions",
+        json={
+            "version": "1.0.0",
+            "link_to_source_code": "https://github.com/example/anything",
+        },
+        headers=_csrf(c),
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize(
+    ("url", "repository"),
+    [
+        ("https://github.com/Owner/Repo", "https://github.com/Owner/Repo"),
+        ("https://GitHub.com./owner/repo.git/", "https://github.com/owner/repo"),
+        ("https://github.com:443/owner/repo", "https://github.com/owner/repo"),
+        (
+            "https://github.com/owner/repo/releases/tag/v1",
+            "https://github.com/owner/repo",
+        ),
+        (
+            "https://github.com/owner/repo/tree/main/src",
+            "https://github.com/owner/repo",
+        ),
+        (
+            "https://gitlab.com/group/sub/project/-/tags/v1",
+            "https://gitlab.com/group/sub/project",
+        ),
+        (
+            "https://github.com/owner/repo/releases.atom",
+            "https://github.com/owner/repo",
+        ),
+        ("https://github.com/owner", None),
+        ("https://github.com/", None),
+        ("http://github.com/owner/repo", None),
+        ("https://github.com:8443/owner/repo", None),
+        ("https://github.com:x/owner/repo", None),
+        ("https://bot@github.com/owner/repo", None),
+        ("https://github.com/owner/repo?ref=main", None),
+        ("https://github.com/owner/repo#readme", None),
+        ("https://github.com/owner/../repo", None),
+        ("git@github.com:owner/repo.git", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_a_repository_is_read_one_way_from_the_addresses_inside_it(url, repository):
+    from app.security.repo_credentials import repository_of, same_repository
+
+    assert repository_of(url) == repository
+    if repository:
+        assert same_repository(url, repository.upper().replace("HTTPS", "https"))
+        assert not same_repository(url, repository + "-other")
+    else:
+        assert not same_repository(url, url)
 
 
 def test_discovery_passes_the_projects_credential(monkeypatch, tmp_path):
@@ -414,6 +667,7 @@ def test_discovery_passes_the_projects_credential(monkeypatch, tmp_path):
             display_name="P",
             repo_private=True,
             repo_token_host="github.com",
+            repo_token_repository=REPO,
             repo_token_encrypted=encrypt_token(TOKEN),
         )
         db.add(project)
@@ -429,9 +683,7 @@ def test_discovery_passes_the_projects_credential(monkeypatch, tmp_path):
         version_id = version.id
 
     assert dd.discover_project_version_dependencies.run(version_id)["ok"] is True
-    assert seen == [
-        RepoCredential(host="github.com", username="x-access-token", token=TOKEN)
-    ]
+    assert seen == [CREDENTIAL]
 
 
 def test_an_unreadable_token_is_reported_without_the_ciphertext(monkeypatch):
@@ -446,6 +698,7 @@ def test_an_unreadable_token_is_reported_without_the_ciphertext(monkeypatch):
             display_name="P",
             repo_private=True,
             repo_token_host="github.com",
+            repo_token_repository=REPO,
             repo_token_encrypted=encrypt_token(TOKEN),
         )
         db.add(project)
@@ -467,3 +720,29 @@ def test_an_unreadable_token_is_reported_without_the_ciphertext(monkeypatch):
         assert stored.dependency_discovery_error == (
             "The private repository's access token cannot be read; enter it again"
         )
+
+
+def test_a_version_without_a_link_is_scanned_in_the_projects_repository(monkeypatch):
+    """A scan asked for on a version with no source link repairs the link
+    first: for a private project, with the repository its token is for."""
+    from app.services import scan_queue
+
+    monkeypatch.setattr(scan_queue, "launch_dependency_scan", lambda _id: False)
+    c, _ = auth_client(role="admin")
+    created = _create(
+        c,
+        release_rss_feed_url="https://github.com/example/somewhere-else/releases.atom",
+    )
+    version = c.post(
+        f"/v1/projects/{created['id']}/versions",
+        json={"version": "1.0.0"},
+        headers=_csrf(c),
+    ).json()
+    queued = c.post(
+        f"/v1/project-versions/{version['id']}/dependency-discovery",
+        params={"run_now": "false"},
+        headers=_csrf(c),
+    )
+    assert queued.status_code == 200, queued.text
+    with SessionLocal() as db:
+        assert db.get(ProjectVersion, version["id"]).link_to_source_code == REPO

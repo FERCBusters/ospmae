@@ -609,6 +609,12 @@ class Project(Base):
         Boolean, default=False, server_default=false(), nullable=False
     )
     repo_token_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The one repository the token is for: every clone that carries it goes
+    # there, and the project's versions, tracked branch and feed releases
+    # live there.
+    repo_token_repository: Mapped[str | None] = mapped_column(
+        String(600), nullable=True
+    )
     repo_token_username: Mapped[str | None] = mapped_column(String(100), nullable=True)
     repo_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     repo_token_updated_at: Mapped[datetime | None] = mapped_column(

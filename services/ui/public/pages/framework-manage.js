@@ -568,10 +568,22 @@
     const ok = window.confirm("Delete this node? This cannot be undone.");
     if (!ok) return;
 
+    const nodeUrl = `/v1/framework-nodes/${state.selectedNodeId}`;
     try {
-      await apiFetch(`/v1/framework-nodes/${state.selectedNodeId}`, {
-        method: "DELETE",
-      });
+      try {
+        await apiFetch(nodeUrl, { method: "DELETE" });
+      } catch (err) {
+        // A node that projects map to is deleted, with those mappings, only
+        // on a second confirmation. A node with children is not offered it.
+        const mapped =
+          err?.status === 409 && /project mappings/.test(err.message || "");
+        if (!mapped) throw err;
+        const okForce = window.confirm(
+          `${err.message}\n\nDelete anyway? This will remove the mappings that reference it.`,
+        );
+        if (!okForce) return;
+        await apiFetch(`${nodeUrl}?force=true`, { method: "DELETE" });
+      }
       toast("Node deleted", "info");
       await refreshNodes();
     } catch (err) {

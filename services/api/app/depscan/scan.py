@@ -55,17 +55,25 @@ class ScanResult:
 
 
 def _allowed_hosts() -> set[str]:
+    """The hosts a clone may name. A setting that lists none allows none."""
     raw = str(getattr(settings, "dependency_discovery_allowed_hosts", "") or "").strip()
     if not raw:
         return set(DEFAULT_ALLOWED_HOSTS)
     return {h.strip().lower() for h in raw.split(",") if h.strip()}
 
 
+def _is_control(ch: str) -> bool:
+    return ord(ch) < 32 or ord(ch) == 127
+
+
 def validate_repo_url(url: str) -> None:
     raw = str(url or "").strip()
     if not raw:
         raise ValueError("Repository URL is empty")
-    if any(ch in _URL_REJECT_CHARS for ch in raw):
+    # The value is judged as git will receive it. urlparse drops some leading
+    # control characters before it reads a scheme; git does not.
+    text = str(url or "")
+    if any(ch in _URL_REJECT_CHARS or _is_control(ch) for ch in text.strip(" \t\r\n")):
         raise ValueError("Repository URL contains an unsafe character")
     # git reads an argument beginning with "-" as one of its options, and
     # --upload-pack names a command it runs. No repository URL starts so.
@@ -79,22 +87,23 @@ def validate_repo_url(url: str) -> None:
         raise ValueError("Repository URL must not contain credentials")
 
     if parsed.scheme in ("http", "https", "git", "ssh"):
+        # urlparse folds the scheme's case; git is given the text as typed.
+        if not raw.startswith(f"{parsed.scheme}://"):
+            raise ValueError("Unsupported repository URL scheme")
         host = (parsed.hostname or "").lower()
         # The host is part of the allowlist decision; a URL without one (for
         # example "https:/evil") can be re-interpreted by git as a different
         # destination than urlparse saw, so it is refused outright.
         if not host:
             raise ValueError("Repository URL has no host")
-        allow = _allowed_hosts()
-        if allow and host not in allow:
+        if host not in _allowed_hosts():
             raise ValueError(f"Repo host not allowed: {host}")
         return
     # SCP-like ssh URL: git@github.com:org/repo.git
     scp_like = _SCP_LIKE_URL.match(raw)
     if scp_like:
         host = scp_like.group("host").lower()
-        allow = _allowed_hosts()
-        if allow and host not in allow:
+        if host not in _allowed_hosts():
             raise ValueError(f"Repo host not allowed: {host}")
         return
     raise ValueError("Unsupported repository URL scheme")
@@ -203,6 +212,47 @@ def _git_env() -> dict[str, str]:
         "GIT_ASKPASS": "/bin/true",
         "GIT_CONFIG_NOSYSTEM": "1",
     }
+
+
+# What a scanner may take from the worker's environment: where its own cache
+# and database live, its own settings, and how it reaches the network for a
+# database update. Everything else (database, broker and mail passwords, the
+# encryption key) stays out of a process that reads a hostile repository.
+_SCANNER_ENV_NAMES = frozenset(
+    {
+        "HOME",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+)
+_SCANNER_ENV_PREFIXES = ("SYFT_", "GRYPE_")
+
+# Scanners start here, not in the clone: both read a configuration file from
+# the directory they are started in.
+SCANNER_CWD = "/"
+
+
+def scanner_env() -> dict[str, str]:
+    """A fixed environment for syft and grype, not the worker's full env."""
+
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name in _SCANNER_ENV_NAMES or name.startswith(_SCANNER_ENV_PREFIXES)
+    }
+    env["PATH"] = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    env["LC_ALL"] = "C"
+    env.setdefault("HOME", "/tmp")
+    return env
 
 
 # Commands run with these fixed flags; http.followRedirects=off keeps the

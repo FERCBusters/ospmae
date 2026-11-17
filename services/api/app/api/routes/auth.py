@@ -143,6 +143,11 @@ def login(
         # Its allowance is spent, so it is heard as any other browser.
         device = None
     if device is None:
+        # Looking the cookie up left this request holding a connection, and
+        # the allowance takes its own: let the first go, so sign-ins sent
+        # together each need one connection at a time and cannot hold the
+        # whole pool while they wait for a second.
+        db.rollback()
         allowed, retry = take_rate_limit(
             request_allowance_key("login", request),
             max_attempts=throttle.ADDRESS_ATTEMPTS,
@@ -354,7 +359,9 @@ async def _complete_sso_callback(
         user_id=user.id,
         ttl_seconds=int(settings.session_ttl_seconds),
         auth_method=provider.key,
-        oidc_id_token=id_token,
+        # Kept only to hint the provider's own sign-out; without that
+        # endpoint the token has no use here and is not stored.
+        oidc_id_token=id_token if provider.end_session_endpoint.strip() else None,
     )
     if notice_queued:
         _kick_delivery()
@@ -513,8 +520,9 @@ def logout_redirect(request: Request, db: Session = Depends(get_db)) -> Response
         and tokens_match(supplied, csrf_cookie)
         and (not sid or tokens_match(supplied, csrf_token_for(sid)))
     )
-    if sid and not csrf_ok:
-        # Leave authentication state untouched and land somewhere harmless.
+    if not csrf_ok:
+        # Leave authentication state and every cookie untouched, with or
+        # without a session, and land somewhere harmless.
         return RedirectResponse("/index.html", status_code=302)
 
     auth_method = ""

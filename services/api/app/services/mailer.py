@@ -16,6 +16,17 @@ def smtp_configured() -> bool:
     )
 
 
+def single_line(text: str | None) -> str:
+    """Header text on one line.
+
+    A message header refuses every character str.splitlines() breaks at (CR,
+    LF, VT, FF, the separators FS, GS and RS, NEL, and the Unicode line and
+    paragraph separators), and a refused subject fails the mail on every
+    attempt, so a name that carries one is flattened here.
+    """
+    return " ".join(str(text or "").splitlines()) if text else ""
+
+
 def send_email(*, to_email: str, subject: str, body: str) -> None:
     """Transport used by the notification worker; raises on failure.
 
@@ -64,7 +75,7 @@ def _deliver_email(*, to_email: str, subject: str, body: str) -> None:
     msg = EmailMessage()
     # Subject text often carries user-controlled names; strip CR/LF so the
     # header line stays one line whatever a display name contains.
-    msg["Subject"] = str(subject or "").replace("\r", " ").replace("\n", " ")
+    msg["Subject"] = single_line(subject)
     msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
     msg["To"] = to_addr
     msg.set_content(body)

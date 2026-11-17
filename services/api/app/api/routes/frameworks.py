@@ -717,6 +717,7 @@ def update_framework_node(
 @router.delete("/v1/framework-nodes/{node_id}")
 def delete_framework_node(
     node_id: int,
+    force: bool = Query(False, description="Delete even if projects map to it"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -733,6 +734,22 @@ def delete_framework_node(
     if child:
         raise HTTPException(
             status_code=409, detail="Node has children; delete/move children first"
+        )
+
+    # As for a whole framework: a node that project versions map to goes,
+    # with those mappings, only when the caller says so.
+    mapped_count = (
+        db.query(ProjectVersionFrameworkNode)
+        .filter(ProjectVersionFrameworkNode.framework_node_id == node_id)
+        .count()
+    )
+    if mapped_count and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Node is referenced by {mapped_count} project mappings. "
+                "Retry with ?force=true to delete it and those mappings."
+            ),
         )
 
     db.delete(node)

@@ -8,10 +8,15 @@ from pydantic import BaseModel, Field, StrictInt, field_validator, model_validat
 
 from app.depscan.scan import validate_git_ref_name, validate_repo_url
 from app.security.passwords import MAX_PASSWORD_LENGTH
-from app.security.regex_shape import MAX_PATTERN_CHARS, compile_supplied_pattern
+from app.security.regex_shape import (
+    MAX_IGNORE_PATTERNS,
+    MAX_PATTERN_CHARS,
+    compile_supplied_pattern,
+)
 from app.security.repo_credentials import (
     MAX_TOKEN_CHARS,
     clean_host,
+    clean_repository,
     clean_token,
     clean_username,
 )
@@ -270,6 +275,8 @@ class ProjectCreatePayload(BaseModel):
     repo_private: bool | None = None
     repo_token: str | None = Field(default=None, max_length=MAX_TOKEN_CHARS, repr=False)
     repo_token_host: str | None = Field(default=None, max_length=255)
+    # The one repository the token is for; its host is the token's host.
+    repo_token_repository: str | None = Field(default=None, max_length=600)
     repo_token_username: str | None = Field(default=None, max_length=100)
     supported_profiles: list[str] | None = None
     supported_formats: list[str] | None = None
@@ -343,6 +350,15 @@ class ProjectCreatePayload(BaseModel):
             validate_repo_url(f"https://{host}/")
         return host
 
+    @field_validator("repo_token_repository", mode="before")
+    @classmethod
+    def _validate_repo_token_repository(cls, v):
+        repository = clean_repository(v if v is None else str(v))
+        if repository is not None:
+            # The same host allowlist as every clone.
+            validate_repo_url(repository)
+        return repository
+
     @field_validator("repo_token_username", mode="before")
     @classmethod
     def _validate_repo_token_username(cls, v):
@@ -364,7 +380,11 @@ class ProjectCreatePayload(BaseModel):
         if v is None:
             return None
         if isinstance(v, str):
-            return [line.strip() for line in v.splitlines() if line.strip()]
+            v = [line.strip() for line in v.splitlines() if line.strip()]
+        if isinstance(v, list) and len(v) > MAX_IGNORE_PATTERNS:
+            raise ValueError(
+                f"A project keeps at most {MAX_IGNORE_PATTERNS} ignore patterns"
+            )
         return v
 
     @field_validator(
