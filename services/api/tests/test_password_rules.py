@@ -356,7 +356,10 @@ def test_a_rehash_never_undoes_a_password_changed_meanwhile():
             other.get(User, user.id).password_hash = changed
             other.commit()
 
-        auth._raise_work_factor(db, verified, PASSWORD)
+        assert (
+            auth._raise_work_factor(db, verified, legacy_hash(PASSWORD), PASSWORD)
+            is None
+        )
 
     assert stored_hash(user.id) == changed
 

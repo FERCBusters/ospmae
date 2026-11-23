@@ -85,32 +85,53 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     if user is None or not user.is_active:
         verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
-    if not verify_password(password, user.password_hash):
+    # Read with the row, before the check: checking a password takes long
+    # enough for a change to commit meanwhile, and a later read (a commit
+    # expires the loaded account) would show the changed account.
+    generation = credential_generation(user)
+    verified = generation[0]
+    if not verify_password(password, verified):
         return None
-    if needs_rehash(user.password_hash):
-        _raise_work_factor(db, user, password)
+    if needs_rehash(verified):
+        stronger = _raise_work_factor(db, user, verified, password)
+        if stronger is not None:
+            # The same password, now stored at the current work factor.
+            generation = (stronger, generation[1])
+    user.verified_credential = generation
     return user
 
 
-def _raise_work_factor(db: Session, user: User, password: str) -> None:
-    """Store the proven password at the current work factor, as KEEN does.
+def credential_generation(user: User) -> tuple[str, int]:
+    """The account's password and the version its sessions are issued at.
 
-    The hash is replaced only if it is still the one that was verified, so a
-    password changed meanwhile is never undone. A pending second-factor
-    ceremony made against the previous hash ends with it.
+    A password change, a reset or a second-factor change moves one of them, so
+    a sign-in issues its session, or starts its ceremony, only while the
+    account still has the generation its password check proved.
     """
-    verified = user.password_hash
+    return (user.password_hash, int(user.mfa_version))
+
+
+def _raise_work_factor(
+    db: Session, user: User, verified: str, password: str
+) -> str | None:
+    """Store the proven password at the current work factor, as KEEN does; the
+    new hash, or None when the account's password changed meanwhile.
+
+    The hash is replaced only if it is still ``verified``, the one that was
+    checked, so a password changed meanwhile is never undone. A pending
+    second-factor ceremony made against the previous hash ends with it.
+    """
+    stronger = derive_password_hash(password)
     replaced = (
         db.query(User)
         .filter(User.id == user.id, User.password_hash == verified)
-        .update(
-            {User.password_hash: derive_password_hash(password)},
-            synchronize_session=False,
-        )
+        .update({User.password_hash: stronger}, synchronize_session=False)
     )
     db.commit()
-    if replaced:
-        db.refresh(user)
+    if not replaced:
+        return None
+    db.refresh(user)
+    return stronger
 
 
 def _remote_user_from_headers(

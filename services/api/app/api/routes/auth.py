@@ -28,6 +28,7 @@ from app.security.auth import (
     ROLE_ADMIN,
     authenticate_user,
     clear_session_cookie,
+    credential_generation,
     get_current_user,
     get_password_hash,
     get_user_by_username,
@@ -189,7 +190,9 @@ def login(
         # while /v1/auth/mfa/* runs outside of any session.
         response = mfa.start(db, user, request)
     else:
-        response = complete_local_login(db, user, request)
+        response = complete_local_login(
+            db, user, request, verified_credential=user.verified_credential
+        )
     throttle.set_device_cookie(response, token)
     return response
 
@@ -230,7 +233,32 @@ def complete_local_login(
     *,
     mfa_verified: bool = False,
     verified_version: int | None = None,
+    verified_credential: tuple[str, int] | None = None,
 ):
+    if verified_credential is not None:
+        # A password sign-in proved the account as it was read before the
+        # check. A password change, reset, second-factor change or
+        # deactivation committed since ends this sign-in, as it ends the
+        # account's other sessions: checked under the row lock, so none can
+        # commit before the session is issued.
+        account = (
+            db.query(User)
+            .filter(User.id == user.id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if (
+            account is None
+            or not account.is_active
+            or credential_generation(account) != verified_credential
+        ):
+            db.rollback()
+            record_sign_in(
+                db, request, method="local", outcome="failed", account=account
+            )
+            db.commit()
+            raise HTTPException(status_code=401, detail="Invalid username or password")
     # The account's earlier sessions end only once sign-in is complete, any
     # second factor included: a password alone cannot sign anyone out.
     delete_all_sessions_for_user(db, user.id)
@@ -240,9 +268,14 @@ def complete_local_login(
         ttl_seconds=int(settings.session_ttl_seconds),
         auth_method="local",
         mfa_verified=bool(mfa_verified),
-        mfa_version=int(user.mfa_version)
-        if verified_version is None
-        else int(verified_version),
+        # The version the sign-in proved: a change committed after the check
+        # above (the lock ends with the commit that ends earlier sessions)
+        # moves the account's version on, and this session ends with it.
+        mfa_version=int(verified_version)
+        if verified_version is not None
+        else int(verified_credential[1])
+        if verified_credential is not None
+        else int(user.mfa_version),
     )
 
     # Signing in is complete only here, any second factor included.

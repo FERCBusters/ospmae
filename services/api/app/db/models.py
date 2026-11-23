@@ -64,6 +64,12 @@ class UserPreference(Base):
 
 class User(Base):
     __tablename__ = "users"
+    # Lets the request-scoped attribute below be annotated without mapping it.
+    __allow_unmapped__ = True
+
+    # What a password sign-in proved, read with the row the password was
+    # checked against (security.auth.credential_generation). Never persisted.
+    verified_credential: tuple[str, int] | None = None
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(
