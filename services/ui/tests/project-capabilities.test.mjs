@@ -27,7 +27,7 @@ test("the page opens on the capability treemap of the latest version", async (t)
   assert.ok(
     page
       .asked()
-      .includes("GET /v1/projects/5/graph?version_id=12&framework_id=3"),
+      .includes("GET /api/v1/projects/5/graph?version_id=12&framework_id=3"),
   );
   // Both version pickers offer every version and start on Latest.
   for (const id of ["versionSelect", "depVersionSelect"]) {
@@ -123,7 +123,8 @@ test("choosing another version reloads its graph and details", async (t) => {
   older.links = older.links.slice(0, 1);
   const page = await projectPage(t, {
     api: (method, path) =>
-      path === "/v1/projects/5/graph" && page_version(page_requests) === "11"
+      path === "/api/v1/projects/5/graph" &&
+      page_version(page_requests) === "11"
         ? [200, older]
         : null,
   });
@@ -141,7 +142,7 @@ test("choosing another version reloads its graph and details", async (t) => {
   assert.ok(
     page
       .asked()
-      .includes("GET /v1/projects/5/graph?version_id=11&framework_id=3"),
+      .includes("GET /api/v1/projects/5/graph?version_id=11&framework_id=3"),
   );
   // The older version maps nothing, and borrows nothing from the latest.
   for (const tile of ["Issuer", "Keys", "Wallet2", "Storage"])
@@ -264,13 +265,15 @@ test("a missing or failing project is reported", async (t) => {
   const absent = await projectPage(t, { query: "?id=abc" });
   assert.equal(absent.$("graph").textContent, "Missing or invalid project id");
   assert.equal(
-    absent.asked().filter((r) => r.includes("/v1/projects")).length,
+    absent.asked().filter((r) => r.includes("/api/v1/projects")).length,
     0,
   );
 
   const refused = await projectPage(t, {
     api: (method, path) =>
-      path === "/v1/projects/5" ? [404, { detail: "Project not found" }] : null,
+      path === "/api/v1/projects/5"
+        ? [404, { detail: "Project not found" }]
+        : null,
   });
   assert.equal(refused.$("graph").textContent, "Project not found");
 });
@@ -290,7 +293,9 @@ test("tabs follow the address, older names and the installation's features", asy
   deep.window.dispatchEvent(new deep.window.Event("hashchange"));
   await deep.wait();
   assert.ok(deep.$("changelogTab").classList.contains("active"));
-  assert.ok(deep.asked().includes("GET /v1/projects/5/changelog?limit=100"));
+  assert.ok(
+    deep.asked().includes("GET /api/v1/projects/5/changelog?limit=100"),
+  );
 
   const lean = await projectPage(t, {
     hash: "#dependencies",
@@ -315,7 +320,7 @@ test("tabs follow the address, older names and the installation's features", asy
   assert.ok(lean.$("metadataTab").classList.contains("active"));
   assert.equal(lean.$("manifestExportField").style.display, "none");
   const asked = lean.asked();
-  assert.equal(asked.filter((r) => r.includes("/v1/frameworks")).length, 0);
+  assert.equal(asked.filter((r) => r.includes("/api/v1/frameworks")).length, 0);
   assert.equal(asked.filter((r) => r.includes("dependency-graph")).length, 0);
 });
 
@@ -363,7 +368,8 @@ test("the changelog loads once, when its tab is first opened", async (t) => {
     },
   });
   const loads = () =>
-    page.asked().filter((r) => r.includes("/v1/projects/5/changelog")).length;
+    page.asked().filter((r) => r.includes("/api/v1/projects/5/changelog"))
+      .length;
   assert.equal(loads(), 0);
   await page.click("tabChangelogBtn");
   assert.equal(loads(), 1);
@@ -378,7 +384,9 @@ test("the changelog loads once, when its tab is first opened", async (t) => {
 test("a changelog that fails to load says so", async (t) => {
   const page = await projectPage(t, {
     api: (method, path) =>
-      path === "/v1/projects/5/changelog" ? [500, { detail: "boom" }] : null,
+      path === "/api/v1/projects/5/changelog"
+        ? [500, { detail: "boom" }]
+        : null,
   });
   await page.click("tabChangelogBtn");
   assert.match(

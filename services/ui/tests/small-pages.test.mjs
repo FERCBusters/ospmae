@@ -31,7 +31,7 @@ function inbox(t, options = {}) {
     ...options,
     api: (method, path, body) =>
       options.api?.(method, path, body) ||
-      (path === "/v1/questions/unanswered" ? [200, INBOX] : null),
+      (path === "/api/v1/questions/unanswered" ? [200, INBOX] : null),
   });
 }
 
@@ -68,7 +68,7 @@ test("the inbox lists open questions with links to their projects", async (t) =>
 test("the inbox refreshes on request and on live notices", async (t) => {
   const page = await inbox(t);
   const loads = () =>
-    page.asked().filter((r) => r === "GET /v1/questions/unanswered").length;
+    page.asked().filter((r) => r === "GET /api/v1/questions/unanswered").length;
   assert.equal(loads(), 1);
   await page.click("refreshBtn");
   assert.equal(loads(), 2);
@@ -89,7 +89,7 @@ test("the inbox refreshes on request and on live notices", async (t) => {
 test("an empty inbox, a refusal and a failure each say so", async (t) => {
   const empty = await inbox(t, {
     api: (m, path) =>
-      path === "/v1/questions/unanswered"
+      path === "/api/v1/questions/unanswered"
         ? [200, { items: [], open_count: 0 }]
         : null,
   });
@@ -101,7 +101,7 @@ test("an empty inbox, a refusal and a failure each say so", async (t) => {
 
   const refused = await inbox(t, {
     api: (m, path) =>
-      path === "/v1/questions/unanswered"
+      path === "/api/v1/questions/unanswered"
         ? [403, { detail: "Not permitted to answer project questions" }]
         : null,
   });
@@ -114,7 +114,7 @@ test("an empty inbox, a refusal and a failure each say so", async (t) => {
 
   const broken = await inbox(t, {
     api: (m, path) =>
-      path === "/v1/questions/unanswered"
+      path === "/api/v1/questions/unanswered"
         ? [500, { detail: "Database is down" }]
         : null,
   });
@@ -127,7 +127,7 @@ test("an empty inbox, a refusal and a failure each say so", async (t) => {
     "Not permitted to view the unanswered questions inbox.",
   );
   assert.equal(
-    viewer.asked().filter((r) => r.includes("/v1/questions")).length,
+    viewer.asked().filter((r) => r.includes("/api/v1/questions")).length,
     0,
   );
 });
@@ -136,7 +136,8 @@ test("the inbox leaves when the questions feature is off", async (t) => {
   const page = await inbox(t, { me: account("maintainer", off("questions")) });
   assert.equal(page.navigations(), 1);
   assert.equal(
-    page.asked().filter((r) => r.includes("/v1/questions/unanswered")).length,
+    page.asked().filter((r) => r.includes("/api/v1/questions/unanswered"))
+      .length,
     0,
   );
 });
@@ -215,14 +216,14 @@ function browser(t, options = {}) {
       ...options,
       api: (method, path, body) =>
         options.api?.(method, path, body) ||
-        (path === "/v1/dependencies" ? [200, INDEX] : null),
+        (path === "/api/v1/dependencies" ? [200, INDEX] : null),
     },
   );
 }
 
 const queries = (page) =>
   page.requests
-    .filter(([, path]) => path.startsWith("/v1/dependencies?"))
+    .filter(([, path]) => path.startsWith("/api/v1/dependencies?"))
     .map(([, path]) =>
       Object.fromEntries(new URLSearchParams(path.split("?")[1])),
     );
@@ -306,7 +307,7 @@ test("the browser pages, filters and searches from the first page", async (t) =>
 test("an empty or failing index says so", async (t) => {
   const empty = await browser(t, {
     api: (m, path) =>
-      path === "/v1/dependencies"
+      path === "/api/v1/dependencies"
         ? [200, { dependencies: [], ecosystems: [] }]
         : null,
   });
@@ -319,7 +320,7 @@ test("an empty or failing index says so", async (t) => {
 
   const failing = await browser(t, {
     api: (m, path) =>
-      path === "/v1/dependencies"
+      path === "/api/v1/dependencies"
         ? [500, { detail: "Index unavailable" }]
         : null,
   });
@@ -415,7 +416,7 @@ function detail(t, options = {}) {
       ...options,
       api: (method, path, body) =>
         options.api?.(method, path, body) ||
-        (path.startsWith("/v1/dependencies/") ? [200, DETAIL] : null),
+        (path.startsWith("/api/v1/dependencies/") ? [200, DETAIL] : null),
     },
   );
 }
@@ -431,7 +432,7 @@ test("a long advisory title is shortened, wraps, and opens on request", async (t
   const short = "x".repeat(140);
   const page = await detail(t, {
     api: (method, path) =>
-      path.startsWith("/v1/dependencies/")
+      path.startsWith("/api/v1/dependencies/")
         ? [
             200,
             {
@@ -510,7 +511,7 @@ test("a dependency page shows its users, findings, versions and scope", async (t
   assert.deepEqual(page.errors, []);
   // With an id the browser stands aside for the detail view.
   assert.equal(page.$("dep-browser-main"), null);
-  assert.ok(page.asked().includes("GET /v1/dependencies/101"));
+  assert.ok(page.asked().includes("GET /api/v1/dependencies/101"));
   assert.equal(page.$("depTitle").textContent, "@Inquirer/Confirm@5.1.21");
   assert.equal(
     page.$("depSubtitle").textContent,
@@ -637,7 +638,7 @@ test("a dependency page shows its users, findings, versions and scope", async (t
 test("a dependency nobody uses, with no findings, says so", async (t) => {
   const page = await detail(t, {
     api: (m, path) =>
-      path.startsWith("/v1/dependencies/")
+      path.startsWith("/api/v1/dependencies/")
         ? [
             200,
             {
@@ -682,7 +683,7 @@ test("many users are drawn up to a limit, with a note", async (t) => {
   }));
   const page = await detail(t, {
     api: (m, path) =>
-      path.startsWith("/v1/dependencies/")
+      path.startsWith("/api/v1/dependencies/")
         ? [200, { ...DETAIL, projects }]
         : null,
   });
@@ -703,14 +704,15 @@ test("the dependency page is for administrators and reports failures", async (t)
   );
   assert.equal(viewer.$("depSubtitle").textContent, "Not authorised.");
   assert.equal(
-    viewer.asked().filter((r) => r.startsWith("GET /v1/dependencies/")).length,
+    viewer.asked().filter((r) => r.startsWith("GET /api/v1/dependencies/"))
+      .length,
     0,
   );
 
   let fail = true;
   const page = await detail(t, {
     api: (m, path) =>
-      path.startsWith("/v1/dependencies/")
+      path.startsWith("/api/v1/dependencies/")
         ? fail
           ? [404, { detail: "Dependency not found" }]
           : [200, DETAIL]
@@ -730,7 +732,7 @@ test("the dependency page is for administrators and reports failures", async (t)
   // An id that is not a number or a UUID is never sent to the API.
   const odd = await detail(t, { query: "?id=../../etc" });
   assert.equal(
-    odd.asked().filter((r) => r.startsWith("GET /v1/dependencies/")).length,
+    odd.asked().filter((r) => r.startsWith("GET /api/v1/dependencies/")).length,
     0,
   );
 
@@ -779,7 +781,7 @@ function capability(t, options = {}) {
     ...options,
     api: (method, path, body) =>
       options.api?.(method, path, body) ||
-      (path === "/v1/capabilities/33" ? [200, CAPABILITY] : null),
+      (path === "/api/v1/capabilities/33" ? [200, CAPABILITY] : null),
   });
 }
 
@@ -824,7 +826,7 @@ test("a capability page shows its place in the framework and who maps it", async
 test("an unmapped capability, a missing id and a failure each say so", async (t) => {
   const bare = await capability(t, {
     api: (m, path) =>
-      path === "/v1/capabilities/33"
+      path === "/api/v1/capabilities/33"
         ? [
             200,
             {
@@ -851,14 +853,14 @@ test("an unmapped capability, a missing id and a failure each say so", async (t)
       "Missing capability id.",
     );
     assert.equal(
-      missing.asked().filter((r) => r.includes("/v1/capabilities")).length,
+      missing.asked().filter((r) => r.includes("/api/v1/capabilities")).length,
       0,
     );
   }
 
   const absent = await capability(t, {
     api: (m, path) =>
-      path === "/v1/capabilities/33"
+      path === "/api/v1/capabilities/33"
         ? [404, { detail: "Capability not found" }]
         : null,
   });
@@ -869,7 +871,7 @@ test("an unmapped capability, a missing id and a failure each say so", async (t)
   let down = true;
   const failing = await capability(t, {
     api: (m, path) =>
-      path === "/v1/capabilities/33"
+      path === "/api/v1/capabilities/33"
         ? down
           ? [500, { detail: "Server error" }]
           : [200, CAPABILITY]

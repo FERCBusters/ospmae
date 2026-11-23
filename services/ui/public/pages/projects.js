@@ -188,7 +188,7 @@ function csv() {
 async function refresh() {
   const org = String(el.orgFilter.value || "");
   const url =
-    "/v1/dashboard" +
+    "/api/v1/dashboard" +
     (org ? `?organisation_id=${encodeURIComponent(org)}` : "");
   try {
     const body = await apiFetch(url);
@@ -207,7 +207,7 @@ async function refresh() {
   // roles a form they cannot submit.
   el.newProjectBtn.hidden = !canMaintainProjects();
   try {
-    const orgs = await apiFetch("/v1/organisations");
+    const orgs = await apiFetch("/api/v1/organisations");
     for (const o of orgs) {
       const option = document.createElement("option");
       option.value = o.id;

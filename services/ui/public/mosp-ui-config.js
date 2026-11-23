@@ -19,7 +19,7 @@
       role === "product_owner" ||
       role === "architect";
 
-    // Installation features from /v1/me decide which links the navbar
+    // Installation features from /api/v1/me decide which links the navbar
     // renders; an unknown or missing switch counts as on.
     const features = me?.features || {};
     const featureOn = (key) => features[key] !== false;
@@ -51,9 +51,9 @@
 
     // OSPMAE uses /v1/* (not /api/v1/*)
     auth: {
-      meEndpoint: "/v1/me",
+      meEndpoint: "/api/v1/me",
       loginUrl: "/login.html",
-      logoutEndpoint: "/v1/auth/logout",
+      logoutEndpoint: "/api/v1/auth/logout",
       logoutRedirect: "/login.html",
       accountHref: "/account.html",
     },
@@ -114,7 +114,7 @@
       requireAll: ["feature_frameworks"],
       label: "Framework",
       queryParam: "framework",
-      endpoint: "/v1/frameworks",
+      endpoint: "/api/v1/frameworks",
       // Sized by its longest name within these bounds, as in KEEN, so the
       // picker leaves room for the links on a laptop.
       selectMinChars: 14,
@@ -126,7 +126,7 @@
 
     shortcuts: {
       enabled: true,
-      endpoint: "/v1/me/shortcuts",
+      endpoint: "/api/v1/me/shortcuts",
       label: "Shortcuts",
     },
 
@@ -148,7 +148,7 @@
       requireAll: ["feature_questions"],
       href: "/questions.html",
       title: "Questions",
-      summaryEndpoint: "/v1/questions/unanswered/summary",
+      summaryEndpoint: "/api/v1/questions/unanswered/summary",
       countKey: "open_count",
     },
 
@@ -160,7 +160,7 @@
     },
 
     uiPreferences: {
-      endpoint: "/v1/me/preferences",
+      endpoint: "/api/v1/me/preferences",
       method: "PUT",
       stickyField: "sticky_enabled",
     },

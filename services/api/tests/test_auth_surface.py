@@ -106,6 +106,8 @@ def test_auth_methods_lists_enabled_providers(client, monkeypatch):
         body = r.json()
         assert body["local_enabled"] is True
         assert body["sso_providers"][0]["key"] == "oidc"
+        # The browser starts where nginx serves the API: under /api/.
+        assert body["sso_providers"][0]["start_url"].startswith("/api/v1/auth/")
     finally:
         settings.local_auth_enabled = saved["local"]
         settings.oidc_sso_enabled = saved["sso"]

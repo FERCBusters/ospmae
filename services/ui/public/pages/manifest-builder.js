@@ -548,7 +548,7 @@ async function loadProjects() {
     statuses: selectedStatusesCsv() || undefined,
   };
 
-  const res = await apiFetch(`/v1/projects${toQueryString(query)}`);
+  const res = await apiFetch(`/api/v1/projects${toQueryString(query)}`);
   state.projects = Array.isArray(res?.items) ? res.items : [];
   renderProjects();
 }
@@ -569,7 +569,7 @@ async function exportManifest(format) {
     project_ids: currentSelectedProjectIdsCsv() || undefined,
   };
 
-  const path = `/v1/manifests/export${toQueryString(query)}`;
+  const path = `/api/v1/manifests/export${toQueryString(query)}`;
   const blob = await apiFetch(path, { responseType: "blob" });
   const ext =
     format === "xlsx" ? "xlsx" : format === "markdown" ? "md" : "json";
@@ -596,7 +596,7 @@ async function saveManifest() {
     project_ids: Array.from(state.selectedProjectIds).sort((a, b) => a - b),
   };
 
-  await apiFetch("/v1/manifests", { method: "POST", body: payload });
+  await apiFetch("/api/v1/manifests", { method: "POST", body: payload });
   toast("Manifest saved.");
 }
 
@@ -1294,7 +1294,7 @@ async function loadFrameworkCatalogue() {
   }
 
   const data = await apiFetch(
-    `/v1/frameworks/${fw.id}/catalogue?latest_only=true`,
+    `/api/v1/frameworks/${fw.id}/catalogue?latest_only=true`,
   );
   state.catalogueTree = Array.isArray(data?.tree) ? data.tree : [];
 

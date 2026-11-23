@@ -261,7 +261,8 @@ def me(request: Request, db: Session = Depends(get_db)):
     logout_url = None
     auth_method = _session_auth_method(request, db) or "local"
     if auth_method != "local" and get_sso_provider(auth_method):
-        logout_url = "/v1/auth/logout"
+        # The browser's address: nginx serves the API under /api/.
+        logout_url = "/api/v1/auth/logout"
 
     return {
         "id": user.id,

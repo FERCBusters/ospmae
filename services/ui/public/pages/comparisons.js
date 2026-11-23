@@ -468,7 +468,7 @@
     updateLensUi();
     const params = buildQuery();
     const res = await apiFetch(
-      `/v1/visualisations/bipartite?${params.toString()}`,
+      `/api/v1/visualisations/bipartite?${params.toString()}`,
     );
     state.data = res;
 

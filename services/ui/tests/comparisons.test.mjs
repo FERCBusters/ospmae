@@ -85,10 +85,10 @@ function lensPage(t, options = {}) {
   const api = (method, path, body) => {
     const custom = options.api?.(method, path, body);
     if (custom) return custom;
-    if (path !== "/v1/visualisations/bipartite") return null;
+    if (path !== "/api/v1/visualisations/bipartite") return null;
     const asked = page ? page.requests : [];
     const last = asked
-      .filter(([, p]) => p.startsWith("/v1/visualisations/bipartite"))
+      .filter(([, p]) => p.startsWith("/api/v1/visualisations/bipartite"))
       .pop();
     const lens = last
       ? new URLSearchParams(last[1].split("?")[1]).get("lens")
@@ -103,7 +103,7 @@ function lensPage(t, options = {}) {
 
 const queries = (page) =>
   page.requests
-    .filter(([, p]) => p.startsWith("/v1/visualisations/bipartite"))
+    .filter(([, p]) => p.startsWith("/api/v1/visualisations/bipartite"))
     .map(([, p]) => Object.fromEntries(new URLSearchParams(p.split("?")[1])));
 const labels = (page) => page.texts("#bipartiteGraph svg text");
 const hover = (
@@ -293,7 +293,7 @@ test("clicking a project or an item opens its page", async (t) => {
 test("an empty graph and a failed load each say so", async (t) => {
   const empty = await lensPage(t, {
     api: (m, path) =>
-      path === "/v1/visualisations/bipartite"
+      path === "/api/v1/visualisations/bipartite"
         ? [200, { nodes: [], links: [] }]
         : null,
   });
@@ -306,7 +306,7 @@ test("an empty graph and a failed load each say so", async (t) => {
   let down = true;
   const failing = await lensPage(t, {
     api: (m, path) =>
-      path === "/v1/visualisations/bipartite" && down
+      path === "/api/v1/visualisations/bipartite" && down
         ? [403, { detail: "Admin role required" }]
         : null,
   });
@@ -342,7 +342,7 @@ test("the graph exports as an image or PDF named after the lens and the day", as
   const empty = await lensPage(t, {
     pdf: false,
     api: (m, path) =>
-      path === "/v1/visualisations/bipartite"
+      path === "/api/v1/visualisations/bipartite"
         ? [200, { nodes: [], links: [] }]
         : null,
   });

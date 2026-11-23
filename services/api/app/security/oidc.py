@@ -212,9 +212,10 @@ def _canonical_issuer(provider: SsoProvider) -> str:
 
 
 def provider_start_url(provider: SsoProvider) -> str:
+    # The browser's address: nginx serves the API under /api/, as KEEN's does.
     if provider.legacy_oidc_routes:
-        return "/v1/auth/oidc/start"
-    return f"/v1/auth/sso/{provider.key}/start"
+        return "/api/v1/auth/oidc/start"
+    return f"/api/v1/auth/sso/{provider.key}/start"
 
 
 def configured_sso_providers() -> list[SsoProvider]:

@@ -158,12 +158,12 @@
   }
 
   async function loadMyGroups() {
-    const res = await apiFetch("/v1/me/groups");
+    const res = await apiFetch("/api/v1/me/groups");
     state.userGroups = Array.isArray(res?.items) ? res.items : [];
   }
 
   async function loadManifests() {
-    const res = await apiFetch("/v1/manifests");
+    const res = await apiFetch("/api/v1/manifests");
     state.manifests = Array.isArray(res?.items) ? res.items : [];
   }
 
@@ -226,7 +226,7 @@
   }
 
   async function openManifest(manifestId) {
-    const m = await apiFetch(`/v1/manifests/${manifestId}`);
+    const m = await apiFetch(`/api/v1/manifests/${manifestId}`);
     state.selectedManifest = m;
 
     // Build node paths for display.
@@ -470,7 +470,7 @@
     const pub = document.getElementById("makePublicChk");
     const is_public = !!(pub && pub.checked);
 
-    await apiFetch(`/v1/manifests/${m.id}/sharing`, {
+    await apiFetch(`/api/v1/manifests/${m.id}/sharing`, {
       method: "PATCH",
       // OSPMAE.api() JSON-stringifies bodies for application/json.
       // Do NOT pre-stringify here (it would be stringified again and become a JSON string).
@@ -486,7 +486,7 @@
   async function cloneCurrentManifest() {
     const m = state.selectedManifest;
     if (!m) return;
-    const res = await apiFetch(`/v1/manifests/${m.id}/clone`, {
+    const res = await apiFetch(`/api/v1/manifests/${m.id}/clone`, {
       method: "POST",
       body: {},
     });
@@ -503,7 +503,7 @@
     const m = state.selectedManifest;
     if (!m) return;
     const blob = await apiFetch(
-      `/v1/manifests/${m.id}/export${toQueryString({ format })}`,
+      `/api/v1/manifests/${m.id}/export${toQueryString({ format })}`,
       { responseType: "blob" },
     );
     const base = (m.name || "manifest").replaceAll(/[^a-zA-Z0-9._-]+/g, "-");
@@ -516,7 +516,7 @@
     const m = state.selectedManifest;
     if (!m) return;
     if (!confirm("Delete this saved manifest?")) return;
-    await apiFetch(`/v1/manifests/${m.id}`, { method: "DELETE" });
+    await apiFetch(`/api/v1/manifests/${m.id}`, { method: "DELETE" });
     OSPMAE.toast("Manifest deleted.");
     state.selectedManifest = null;
     await loadManifests();

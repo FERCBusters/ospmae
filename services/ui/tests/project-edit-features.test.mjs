@@ -31,7 +31,7 @@ async function editor(t, features = OFF) {
     url: "https://ospmae.example/project-edit.html?id=1",
     withApp: true,
     api: async (method, path, body) => {
-      if (path === "/v1/me")
+      if (path === "/api/v1/me")
         return [
           200,
           {
@@ -43,15 +43,16 @@ async function editor(t, features = OFF) {
             features,
           },
         ];
-      if (path === "/v1/system/features") return [200, features];
-      if (path.startsWith("/v1/frameworks"))
+      if (path === "/api/v1/system/features") return [200, features];
+      if (path.startsWith("/api/v1/frameworks"))
         return [404, { detail: "Feature not available" }];
-      if (path === "/v1/projects/1" && method === "GET") return [200, PROJECT];
-      if (path === "/v1/projects/1" && method === "PUT") {
+      if (path === "/api/v1/projects/1" && method === "GET")
+        return [200, PROJECT];
+      if (path === "/api/v1/projects/1" && method === "PUT") {
         if (holdSaves) await holdSaves;
         return [200, { ...PROJECT, ...body }];
       }
-      if (path === "/v1/projects/1/versions" && method === "POST")
+      if (path === "/api/v1/projects/1/versions" && method === "POST")
         return [200, { id: 7, project_id: 1, ...body }];
       return [200, {}];
     },
@@ -64,9 +65,9 @@ async function editor(t, features = OFF) {
 test("the editor opens without asking for frameworks", async (t) => {
   const page = await editor(t);
   const asked = page.requests.map(([method, path]) => `${method} ${path}`);
-  assert.ok(asked.includes("GET /v1/projects/1"), asked.join(", "));
+  assert.ok(asked.includes("GET /api/v1/projects/1"), asked.join(", "));
   assert.equal(
-    asked.filter((r) => r.includes("/v1/frameworks")).length,
+    asked.filter((r) => r.includes("/api/v1/frameworks")).length,
     0,
     asked.join(", "),
   );
@@ -84,7 +85,7 @@ test("saving a project works with frameworks and manifests off", async (t) => {
   page.document.getElementById("saveProjectBtn").click();
   for (let i = 0; i < 20; i += 1) await page.settle();
   const saves = page.requests.filter(
-    ([method, path]) => method === "PUT" && path === "/v1/projects/1",
+    ([method, path]) => method === "PUT" && path === "/api/v1/projects/1",
   );
   assert.equal(saves.length, 1);
   assert.equal(saves[0][2].display_name, "Wallet two");
@@ -100,7 +101,7 @@ test("a version saves without capability mappings when frameworks are off", asyn
   const writes = page.requests
     .filter(([method]) => method !== "GET")
     .map(([method, path, body]) => [method, path, body?.version]);
-  assert.deepEqual(writes, [["POST", "/v1/projects/1/versions", "1.0.0"]]);
+  assert.deepEqual(writes, [["POST", "/api/v1/projects/1/versions", "1.0.0"]]);
 });
 
 test("a slow save shows progress and cannot be sent twice", async (t) => {
@@ -119,7 +120,7 @@ test("a slow save shows progress and cannot be sent twice", async (t) => {
   release();
   for (let i = 0; i < 20; i += 1) await page.settle();
   const saves = page.requests.filter(
-    ([method, path]) => method === "PUT" && path === "/v1/projects/1",
+    ([method, path]) => method === "PUT" && path === "/api/v1/projects/1",
   );
   assert.equal(saves.length, 1);
   assert.equal(button.disabled, false);

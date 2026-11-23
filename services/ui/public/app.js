@@ -370,7 +370,7 @@
       return;
     }
 
-    const url = `${wsBaseUrl()}/ws/notifications`;
+    const url = `${wsBaseUrl()}/api/ws/notifications`;
     let ws;
     try {
       ws = new WebSocket(url);
@@ -566,7 +566,7 @@
 
     state.userPreferencesPromise = (async () => {
       try {
-        const pref = await apiRequest("/v1/me/preferences", {
+        const pref = await apiRequest("/api/v1/me/preferences", {
           allowErrorStatuses: [404],
         });
         state.userPreferences = normalizeUserPreferences(pref || null);
@@ -618,7 +618,7 @@
       payload.theme = String(update.theme || "").trim() || null;
     }
 
-    const saved = await apiRequest("/v1/me/preferences", {
+    const saved = await apiRequest("/api/v1/me/preferences", {
       method: "PUT",
       body: payload,
     });
@@ -828,7 +828,7 @@
     if (!force && state.frameworksPromise) return state.frameworksPromise;
 
     state.frameworksPromise = (async () => {
-      const data = await apiRequest("/v1/frameworks");
+      const data = await apiRequest("/api/v1/frameworks");
       state.frameworks = Array.isArray(data?.items) ? data.items : [];
       state.frameworksLoaded = true;
 
@@ -878,7 +878,7 @@
       };
     }
 
-    const data = await apiRequest(`/v1/frameworks/${fwId}/nodes`);
+    const data = await apiRequest(`/api/v1/frameworks/${fwId}/nodes`);
     const tree = Array.isArray(data?.tree) ? data.tree : [];
     const flat = Array.isArray(data?.items) ? data.items : [];
     state.frameworkTreesById.set(fwId, tree);
@@ -911,7 +911,9 @@
 
     state.authInitPromise = (async () => {
       try {
-        const me = await apiRequest("/v1/me", { allowErrorStatuses: [401] });
+        const me = await apiRequest("/api/v1/me", {
+          allowErrorStatuses: [401],
+        });
         if (!me || me.detail) {
           state.me = null;
           state.csrfToken = null;
@@ -930,7 +932,7 @@
         // Load installation feature switches once; optional pages gate
         // themselves on them.
         if (!state.featuresPromise) {
-          state.featuresPromise = apiRequest("/v1/system/features", {
+          state.featuresPromise = apiRequest("/api/v1/system/features", {
             allowErrorStatuses: [404, 401, 403],
           })
             .then((f) => {
@@ -993,7 +995,8 @@
     state.frameworkNodesById = new Map();
     state.frameworkTreesById = new Map();
     const csrf = csrfCookie() || "";
-    window.location.href = "/v1/auth/logout?csrf=" + encodeURIComponent(csrf);
+    window.location.href =
+      "/api/v1/auth/logout?csrf=" + encodeURIComponent(csrf);
   }
 
   async function ensureInitialized() {

@@ -108,7 +108,7 @@ async function load(controls) {
     if (controls.vulnerable.checked) params.set("vulnerable", "true");
     params.set("limit", String(browserPage.limit));
     params.set("offset", String(browserPage.offset));
-    const body = await apiFetch("/v1/dependencies?" + params.toString());
+    const body = await apiFetch("/api/v1/dependencies?" + params.toString());
     // The ecosystem filter offers whatever the server says exists; fill it
     // once on the first page so a user's selection survives pagination.
     if (

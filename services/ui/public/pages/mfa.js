@@ -25,7 +25,7 @@
     return token ? { "X-CSRF-Token": token } : {};
   }
   async function post(path, body = {}) {
-    const response = await fetch("/v1/auth/mfa/" + path, {
+    const response = await fetch("/api/v1/auth/mfa/" + path, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", ...csrfHeader() },

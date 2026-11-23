@@ -79,7 +79,7 @@ async function mfa(t, options = {}) {
       };
     },
     api: async (method, path, body) => {
-      const step = path.replace("/v1/auth/mfa/", "");
+      const step = path.replace("/api/v1/auth/mfa/", "");
       const custom = options.api?.(step, body, server);
       if (custom) return custom;
       if (step === "state") return [200, server];
@@ -149,7 +149,7 @@ async function mfa(t, options = {}) {
     server,
     browser,
     steps: () =>
-      page.requests.map(([, path]) => path.replace("/v1/auth/mfa/", "")),
+      page.requests.map(([, path]) => path.replace("/api/v1/auth/mfa/", "")),
     sent: (step) =>
       page.requests
         .filter(([, path]) => path.endsWith("/" + step))

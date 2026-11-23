@@ -64,7 +64,7 @@ test("signing in opens one notification socket for the session", async (t) => {
   assert.equal(page.me.username, "ada");
   assert.deepEqual(
     page.opened.map((socket) => socket.url),
-    ["wss://ospmae.example/ws/notifications"],
+    ["wss://ospmae.example/api/ws/notifications"],
   );
   // Asking again while it is open reuses it.
   page.app.startNotifications();
@@ -136,8 +136,8 @@ test("the host-bound CSRF cookie is read ahead of one a sibling site could plant
     },
   });
   assert.match(page.window.document.cookie, /ospmae_csrf=planted/);
-  await page.app.api("/v1/thing", { method: "POST", body: { a: 1 } });
-  await page.app.api("/v1/thing", { method: "DELETE" });
+  await page.app.api("/api/v1/thing", { method: "POST", body: { a: 1 } });
+  await page.app.api("/api/v1/thing", { method: "DELETE" });
   const [post, remove] = page.requestHeaders.slice(-2);
   assert.equal(post["X-CSRF-Token"], "issued");
   assert.equal(remove["X-CSRF-Token"], "issued");
@@ -150,7 +150,7 @@ test("the bare CSRF cookie serves an installation that sets no prefix", async (t
       window.document.cookie = "ospmae_csrf=plain";
     },
   });
-  await page.app.api("/v1/thing", { method: "PUT", body: {} });
+  await page.app.api("/api/v1/thing", { method: "PUT", body: {} });
   assert.equal(page.requestHeaders.at(-1)["X-CSRF-Token"], "plain");
 });
 
@@ -160,8 +160,8 @@ test("unsafe requests carry the CSRF cookie in preference to the cached token", 
       window.document.cookie = "ospmae_csrf=from-cookie";
     },
   });
-  await page.app.api("/v1/thing", { method: "POST", body: { a: 1 } });
-  await page.app.api("/v1/thing");
+  await page.app.api("/api/v1/thing", { method: "POST", body: { a: 1 } });
+  await page.app.api("/api/v1/thing");
   const [post, get] = page.requestHeaders.slice(-2);
   assert.equal(post["X-CSRF-Token"], "from-cookie");
   assert.equal(post["Content-Type"], "application/json");
@@ -232,7 +232,7 @@ test("a visitor without a session is sent to sign in, unless the page asks other
 
   const broken = await shell(t, {
     api: (method, path) =>
-      path === "/v1/me" ? [500, { detail: "down" }] : null,
+      path === "/api/v1/me" ? [500, { detail: "down" }] : null,
   });
   assert.equal(broken.me, null);
   assert.equal(broken.navigations(), 1);
@@ -241,7 +241,7 @@ test("a visitor without a session is sent to sign in, unless the page asks other
 test("feature switches that cannot be read leave every area on", async (t) => {
   const page = await shell(t, {
     api: (method, path) =>
-      path === "/v1/system/features" ? [500, { detail: "down" }] : null,
+      path === "/api/v1/system/features" ? [500, { detail: "down" }] : null,
   });
   assert.equal(page.me.username, "ada");
   assert.equal(page.app.featureOn("manifests"), true);
@@ -249,7 +249,9 @@ test("feature switches that cannot be read leave every area on", async (t) => {
 
 test("the site root moves on to the account's start page", async (t) => {
   const prefer = (page) => (method, path) =>
-    path === "/v1/me/preferences" ? [200, { default_start_page: page }] : null;
+    path === "/api/v1/me/preferences"
+      ? [200, { default_start_page: page }]
+      : null;
   const moved = await shell(t, {
     address: "https://ospmae.example/",
     api: prefer("manifests.html"),
@@ -274,7 +276,7 @@ test("the site root moves on to the account's start page", async (t) => {
 test("colours saved under the old capability names still apply", async (t) => {
   const page = await shell(t, {
     api: (method, path) =>
-      path === "/v1/me/preferences"
+      path === "/api/v1/me/preferences"
         ? [
             200,
             {
@@ -314,7 +316,7 @@ test("colours saved under the old capability names still apply", async (t) => {
 test("preferences that fail to load fall back to the defaults", async (t) => {
   const page = await shell(t, {
     api: (method, path) =>
-      path === "/v1/me/preferences" ? [500, { detail: "down" }] : null,
+      path === "/api/v1/me/preferences" ? [500, { detail: "down" }] : null,
   });
   assert.deepEqual(JSON.parse(JSON.stringify(page.app.getUserPreferences())), {
     theme: "ink",
@@ -324,9 +326,9 @@ test("preferences that fail to load fall back to the defaults", async (t) => {
     auto_apply_enabled: true,
   });
   // Loaded once, they are not asked for again.
-  const before = page.sent("GET", "/v1/me/preferences").length;
+  const before = page.sent("GET", "/api/v1/me/preferences").length;
   await page.app.loadUserPreferences();
-  assert.equal(page.sent("GET", "/v1/me/preferences").length, before);
+  assert.equal(page.sent("GET", "/api/v1/me/preferences").length, before);
 });
 
 const TWO = [
@@ -334,7 +336,7 @@ const TWO = [
   { id: 4, machine_name: "alt", display_name: "Alternative" },
 ];
 const two = (method, path) =>
-  path === "/v1/frameworks" ? [200, { items: TWO }] : null;
+  path === "/api/v1/frameworks" ? [200, { items: TWO }] : null;
 
 test("the active framework comes from the address, then what was stored, then the first", async (t) => {
   const first = await shell(t, { api: two });

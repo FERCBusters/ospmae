@@ -67,7 +67,7 @@ const rows = (document) =>
 
 test("the open tab loads every switch with its revision", async (t) => {
   const { document, calls } = await features(t, { responses: [config()] });
-  assert.deepEqual(calls, [["GET", "/v1/admin/features", undefined]]);
+  assert.deepEqual(calls, [["GET", "/api/v1/admin/features", undefined]]);
   assert.deepEqual(rows(document), [
     {
       key: "frameworks",
@@ -151,7 +151,7 @@ test("a change saves against the loaded revision and applies to the page", async
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(calls[1], [
     "PUT",
-    "/v1/admin/features",
+    "/api/v1/admin/features",
     { version: 3, changes: { frameworks: false } },
   ]);
   assert.deepEqual(applied, [saved.enabled]);

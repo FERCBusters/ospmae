@@ -413,7 +413,7 @@
     el.depSubtitle.textContent = "Loading…";
 
     const data = await apiFetch(
-      `/v1/dependencies/${encodeURIComponent(String(state.id))}`,
+      `/api/v1/dependencies/${encodeURIComponent(String(state.id))}`,
     );
     state.data = data;
     render();

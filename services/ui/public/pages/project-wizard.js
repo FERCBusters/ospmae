@@ -79,7 +79,7 @@ async function onStart() {
   await ensureInitialized();
   const datalist = document.getElementById("organisationOptions");
   try {
-    const orgs = await apiFetch("/v1/organisations");
+    const orgs = await apiFetch("/api/v1/organisations");
     if (datalist && Array.isArray(orgs)) {
       for (const org of orgs) {
         const option = document.createElement("option");

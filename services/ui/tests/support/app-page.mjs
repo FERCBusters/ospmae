@@ -309,11 +309,11 @@ export async function appPage(t, htmlName, scripts, options = {}) {
     api: async (method, path, body, query) => {
       const custom = await options.api?.(method, path, body, query);
       if (custom) return custom;
-      if (path === "/v1/me")
+      if (path === "/api/v1/me")
         return me ? [200, me] : [401, { detail: "Not authenticated" }];
-      if (path === "/v1/system/features")
+      if (path === "/api/v1/system/features")
         return [200, (me || account()).features];
-      if (path === "/v1/frameworks") return [200, { items: [FRAMEWORK] }];
+      if (path === "/api/v1/frameworks") return [200, { items: [FRAMEWORK] }];
       return [200, {}];
     },
   });

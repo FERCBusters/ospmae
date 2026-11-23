@@ -76,15 +76,15 @@ function catalogue() {
     answer(method, path, body, hooks = {}) {
       const hooked = hooks[`${method} ${path}`];
       if (hooked) return hooked(body);
-      if (path === "/v1/frameworks" && method === "GET")
+      if (path === "/api/v1/frameworks" && method === "GET")
         return [200, { items: frameworks }];
-      if (path === "/v1/frameworks" && method === "POST") {
+      if (path === "/api/v1/frameworks" && method === "POST") {
         const created = { id: 9, created_by_user_id: 7, ...body };
         frameworks.push(created);
         nodes[9] = [];
         return [200, created];
       }
-      const fw = /^\/v1\/frameworks\/(\d+)$/.exec(path);
+      const fw = /^\/api\/v1\/frameworks\/(\d+)$/.exec(path);
       if (fw && method === "PUT") {
         const row = frameworks.find((f) => f.id === Number(fw[1]));
         Object.assign(row, body);
@@ -97,7 +97,7 @@ function catalogue() {
         );
         return [200, { ok: true }];
       }
-      const list = /^\/v1\/frameworks\/(\d+)\/nodes$/.exec(path);
+      const list = /^\/api\/v1\/frameworks\/(\d+)\/nodes$/.exec(path);
       if (list && method === "GET") {
         const items = nodes[list[1]] || [];
         return [200, { tree: tree(items), items }];
@@ -111,7 +111,7 @@ function catalogue() {
         });
         return [200, { id: 50 }];
       }
-      const node = /^\/v1\/framework-nodes\/(\d+)$/.exec(path);
+      const node = /^\/api\/v1\/framework-nodes\/(\d+)$/.exec(path);
       if (node && method === "PUT") {
         Object.assign(
           nodes[3].find((n) => n.id === Number(node[1])),
@@ -211,7 +211,7 @@ test("choosing a node loads it for editing and bars it from its own subtree", as
   page.$("nodeSort").value = "5";
   page.$("nodeParent").value = "";
   await page.click("nodeSaveBtn");
-  assert.deepEqual(page.sent("PUT", "/v1/framework-nodes/32"), [
+  assert.deepEqual(page.sent("PUT", "/api/v1/framework-nodes/32"), [
     {
       key: "store",
       display_name: "Store",
@@ -226,7 +226,7 @@ test("choosing a node loads it for editing and bars it from its own subtree", as
   ]);
   // The tree is read again and the editor returns to "new".
   assert.equal(
-    page.asked().filter((r) => r === "GET /v1/frameworks/3/nodes").length,
+    page.asked().filter((r) => r === "GET /api/v1/frameworks/3/nodes").length,
     2,
   );
   assert.equal(page.$("nodeKey").value, "");
@@ -259,7 +259,7 @@ test("a new node needs a key, a name and a numeric order", async (t) => {
   page.$("nodeSort").value = "";
   page.$("nodeParent").value = "31";
   await page.click("nodeSaveBtn");
-  assert.deepEqual(page.sent("POST", "/v1/frameworks/3/nodes"), [
+  assert.deepEqual(page.sent("POST", "/api/v1/frameworks/3/nodes"), [
     {
       key: "verifier",
       display_name: "Verifier",
@@ -278,11 +278,11 @@ test("a new node needs a key, a name and a numeric order", async (t) => {
 test("node saves and deletions the API refuses are shown beside the editor", async (t) => {
   const page = await manage(t, {
     hooks: {
-      "PUT /v1/framework-nodes/31": () => [
+      "PUT /api/v1/framework-nodes/31": () => [
         409,
         { detail: "Node key already exists in this framework" },
       ],
-      "DELETE /v1/framework-nodes/30": () => [
+      "DELETE /api/v1/framework-nodes/30": () => [
         409,
         { detail: "Node has children; delete/move children first" },
       ],
@@ -355,7 +355,7 @@ test("a framework is created, opened, renamed and deleted", async (t) => {
   page.$("fwCreateMachine").value = " new ";
   page.$("fwCreateDisplay").value = " New one ";
   await page.click("fwCreateBtn");
-  assert.deepEqual(page.sent("POST", "/v1/frameworks"), [
+  assert.deepEqual(page.sent("POST", "/api/v1/frameworks"), [
     { machine_name: "new", display_name: "New one", description: null },
   ]);
   assert.deepEqual(msg(page, "fwCreateMsg"), [
@@ -377,7 +377,7 @@ test("a framework is created, opened, renamed and deleted", async (t) => {
   page.$("fwDisplay").value = "Renamed";
   page.$("fwDescription").value = " notes ";
   await page.click("fwSaveBtn");
-  assert.deepEqual(page.sent("PUT", "/v1/frameworks/9"), [
+  assert.deepEqual(page.sent("PUT", "/api/v1/frameworks/9"), [
     { machine_name: "new", display_name: "Renamed", description: "notes" },
   ]);
   assert.equal(page.$("fwTitle").textContent, "Renamed");
@@ -394,7 +394,7 @@ test("a framework in use is deleted only after a second confirmation", async (t)
   let forced = 0;
   const page = await manage(t, {
     hooks: {
-      "DELETE /v1/frameworks/3": () => {
+      "DELETE /api/v1/frameworks/3": () => {
         forced += 1;
         return forced === 1
           ? [
@@ -416,7 +416,7 @@ test("a framework in use is deleted only after a second confirmation", async (t)
   );
   assert.deepEqual(
     page.asked().filter((r) => r.startsWith("DELETE")),
-    ["DELETE /v1/frameworks/3", "DELETE /v1/frameworks/3?force=true"],
+    ["DELETE /api/v1/frameworks/3", "DELETE /api/v1/frameworks/3?force=true"],
   );
   assert.deepEqual(page.toasts(), [["success", "Framework deleted"]]);
 });
@@ -425,7 +425,7 @@ test("a node projects map to is deleted only after a second confirmation", async
   let asked = 0;
   const page = await manage(t, {
     hooks: {
-      "DELETE /v1/framework-nodes/33": () => {
+      "DELETE /api/v1/framework-nodes/33": () => {
         asked += 1;
         return asked === 1
           ? [
@@ -449,8 +449,8 @@ test("a node projects map to is deleted only after a second confirmation", async
   assert.deepEqual(
     page.asked().filter((r) => r.startsWith("DELETE")),
     [
-      "DELETE /v1/framework-nodes/33",
-      "DELETE /v1/framework-nodes/33?force=true",
+      "DELETE /api/v1/framework-nodes/33",
+      "DELETE /api/v1/framework-nodes/33?force=true",
     ],
   );
   assert.deepEqual(page.toasts(), [["info", "Node deleted"]]);
@@ -461,7 +461,7 @@ test("declining the second confirmation leaves a mapped node in place", async (t
   const page = await manage(t, {
     confirm: () => answers.shift(),
     hooks: {
-      "DELETE /v1/framework-nodes/33": () => [
+      "DELETE /api/v1/framework-nodes/33": () => [
         409,
         { detail: "Node is referenced by 1 project mappings." },
       ],
@@ -472,7 +472,7 @@ test("declining the second confirmation leaves a mapped node in place", async (t
   assert.equal(page.record.confirms.length, 2);
   assert.deepEqual(
     page.asked().filter((r) => r.startsWith("DELETE")),
-    ["DELETE /v1/framework-nodes/33"],
+    ["DELETE /api/v1/framework-nodes/33"],
   );
   assert.deepEqual(page.toasts(), []);
 });
@@ -480,12 +480,12 @@ test("declining the second confirmation leaves a mapped node in place", async (t
 test("failures while saving or deleting a framework are reported", async (t) => {
   const page = await manage(t, {
     hooks: {
-      "PUT /v1/frameworks/3": () => [
+      "PUT /api/v1/frameworks/3": () => [
         409,
         { detail: "Framework machine_name already exists" },
       ],
-      "DELETE /v1/frameworks/3": () => [500, { detail: "Server error" }],
-      "POST /v1/frameworks": () => [
+      "DELETE /api/v1/frameworks/3": () => [500, { detail: "Server error" }],
+      "POST /api/v1/frameworks": () => [
         409,
         { detail: "Framework machine_name already exists" },
       ],
@@ -539,9 +539,9 @@ test("refresh and reload read the lists again", async (t) => {
   const count = (path) =>
     page.asked().filter((r) => r === `GET ${path}`).length;
   await page.click("refreshFrameworksBtn");
-  assert.equal(count("/v1/frameworks"), 2);
+  assert.equal(count("/api/v1/frameworks"), 2);
   await page.click("fwReloadNodesBtn");
-  assert.equal(count("/v1/frameworks/3/nodes"), 2);
+  assert.equal(count("/api/v1/frameworks/3/nodes"), 2);
 });
 
 test("other roles are turned away, and the page leaves when the feature is off", async (t) => {
@@ -552,7 +552,7 @@ test("other roles are turned away, and the page leaves when the feature is off",
   assert.equal(viewer.navigations(), 1);
   assert.equal(viewer.doc.querySelectorAll("#frameworkList tr").length, 0);
   assert.equal(
-    viewer.asked().filter((r) => r.includes("/v1/frameworks")).length,
+    viewer.asked().filter((r) => r.includes("/api/v1/frameworks")).length,
     0,
   );
 
@@ -561,14 +561,14 @@ test("other roles are turned away, and the page leaves when the feature is off",
   });
   assert.equal(off.navigations(), 1);
   assert.equal(
-    off.asked().filter((r) => r.includes("/v1/frameworks")).length,
+    off.asked().filter((r) => r.includes("/api/v1/frameworks")).length,
     0,
   );
 });
 
 test("with no frameworks the list says so", async (t) => {
   const page = await manage(t, {
-    hooks: { "GET /v1/frameworks": () => [200, { items: [] }] },
+    hooks: { "GET /api/v1/frameworks": () => [200, { items: [] }] },
   });
   assert.equal(
     page.$("frameworkList").textContent.trim(),

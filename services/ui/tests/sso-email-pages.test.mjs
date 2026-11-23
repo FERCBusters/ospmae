@@ -21,19 +21,19 @@ function accountApi(addresses, answers = {}) {
   return async (method, path, body) => {
     const key = `${method} ${path}`;
     if (answers[key]) return answers[key](body);
-    if (path === "/v1/me") return [200, ME];
-    if (path === "/v1/me/sso-emails")
+    if (path === "/api/v1/me") return [200, ME];
+    if (path === "/api/v1/me/sso-emails")
       return [
         200,
         { smtp_configured: true, primary_email: ME.email, addresses },
       ];
-    if (path === "/v1/me/mfa")
+    if (path === "/api/v1/me/mfa")
       return [200, { enabled: false, totp: false, credentials: [] }];
-    if (path === "/v1/me/notifications") return [200, []];
-    if (path === "/v1/me/subscriptions") return [200, { items: [] }];
-    if (path === "/v1/me/shortcuts") return [200, []];
-    if (path === "/v1/me/questions") return [200, { items: [] }];
-    if (path.startsWith("/v1/frameworks")) return [200, { items: [] }];
+    if (path === "/api/v1/me/notifications") return [200, []];
+    if (path === "/api/v1/me/subscriptions") return [200, { items: [] }];
+    if (path === "/api/v1/me/shortcuts") return [200, []];
+    if (path === "/api/v1/me/questions") return [200, { items: [] }];
+    if (path.startsWith("/api/v1/frameworks")) return [200, { items: [] }];
     return [200, {}];
   };
 }
@@ -75,8 +75,8 @@ test("requesting a link and removing an address reach the KEEN routes", async (t
     t,
     [{ email: "work@x.test", verified_at: "2026-11-11T00:00:00" }],
     {
-      "POST /v1/me/sso-emails/request": () => [200, { ok: true }],
-      "POST /v1/me/sso-emails/remove": (body) => {
+      "POST /api/v1/me/sso-emails/request": () => [200, { ok: true }],
+      "POST /api/v1/me/sso-emails/remove": (body) => {
         removed.push(body.email);
         return [200, { ok: true }];
       },
@@ -92,7 +92,7 @@ test("requesting a link and removing an address reach the KEEN routes", async (t
     requests.some(
       ([method, path, body]) =>
         method === "POST" &&
-        path === "/v1/me/sso-emails/request" &&
+        path === "/api/v1/me/sso-emails/request" &&
         body.email === "home@x.test",
     ),
   );
@@ -109,7 +109,7 @@ test("requesting a link and removing an address reach the KEEN routes", async (t
 
 test("a refused request shows the server's reason", async (t) => {
   const page = await account(t, [], {
-    "POST /v1/me/sso-emails/request": () => [
+    "POST /api/v1/me/sso-emails/request": () => [
       403,
       {
         detail:
@@ -158,7 +158,7 @@ test("the confirmation page sends the mailed token once and clears it", async (t
   document.getElementById("confirmEmail").click();
   await page.settle();
   assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
-    ["/v1/me/sso-emails/confirm", { token: "abcdefghijklmnopqrstuvwxyz" }],
+    ["/api/v1/me/sso-emails/confirm", { token: "abcdefghijklmnopqrstuvwxyz" }],
   ]);
   assert.equal(
     document.getElementById("emailProofStatus").textContent,
@@ -202,7 +202,7 @@ test("without a token the page only explains", async (t) => {
 
 test("a password change signs the browser out, as KEEN's does", async (t) => {
   const page = await account(t, [], {
-    "POST /v1/auth/change-password": () => [204, undefined],
+    "POST /api/v1/auth/change-password": () => [204, undefined],
   });
   const { document, window, requests } = page;
   document.getElementById("currentPassword").value = "Old-password-1";
@@ -215,7 +215,7 @@ test("a password change signs the browser out, as KEEN's does", async (t) => {
   assert.ok(
     requests.some(
       ([method, path]) =>
-        method === "POST" && path === "/v1/auth/change-password",
+        method === "POST" && path === "/api/v1/auth/change-password",
     ),
   );
   assert.equal(
@@ -226,7 +226,7 @@ test("a password change signs the browser out, as KEEN's does", async (t) => {
 
 test("the security tab reads the account's second-factor state", async (t) => {
   const page = await account(t, [], {
-    "GET /v1/me/mfa": () => [
+    "GET /api/v1/me/mfa": () => [
       200,
       {
         local_enabled: true,

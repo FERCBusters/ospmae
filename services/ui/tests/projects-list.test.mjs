@@ -65,11 +65,11 @@ function dashboard(t, options = {}) {
     api(method, path, body, query) {
       const failure = world.fail[path];
       if (failure) return [failure[0], { detail: failure[1] }];
-      if (path === "/v1/dashboard") {
+      if (path === "/api/v1/dashboard") {
         world.organisation = query.get("organisation_id");
         return [200, options.empty ? {} : { projects: options.rows || ROWS }];
       }
-      if (path === "/v1/organisations")
+      if (path === "/api/v1/organisations")
         return [200, [{ id: 50, name: "Acme", project_count: 2 }]];
       return null;
     },
@@ -197,7 +197,7 @@ test("the organisation filter narrows the dashboard", async (t) => {
 
 test("the dashboard still loads when organisations cannot be listed", async (t) => {
   const page = await dashboard(t, {
-    fail: { "/v1/organisations": [500, "Organisations unavailable"] },
+    fail: { "/api/v1/organisations": [500, "Organisations unavailable"] },
   });
   assert.equal(page.cells().length, 7);
   assert.deepEqual(page.toasts(), []);
@@ -205,7 +205,7 @@ test("the dashboard still loads when organisations cannot be listed", async (t) 
 
 test("a dashboard that fails to load says why", async (t) => {
   const page = await dashboard(t, {
-    fail: { "/v1/dashboard": [500, "Dashboard unavailable"] },
+    fail: { "/api/v1/dashboard": [500, "Dashboard unavailable"] },
   });
   assert.deepEqual(page.toasts(), [["danger", "Dashboard unavailable"]]);
 });
@@ -244,7 +244,7 @@ test("the CSV export lists what the dashboard shows, with formulas defused", asy
 
 test("an export before anything has loaded holds only the heading", async (t) => {
   const page = await dashboard(t, {
-    fail: { "/v1/dashboard": [500, "Dashboard unavailable"] },
+    fail: { "/api/v1/dashboard": [500, "Dashboard unavailable"] },
   });
   await page.click("exportCsv");
   assert.equal(

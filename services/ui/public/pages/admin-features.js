@@ -73,7 +73,7 @@
       show(`Saving ${item.label}`, "info");
       render();
       try {
-        config = await OSPMAE.api("/v1/admin/features", {
+        config = await OSPMAE.api("/api/v1/admin/features", {
           method: "PUT",
           body: { version: config.version, changes: { [item.key]: checked } },
         });
@@ -90,7 +90,7 @@
           "danger",
         );
         try {
-          config = await OSPMAE.api("/v1/admin/features");
+          config = await OSPMAE.api("/api/v1/admin/features");
         } catch (_) {
           // Keep the last confirmed values.
         }
@@ -110,7 +110,7 @@
       if (config) render();
       show("Loading feature settings", "info");
       try {
-        config = await OSPMAE.api("/v1/admin/features");
+        config = await OSPMAE.api("/api/v1/admin/features");
         status.hidden = true;
       } catch (error) {
         show(

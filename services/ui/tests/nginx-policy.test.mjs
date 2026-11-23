@@ -98,8 +98,7 @@ function locationBody(opening) {
 
 test("identity headers a client sends never reach the API", () => {
   for (const opening of [
-    "location ^~ /v1/ {",
-    "location ^~ /ws/ {",
+    "location ^~ /api/ {",
     "location = /_auth_check {",
     "location = /_auth_check_admin {",
   ]) {
@@ -114,18 +113,26 @@ test("identity headers a client sends never reach the API", () => {
   // Every place that clears one clears them all.
   for (const header of IDENTITY_HEADERS) {
     const cleared = conf.split(`proxy_set_header ${header} "";`).length - 1;
-    assert.equal(cleared, 4, header);
+    assert.equal(cleared, 3, header);
   }
 });
 
 test("an API path is always proxied and never cached, whatever it ends in", () => {
-  // A prefix location marked ^~ is not handed to a regular-expression
-  // location, so /v1/x.html is an API request, not a gated page.
-  assert.ok(server.includes("location ^~ /v1/ {"));
-  assert.ok(server.includes("location ^~ /ws/ {"));
-  assert.ok(!/location \/(v1|ws)\/ \{/.test(server));
+  // As in KEEN, the API and its socket are served under /api/. A prefix
+  // location marked ^~ is not handed to a regular-expression location, so
+  // /api/v1/x.html is an API request, not a gated page.
+  assert.ok(server.includes("location ^~ /api/ {"));
+  assert.ok(!/location \^?~? ?\/(v1|ws)\/ \{/.test(server));
+  // The API is sent the target as the browser sent it, less the prefix; a
+  // target that only normalises to /api/ maps to nothing and is refused.
+  assert.ok(conf.includes('"~^/api(/.*)$" $1;'));
+  const api = locationBody("location ^~ /api/ {");
+  assert.ok(api.includes('if ($ospmae_api_target = "") {\n      return 400;'));
+  assert.ok(api.includes("proxy_pass $ospmae_api$ospmae_api_target;"));
+  assert.ok(api.includes("proxy_set_header Upgrade $ospmae_upgrade;"));
   // nginx applies the first matching pattern of a map: the API rule comes
-  // before the image-suffix rule that would otherwise make /v1/x.png public.
+  // before the image-suffix rule that would otherwise make /api/v1/x.png
+  // public, and the socket's rule before the API's.
   const policy = conf.slice(conf.indexOf("map $uri $ospmae_cache_control"));
   const body = policy.slice(0, policy.indexOf("\n}"));
   const patterns = body
@@ -135,8 +142,8 @@ test("an API path is always proxied and never cached, whatever it ends in", () =
       (line) => line && !line.startsWith("#") && !line.startsWith("map "),
     );
   assert.equal(patterns[0], 'default "";');
-  assert.equal(patterns[1], '~^/v1/ "no-store";');
-  assert.equal(patterns[2], '~^/ws/ "";');
+  assert.equal(patterns[1], '~^/api/ws/ "";');
+  assert.equal(patterns[2], '~^/api/ "no-store";');
   const images = patterns.findIndex((line) => line.includes("png|jpe?g"));
   assert.ok(images > 2);
   assert.match(patterns[images], /"public, max-age=86400";$/);

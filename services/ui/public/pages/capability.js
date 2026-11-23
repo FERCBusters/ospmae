@@ -239,7 +239,7 @@
   async function load() {
     if (!state.id) throw new Error("Missing capability id");
     const data = await apiFetch(
-      `/v1/capabilities/${encodeURIComponent(String(state.id))}`,
+      `/api/v1/capabilities/${encodeURIComponent(String(state.id))}`,
     );
     state.data = data;
     if (el.notFound) el.notFound.style.display = "none";

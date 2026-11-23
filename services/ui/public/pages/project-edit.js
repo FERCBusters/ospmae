@@ -418,7 +418,7 @@
     const wanted = !!el.release_auto_publish.checked;
     el.release_auto_publish.disabled = true;
     try {
-      const updated = await apiFetch(`/v1/projects/${project.id}`, {
+      const updated = await apiFetch(`/api/v1/projects/${project.id}`, {
         method: "PUT",
         body: { release_auto_publish: wanted },
       });
@@ -972,7 +972,7 @@
     }
 
     const res = await apiFetch(
-      `/v1/project-versions/${versionId}/framework-nodes${toQueryString({ framework_id: state.activeFramework.id })}`,
+      `/api/v1/project-versions/${versionId}/framework-nodes${toQueryString({ framework_id: state.activeFramework.id })}`,
     );
     const nodeIds = Array.isArray(res?.node_ids) ? res.node_ids : [];
     state.selectedNodeIds = new Set(nodeIds.map((n) => Number(n)));
@@ -1017,7 +1017,7 @@
   function fetchProject(projectId) {
     const fwId = state.activeFramework?.id;
     return apiFetch(
-      `/v1/projects/${projectId}${toQueryString({ framework_id: fwId || undefined })}`,
+      `/api/v1/projects/${projectId}${toQueryString({ framework_id: fwId || undefined })}`,
     );
   }
 
@@ -1094,7 +1094,7 @@
     let projectId;
     if (isUpdate) {
       const updated = await apiFetch(
-        `/v1/projects/${state.editingProject.id}`,
+        `/api/v1/projects/${state.editingProject.id}`,
         {
           method: "PUT",
           // app.js apiRequest JSON-encodes plain objects automatically.
@@ -1106,7 +1106,7 @@
       projectId = updated.id;
       OSPMAE.toast("Project updated.");
     } else {
-      const created = await apiFetch("/v1/projects", {
+      const created = await apiFetch("/api/v1/projects", {
         method: "POST",
         body: payload,
       });
@@ -1132,7 +1132,7 @@
       !confirm("Delete this project and all versions? This cannot be undone.")
     )
       return;
-    await apiFetch(`/v1/projects/${state.editingProject.id}`, {
+    await apiFetch(`/api/v1/projects/${state.editingProject.id}`, {
       method: "DELETE",
     });
     OSPMAE.toast("Project deleted.");
@@ -1173,7 +1173,7 @@
     let versionId = state.editingVersion?.id;
 
     if (isUpdate) {
-      const updated = await apiFetch(`/v1/project-versions/${versionId}`, {
+      const updated = await apiFetch(`/api/v1/project-versions/${versionId}`, {
         method: "PUT",
         body: payload,
       });
@@ -1182,7 +1182,7 @@
       OSPMAE.toast("Version updated.");
     } else {
       const created = await apiFetch(
-        `/v1/projects/${state.editingProject.id}/versions`,
+        `/api/v1/projects/${state.editingProject.id}/versions`,
         {
           method: "POST",
           body: payload,
@@ -1199,7 +1199,7 @@
 
     // Persist node mappings for the current framework.
     if (mapsCapabilities) {
-      await apiFetch(`/v1/project-versions/${versionId}/framework-nodes`, {
+      await apiFetch(`/api/v1/project-versions/${versionId}/framework-nodes`, {
         method: "PUT",
         body: {
           framework_id: state.activeFramework.id,
@@ -1216,7 +1216,7 @@
   async function deleteVersion() {
     if (!state.editingVersion?.id) return;
     if (!confirm("Delete this version? This cannot be undone.")) return;
-    await apiFetch(`/v1/project-versions/${state.editingVersion.id}`, {
+    await apiFetch(`/api/v1/project-versions/${state.editingVersion.id}`, {
       method: "DELETE",
     });
     OSPMAE.toast("Version deleted.");

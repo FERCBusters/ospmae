@@ -48,7 +48,7 @@ docker compose up --build
 
 The services:
 
-- `component-ui` - nginx serving the built UI, proxying `/v1/` and `/ws/` to the API, adding the security headers and cache policy from `services/ui/nginx/default.conf`.
+- `component-ui` - nginx serving the built UI, proxying `/api/` to the API (`/api/v1/...` and the notification socket at `/api/ws/notifications`, as in KEEN), adding the security headers and cache policy from `services/ui/nginx/default.conf`.
 - `component-api` - the FastAPI application (uvicorn) alongside Celery workers and a beat scheduler.
 - `postgres` / `valkey` - catalogue storage and the Celery broker.
 

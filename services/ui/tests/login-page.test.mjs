@@ -18,11 +18,11 @@ async function signIn(
             ? undefined
             : JSON.parse(JSON.stringify(options.body));
         calls.push([options.method || "GET", path, body]);
-        if (path === "/v1/auth/methods") {
+        if (path === "/api/v1/auth/methods") {
           if (methods instanceof Error) throw methods;
           return structuredClone(methods);
         }
-        if (path === "/v1/me") {
+        if (path === "/api/v1/me") {
           if (me instanceof Error) throw me;
           return me;
         }
@@ -64,8 +64,8 @@ test("the page starts with no message and asks for the sign-in methods", async (
   assert.deepEqual(
     calls.map(([method, path]) => [method, path]),
     [
-      ["GET", "/v1/auth/methods"],
-      ["GET", "/v1/me"],
+      ["GET", "/api/v1/auth/methods"],
+      ["GET", "/api/v1/me"],
     ],
   );
   assert.ok(document.getElementById("ssoSection").classList.contains("d-none"));
@@ -92,7 +92,7 @@ test("providers become buttons whose labels are text, never markup", async (t) =
         {
           key: "github",
           label: "GitHub",
-          start_url: "/v1/auth/sso/github/start",
+          start_url: "/api/v1/auth/sso/github/start",
         },
         { key: "corp", label: '<img src=x onerror="alert(1)">' },
       ],
@@ -158,7 +158,7 @@ test("a refused sign-in shows the server's reason", async (t) => {
   await submit(page, " alice ", "pw");
   assert.deepEqual(page.calls.at(-1), [
     "POST",
-    "/v1/auth/login",
+    "/api/v1/auth/login",
     { username: "alice", password: "pw" },
   ]);
   assert.deepEqual(message(page.document), {
@@ -201,7 +201,7 @@ test("a successful sign-in says so and moves on once", async (t) => {
   await submit(page, " alice ", "pw");
   assert.deepEqual(page.calls.at(-1), [
     "POST",
-    "/v1/auth/login",
+    "/api/v1/auth/login",
     { username: "alice", password: "pw" },
   ]);
   assert.deepEqual(message(page.document), {

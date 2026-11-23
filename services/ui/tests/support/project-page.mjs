@@ -328,19 +328,20 @@ export async function projectPage(t, options = {}) {
     api: async (method, path, body) => {
       const custom = await options.api?.(method, path, body, answers);
       if (custom) return custom;
-      if (path === "/v1/me") return [200, me];
-      if (path === "/v1/system/features") return [200, me.features];
-      if (path === "/v1/frameworks") return [200, { items: [FRAMEWORK] }];
-      if (path === "/v1/projects/5" && method === "GET")
+      if (path === "/api/v1/me") return [200, me];
+      if (path === "/api/v1/system/features") return [200, me.features];
+      if (path === "/api/v1/frameworks") return [200, { items: [FRAMEWORK] }];
+      if (path === "/api/v1/projects/5" && method === "GET")
         return [200, give(answers.project)];
-      if (path === "/v1/projects/5/graph") return [200, give(answers.graph)];
-      if (path === "/v1/projects/5/dependency-graph")
+      if (path === "/api/v1/projects/5/graph")
+        return [200, give(answers.graph)];
+      if (path === "/api/v1/projects/5/dependency-graph")
         return [200, give(answers.dependencies)];
-      if (path === "/v1/projects/5/questions" && method === "GET")
+      if (path === "/api/v1/projects/5/questions" && method === "GET")
         return [200, give(answers.questions)];
-      if (path === "/v1/projects/5/changelog")
+      if (path === "/api/v1/projects/5/changelog")
         return [200, give(answers.changelog)];
-      if (path === "/v1/projects/5/subscription" && method === "GET")
+      if (path === "/api/v1/projects/5/subscription" && method === "GET")
         return [200, give(answers.subscription)];
       return [200, {}];
     },

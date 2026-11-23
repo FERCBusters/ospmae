@@ -75,7 +75,7 @@ async function load() {
   }
 
   try {
-    const data = await apiFetch("/v1/questions/unanswered", {
+    const data = await apiFetch("/api/v1/questions/unanswered", {
       allowErrorStatuses: [403],
     });
     if (data?.detail) {

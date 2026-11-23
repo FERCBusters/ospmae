@@ -85,7 +85,7 @@ test("an engineer reads threads, asks, and replies to their own", async (t) => {
   assert.deepEqual(posted, []); // an empty reply is not sent
   reply.querySelector("textarea").value = "  Thanks  ";
   await submit(page, reply);
-  assert.deepEqual(posted, [["/v1/questions/9/reply", { body: "Thanks" }]]);
+  assert.deepEqual(posted, [["/api/v1/questions/9/reply", { body: "Thanks" }]]);
 
   page.$("askQuestionBody").value = "   ";
   await submit(page, page.$("askQuestionForm"));
@@ -93,7 +93,7 @@ test("an engineer reads threads, asks, and replies to their own", async (t) => {
   page.$("askQuestionBody").value = "How are keys rotated?";
   await submit(page, page.$("askQuestionForm"));
   assert.deepEqual(posted[1], [
-    "/v1/projects/5/questions",
+    "/api/v1/projects/5/questions",
     { body: "How are keys rotated?" },
   ]);
   assert.equal(page.$("askQuestionBody").value, "");
@@ -103,7 +103,7 @@ test("an engineer reads threads, asks, and replies to their own", async (t) => {
   ]);
   // Each post reloads the threads.
   assert.equal(
-    page.asked().filter((r) => r === "GET /v1/projects/5/questions").length,
+    page.asked().filter((r) => r === "GET /api/v1/projects/5/questions").length,
     3,
   );
 });
@@ -133,7 +133,7 @@ test("an answerer may reply everywhere but not ask", async (t) => {
 test("failures to load or post questions are reported", async (t) => {
   const failing = await questionsTab(t, {
     api: (method, path) =>
-      path === "/v1/projects/5/questions" && method === "GET"
+      path === "/api/v1/projects/5/questions" && method === "GET"
         ? [500, { detail: "Questions are unavailable" }]
         : null,
   });
@@ -161,7 +161,7 @@ test("failures to load or post questions are reported", async (t) => {
 test("a live notice refreshes open questions and marks hidden ones stale", async (t) => {
   const page = await questionsTab(t, { answers: { questions: THREADS } });
   const loads = () =>
-    page.asked().filter((r) => r === "GET /v1/projects/5/questions").length;
+    page.asked().filter((r) => r === "GET /api/v1/projects/5/questions").length;
   const notify = (detail) => {
     page.window.dispatchEvent(
       new page.window.CustomEvent("ospmae-notification", { detail }),
@@ -192,7 +192,7 @@ test("subscribing opens the choices and saves them", async (t) => {
   const sent = [];
   const page = await projectPage(t, {
     api: (method, path, body) => {
-      if (path === "/v1/projects/5/subscription" && method === "POST") {
+      if (path === "/api/v1/projects/5/subscription" && method === "POST") {
         sent.push(body);
         return [
           200,
@@ -255,7 +255,7 @@ test("an existing subscription shows its choices and can be removed", async (t) 
   assert.equal(page.$("subNotifyQuestions").checked, true);
   assert.equal(page.$("subscriptionUnsubscribeBtn").style.display, "");
   await page.click("subscriptionUnsubscribeBtn");
-  assert.ok(page.asked().includes("DELETE /v1/projects/5/subscription"));
+  assert.ok(page.asked().includes("DELETE /api/v1/projects/5/subscription"));
   assert.equal(page.$("subscribeBtn").textContent.trim(), "Subscribe");
   assert.equal(page.$("subscriptionModal").classList.contains("show"), false);
   assert.deepEqual(page.toasts(), [["success", "Unsubscribed"]]);
@@ -264,7 +264,7 @@ test("an existing subscription shows its choices and can be removed", async (t) 
 test("subscription failures explain themselves, with a tip about e-mail", async (t) => {
   const page = await projectPage(t, {
     api: (method, path) => {
-      if (path !== "/v1/projects/5/subscription") return null;
+      if (path !== "/api/v1/projects/5/subscription") return null;
       if (method === "POST")
         return [
           400,
@@ -288,7 +288,7 @@ test("subscription failures explain themselves, with a tip about e-mail", async 
 
   const blocked = await projectPage(t, {
     api: (method, path) =>
-      path === "/v1/projects/5/subscription"
+      path === "/api/v1/projects/5/subscription"
         ? [500, { detail: "Subscriptions are down" }]
         : null,
   });
@@ -311,7 +311,10 @@ test("without the modal markup the button toggles the subscription directly", as
   assert.equal(page.$("subscribeBtn").textContent.trim(), "Subscribe");
   assert.deepEqual(
     page.asked().filter((r) => r.includes("subscription")),
-    ["POST /v1/projects/5/subscription", "DELETE /v1/projects/5/subscription"],
+    [
+      "POST /api/v1/projects/5/subscription",
+      "DELETE /api/v1/projects/5/subscription",
+    ],
   );
   assert.deepEqual(page.toasts(), [
     ["success", "Subscribed"],
@@ -322,7 +325,7 @@ test("without the modal markup the button toggles the subscription directly", as
     setup: (window) =>
       window.document.getElementById("subscriptionModal").remove(),
     api: (method, path) =>
-      path === "/v1/projects/5/subscription"
+      path === "/api/v1/projects/5/subscription"
         ? [400, { detail: "No email on file" }]
         : null,
   });
@@ -336,7 +339,7 @@ test("without the modal markup the button toggles the subscription directly", as
 test("manifests export for the chosen version in each format", async (t) => {
   const page = await projectPage(t, {
     api: (method, path) =>
-      path === "/v1/projects/5/manifest/export" ? [200, "file-body"] : null,
+      path === "/api/v1/projects/5/manifest/export" ? [200, "file-body"] : null,
   });
   assert.equal(page.$("manifestExportField").style.display, "");
   assert.equal(
@@ -376,13 +379,13 @@ test("a manifest is saved under the given or suggested name", async (t) => {
   const saved = [];
   const page = await projectPage(t, {
     api: (method, path, body) => {
-      if (path === "/v1/projects/5/manifest/save") {
+      if (path === "/api/v1/projects/5/manifest/save") {
         saved.push(body);
         return saved.length === 3
           ? [403, { detail: "Not allowed" }]
           : [200, { name: body.name }];
       }
-      if (path === "/v1/projects/5/manifest/export")
+      if (path === "/api/v1/projects/5/manifest/export")
         return [500, { detail: "Export failed" }];
       return null;
     },
@@ -403,7 +406,7 @@ test("a manifest is saved under the given or suggested name", async (t) => {
     page
       .asked()
       .includes(
-        "POST /v1/projects/5/manifest/save?framework_id=3&version_id=12",
+        "POST /api/v1/projects/5/manifest/save?framework_id=3&version_id=12",
       ),
   );
   // A name the reader typed survives a change of version; a blank one is suggested.

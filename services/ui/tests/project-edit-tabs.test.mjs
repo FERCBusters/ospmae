@@ -34,7 +34,7 @@ async function editor(
     url: `https://ospmae.example/${url}`,
     withApp: true,
     api: async (method, path, body) => {
-      if (path === "/v1/me")
+      if (path === "/api/v1/me")
         return [
           200,
           {
@@ -46,11 +46,12 @@ async function editor(
             features: FEATURES,
           },
         ];
-      if (path === "/v1/system/features") return [200, FEATURES];
-      if (path.startsWith("/v1/frameworks"))
+      if (path === "/api/v1/system/features") return [200, FEATURES];
+      if (path.startsWith("/api/v1/frameworks"))
         return [404, { detail: "Feature not available" }];
-      if (path === "/v1/projects/1" && method === "GET") return [200, project];
-      if (path === "/v1/projects/1" && method === "PUT")
+      if (path === "/api/v1/projects/1" && method === "GET")
+        return [200, project];
+      if (path === "/api/v1/projects/1" && method === "PUT")
         return put ? put(body) : [200, { ...project, ...body }];
       return [200, {}];
     },
@@ -142,7 +143,7 @@ test("the automatic-publishing switch saves on its own", async (t) => {
   const saves = page.requests.filter(([method]) => method === "PUT");
   // Only the switch travels: the project form is not saved with it.
   assert.deepEqual(saves, [
-    ["PUT", "/v1/projects/1", { release_auto_publish: true }],
+    ["PUT", "/api/v1/projects/1", { release_auto_publish: true }],
   ]);
   assert.equal(toggle.checked, true);
   assert.equal(toggle.disabled, false);

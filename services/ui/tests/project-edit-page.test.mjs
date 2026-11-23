@@ -93,27 +93,27 @@ function editor(t, options = {}) {
   const api = (method, path, body, query) => {
     const failure = world.fail[`${method} ${path}`];
     if (failure) return [failure[0], { detail: failure[1] }];
-    if (path === "/v1/frameworks")
+    if (path === "/api/v1/frameworks")
       return [200, { items: options.frameworks || FRAMEWORKS }];
-    if (/^\/v1\/frameworks\/\d+\/nodes$/.test(path))
+    if (/^\/api\/v1\/frameworks\/\d+\/nodes$/.test(path))
       return [200, path.includes("/3/") ? { tree: TREE, items: FLAT } : {}];
-    if (path === "/v1/projects" && method === "POST") {
+    if (path === "/api/v1/projects" && method === "POST") {
       world.project = { id: 9, versions: [], ...body };
       return [201, world.project];
     }
-    if (/^\/v1\/projects\/\d+$/.test(path)) {
+    if (/^\/api\/v1\/projects\/\d+$/.test(path)) {
       if (method === "PUT") Object.assign(world.project, body);
       if (method === "GET")
         world.asked = [...(world.asked || []), query.get("framework_id")];
       return [200, world.project];
     }
-    if (/^\/v1\/projects\/\d+\/versions$/.test(path)) {
+    if (/^\/api\/v1\/projects\/\d+\/versions$/.test(path)) {
       const created = { id: 20, ...body };
       world.project.versions.push(created);
       return [201, created];
     }
     const nodes = path.match(
-      /^\/v1\/project-versions\/(\d+)\/framework-nodes$/,
+      /^\/api\/v1\/project-versions\/(\d+)\/framework-nodes$/,
     );
     if (nodes) {
       if (method === "PUT") world.mapped[nodes[1]] = body.node_ids;
@@ -124,7 +124,7 @@ function editor(t, options = {}) {
           : { node_ids: world.mapped[nodes[1]] || [] },
       ];
     }
-    const version = path.match(/^\/v1\/project-versions\/(\d+)$/);
+    const version = path.match(/^\/api\/v1\/project-versions\/(\d+)$/);
     if (version) {
       const id = Number(version[1]);
       const stored = world.project.versions.find((v) => v.id === id);
@@ -236,7 +236,7 @@ test("saving sends the whole form, without branch or token settings that are off
   page.$("tracked_repo_url").value = "half typed";
   page.$("repo_token").value = "left over";
   await page.click("saveProjectBtn");
-  assert.deepEqual(page.sent("PUT", "/v1/projects/1"), [
+  assert.deepEqual(page.sent("PUT", "/api/v1/projects/1"), [
     {
       machine_name: "wallet",
       display_name: "Wallet Kit 2",
@@ -270,7 +270,7 @@ test("an ignore rule that is not a regular expression stops the save", async (t)
   const page = await editor(t);
   page.$("release_rss_ignore_patterns").value = "regex:([a-z";
   await page.click("saveProjectBtn");
-  assert.deepEqual(page.sent("PUT", "/v1/projects/1"), []);
+  assert.deepEqual(page.sent("PUT", "/api/v1/projects/1"), []);
   const [[level, text]] = page.toasts();
   assert.equal(level, "warning");
   assert.match(text, /^Invalid release ignore regex "\(\[a-z": /);
@@ -278,7 +278,7 @@ test("an ignore rule that is not a regular expression stops the save", async (t)
 
 test("a refused save is reported", async (t) => {
   const page = await editor(t, {
-    fail: { "PUT /v1/projects/1": [409, "machine_name already exists"] },
+    fail: { "PUT /api/v1/projects/1": [409, "machine_name already exists"] },
   });
   await page.click("saveProjectBtn");
   assert.deepEqual(page.toasts(), [["danger", "machine_name already exists"]]);
@@ -301,7 +301,7 @@ test("tracking a branch swaps the release fields for required branch fields", as
   page.$("tracked_branch").value = "main";
   page.$("branch_poll_interval_hours").value = "6";
   await page.click("saveProjectBtn");
-  const sent = page.sent("PUT", "/v1/projects/1")[0];
+  const sent = page.sent("PUT", "/api/v1/projects/1")[0];
   assert.deepEqual(
     [
       sent.track_branch,
@@ -343,7 +343,7 @@ test("a private repository asks for its address and a token, suggested from what
   page.$("repo_token").value = " secret ";
   page.$("repo_token_username").value = " bot ";
   await page.click("saveProjectBtn");
-  const sent = page.sent("PUT", "/v1/projects/1")[0];
+  const sent = page.sent("PUT", "/api/v1/projects/1")[0];
   assert.deepEqual(
     [
       sent.repo_private,
@@ -411,7 +411,7 @@ test("a saved token is kept unless the repository changes", async (t) => {
   );
 
   await page.click("saveProjectBtn");
-  const sent = page.sent("PUT", "/v1/projects/1")[0];
+  const sent = page.sent("PUT", "/api/v1/projects/1")[0];
   assert.equal(
     sent.repo_token_repository,
     "https://code.example.net/acme/other",
@@ -495,11 +495,11 @@ test("a new project needs its names, then opens for editing once created", async
     ["warning", "machine_name is required"],
     ["warning", "display_name is required"],
   ]);
-  assert.deepEqual(page.sent("POST", "/v1/projects"), []);
+  assert.deepEqual(page.sent("POST", "/api/v1/projects"), []);
 
   page.$("display_name").value = "Fresh";
   await page.click("saveProjectBtn");
-  const [sent] = page.sent("POST", "/v1/projects");
+  const [sent] = page.sent("POST", "/api/v1/projects");
   assert.deepEqual(
     [
       sent.machine_name,
@@ -525,16 +525,16 @@ test("deleting the project asks first and returns to the catalogue", async (t) =
   assert.deepEqual(kept.record.confirms, [
     "Delete this project and all versions? This cannot be undone.",
   ]);
-  assert.deepEqual(kept.sent("DELETE", "/v1/projects/1"), []);
+  assert.deepEqual(kept.sent("DELETE", "/api/v1/projects/1"), []);
 
   const page = await editor(t);
   await page.click("deleteProjectBtn");
-  assert.deepEqual(page.sent("DELETE", "/v1/projects/1"), [undefined]);
+  assert.deepEqual(page.sent("DELETE", "/api/v1/projects/1"), [undefined]);
   assert.deepEqual(page.toasts(), [["info", "Project deleted."]]);
   assert.equal(page.navigations(), 1);
 
   const refused = await editor(t, {
-    fail: { "DELETE /v1/projects/1": [403, "Only owners may delete"] },
+    fail: { "DELETE /api/v1/projects/1": [403, "Only owners may delete"] },
   });
   await refused.click("deleteProjectBtn");
   assert.deepEqual(refused.toasts(), [["danger", "Only owners may delete"]]);
@@ -551,7 +551,7 @@ test("only project maintainers reach the editor", async (t) => {
 
 test("a project that cannot be read says why", async (t) => {
   const page = await editor(t, {
-    fail: { "GET /v1/projects/1": [404, "Project not found"] },
+    fail: { "GET /api/v1/projects/1": [404, "Project not found"] },
   });
   assert.deepEqual(page.toasts(), [["danger", "Project not found"]]);
 });
@@ -653,7 +653,7 @@ test("saving a version sends its fields and its capability mapping", async (t) =
   page.$("notes").value = " Older ";
   await page.click(page.pill(32));
   await page.click("saveVersionBtn");
-  assert.deepEqual(page.sent("PUT", "/v1/project-versions/7"), [
+  assert.deepEqual(page.sent("PUT", "/api/v1/project-versions/7"), [
     {
       version: "0.9",
       status: "beta",
@@ -663,9 +663,10 @@ test("saving a version sends its fields and its capability mapping", async (t) =
       notes: "Older",
     },
   ]);
-  assert.deepEqual(page.sent("PUT", "/v1/project-versions/7/framework-nodes"), [
-    { framework_id: 3, node_ids: [32] },
-  ]);
+  assert.deepEqual(
+    page.sent("PUT", "/api/v1/project-versions/7/framework-nodes"),
+    [{ framework_id: 3, node_ids: [32] }],
+  );
   assert.deepEqual(page.toasts(), [["info", "Version updated."]]);
   // The list is reread and the editor closes until a version is chosen.
   assert.equal(page.$("versionEditor").style.display, "none");
@@ -677,18 +678,24 @@ test("Latest is sent when it is switched on, and when it is switched off", async
   await page.edit(7);
   await page.tick("is_latest", true);
   await page.click("saveVersionBtn");
-  assert.equal(page.sent("PUT", "/v1/project-versions/7")[0].is_latest, true);
+  assert.equal(
+    page.sent("PUT", "/api/v1/project-versions/7")[0].is_latest,
+    true,
+  );
 
   await page.edit(7);
   await page.tick("is_latest", false);
   await page.click("saveVersionBtn");
-  assert.equal(page.sent("PUT", "/v1/project-versions/7")[1].is_latest, false);
+  assert.equal(
+    page.sent("PUT", "/api/v1/project-versions/7")[1].is_latest,
+    false,
+  );
 
   // Left alone on a version that is not Latest, the field is not sent.
   await page.edit(7);
   await page.click("saveVersionBtn");
   assert.equal(
-    "is_latest" in page.sent("PUT", "/v1/project-versions/7")[2],
+    "is_latest" in page.sent("PUT", "/api/v1/project-versions/7")[2],
     false,
   );
 });
@@ -720,7 +727,7 @@ test("a draft cannot be Latest, and publishing one is confirmed first", async (t
   assert.deepEqual(page.record.confirms, [
     "Publish draft 2.0.0? Current latest: 1.0.0. OSPMAE will only elevate it automatically if it is newer than the current latest semantic version.",
   ]);
-  assert.deepEqual(page.sent("PUT", "/v1/project-versions/6"), []);
+  assert.deepEqual(page.sent("PUT", "/api/v1/project-versions/6"), []);
 
   await page.tick("is_draft", true);
   assert.equal(page.$("is_latest").checked, false);
@@ -747,7 +754,7 @@ test("a draft published as Latest says so in its confirmation", async (t) => {
   assert.deepEqual(page.record.confirms, [
     "Publish draft 2.0.0-rc1? There is currently no published latest version. You have explicitly marked it as Latest.",
   ]);
-  assert.deepEqual(page.sent("PUT", "/v1/project-versions/6")[0], {
+  assert.deepEqual(page.sent("PUT", "/api/v1/project-versions/6")[0], {
     version: "2.0.0-rc1",
     status: null,
     release_date: "2026-03-04",
@@ -775,7 +782,7 @@ test("a new version needs a version string and is created with its mapping", asy
   page.$("version").value = " 3.0.0 ";
   await page.click(page.pill(31));
   await page.click("saveVersionBtn");
-  assert.deepEqual(page.sent("POST", "/v1/projects/1/versions"), [
+  assert.deepEqual(page.sent("POST", "/api/v1/projects/1/versions"), [
     {
       version: "3.0.0",
       status: null,
@@ -786,7 +793,7 @@ test("a new version needs a version string and is created with its mapping", asy
     },
   ]);
   assert.deepEqual(
-    page.sent("PUT", "/v1/project-versions/20/framework-nodes"),
+    page.sent("PUT", "/api/v1/project-versions/20/framework-nodes"),
     [{ framework_id: 3, node_ids: [31] }],
   );
   assert.deepEqual(page.toasts().at(-1), ["info", "Version created."]);
@@ -805,7 +812,9 @@ test("deleting a version asks first", async (t) => {
   const page = await editor(t, { hash: "#versions" });
   await page.edit(7);
   await page.click("deleteVersionBtn");
-  assert.deepEqual(page.sent("DELETE", "/v1/project-versions/7"), [undefined]);
+  assert.deepEqual(page.sent("DELETE", "/api/v1/project-versions/7"), [
+    undefined,
+  ]);
   assert.deepEqual(page.toasts(), [["info", "Version deleted."]]);
   assert.equal(page.versions().length, 2);
   assert.equal(page.$("versionEditor").style.display, "none");
@@ -815,9 +824,9 @@ test("version failures are reported", async (t) => {
   const page = await editor(t, {
     hash: "#versions",
     fail: {
-      "PUT /v1/project-versions/7": [409, "Version already exists"],
-      "DELETE /v1/project-versions/7": [403, "Not yours to delete"],
-      "GET /v1/project-versions/6/framework-nodes": [
+      "PUT /api/v1/project-versions/7": [409, "Version already exists"],
+      "DELETE /api/v1/project-versions/7": [403, "Not yours to delete"],
+      "GET /api/v1/project-versions/6/framework-nodes": [
         500,
         "Mapping unavailable",
       ],
@@ -895,7 +904,10 @@ test("switching framework with no version open clears the selection quietly", as
 
 test("a framework that cannot be read is reported", async (t) => {
   const page = await editor(t, { hash: "#versions" });
-  page.world.fail["GET /v1/frameworks/4/nodes"] = [500, "Nodes unavailable"];
+  page.world.fail["GET /api/v1/frameworks/4/nodes"] = [
+    500,
+    "Nodes unavailable",
+  ];
   await page.choose("frameworkSelect", "alt");
   assert.deepEqual(page.toasts(), [["danger", "Nodes unavailable"]]);
 });
@@ -910,7 +922,7 @@ test("a version needs a framework to map against", async (t) => {
   );
   await page.click("saveVersionBtn");
   assert.deepEqual(page.toasts(), [["warning", "Pick a framework first."]]);
-  assert.deepEqual(page.sent("PUT", "/v1/project-versions/7"), []);
+  assert.deepEqual(page.sent("PUT", "/api/v1/project-versions/7"), []);
 });
 
 test("the tracked branch's own version cannot be renamed or drafted", async (t) => {
@@ -949,7 +961,7 @@ test("automatic publishing needs a release feed and reports a failed save", asyn
   );
 
   const page = await editor(t, {
-    fail: { "PUT /v1/projects/1": [500, "Could not save"] },
+    fail: { "PUT /api/v1/projects/1": [500, "Could not save"] },
   });
   await page.tick("release_auto_publish", true);
   assert.deepEqual(page.toasts(), [["danger", "Could not save"]]);

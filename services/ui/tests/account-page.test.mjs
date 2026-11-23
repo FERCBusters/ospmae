@@ -58,17 +58,17 @@ function accountPage(t, options = {}) {
   const api = (method, path, body) => {
     const failure = world.fail[`${method} ${path}`];
     if (failure) return [failure[0], { detail: failure[1] }];
-    if (path === "/v1/frameworks")
+    if (path === "/api/v1/frameworks")
       return [200, { items: options.frameworks || FRAMEWORKS }];
-    const nodes = path.match(/^\/v1\/frameworks\/(\d+)\/nodes$/);
+    const nodes = path.match(/^\/api\/v1\/frameworks\/(\d+)\/nodes$/);
     if (nodes) return [200, { tree: [], items: NODES[nodes[1]] }];
-    if (path === "/v1/me/preferences") {
+    if (path === "/api/v1/me/preferences") {
       if (method === "PUT") Object.assign(world.preferences, body);
       return [200, world.preferences];
     }
-    if (path === "/v1/me/sso-emails")
+    if (path === "/api/v1/me/sso-emails")
       return [200, { smtp_configured: false, addresses: [] }];
-    if (path === "/v1/me/mfa")
+    if (path === "/api/v1/me/mfa")
       return [
         200,
         options.mfa || {
@@ -78,10 +78,12 @@ function accountPage(t, options = {}) {
           credentials: [],
         },
       ];
-    if (path === "/v1/me/notifications") return [200, options.mail || []];
-    if (path === "/v1/me/subscriptions")
+    if (path === "/api/v1/me/notifications") return [200, options.mail || []];
+    if (path === "/api/v1/me/subscriptions")
       return [200, { items: world.subscriptions }];
-    const subscription = path.match(/^\/v1\/projects\/(\d+)\/subscription$/);
+    const subscription = path.match(
+      /^\/api\/v1\/projects\/(\d+)\/subscription$/,
+    );
     if (subscription)
       return [
         200,
@@ -90,23 +92,23 @@ function accountPage(t, options = {}) {
           ...body,
         },
       ];
-    if (path === "/v1/me/shortcuts" && method === "GET")
+    if (path === "/api/v1/me/shortcuts" && method === "GET")
       return [
         200,
         options.shortcutsAsList ? world.shortcuts : { items: world.shortcuts },
       ];
-    if (path === "/v1/me/shortcuts" && method === "POST") {
+    if (path === "/api/v1/me/shortcuts" && method === "POST") {
       world.shortcuts.push({ id: 70 + world.shortcuts.length, ...body });
       return [201, {}];
     }
-    const shortcut = path.match(/^\/v1\/me\/shortcuts\/(.+)$/);
+    const shortcut = path.match(/^\/api\/v1\/me\/shortcuts\/(.+)$/);
     if (shortcut) {
       world.shortcuts = world.shortcuts.filter(
         (s) => String(s.id) !== decodeURIComponent(shortcut[1]),
       );
       return [200, {}];
     }
-    if (path === "/v1/me/questions")
+    if (path === "/api/v1/me/questions")
       return [200, { items: options.questions || [] }];
     return null;
   };
@@ -231,13 +233,16 @@ test("changing the start page saves it with the current preferences", async (t) 
     preferences: { node_colors: { "tax:wallet": "#112233" } },
   });
   await page.choose("defaultStartPage", "/manifests.html");
-  const sent = page.sent("PUT", "/v1/me/preferences");
+  const sent = page.sent("PUT", "/api/v1/me/preferences");
   assert.equal(sent.length, 1);
   assert.equal(sent[0].default_start_page, "/manifests.html");
   assert.deepEqual(sent[0].node_colors, { "tax:wallet": "#112233" });
   assert.deepEqual(page.toasts(), [["info", "Preferences saved."]]);
 
-  page.world.fail["PUT /v1/me/preferences"] = [500, "Preferences unavailable"];
+  page.world.fail["PUT /api/v1/me/preferences"] = [
+    500,
+    "Preferences unavailable",
+  ];
   await page.choose("defaultStartPage", "/account.html");
   assert.deepEqual(page.toasts().at(-1), ["danger", "Preferences unavailable"]);
 });
@@ -252,7 +257,7 @@ test("the sticky and auto-apply switches show and save their preference", async 
   await page.choose("prefSticky", "on");
   page.$("prefAutoApply").checked = true;
   await page.choose("prefAutoApply", "on");
-  assert.deepEqual(page.sent("PUT", "/v1/me/preferences"), [
+  assert.deepEqual(page.sent("PUT", "/api/v1/me/preferences"), [
     { sticky_enabled: true },
     { auto_apply_enabled: true },
   ]);
@@ -261,7 +266,10 @@ test("the sticky and auto-apply switches show and save their preference", async 
     ["success", "Auto-apply preference saved."],
   ]);
 
-  page.world.fail["PUT /v1/me/preferences"] = [500, "Preferences unavailable"];
+  page.world.fail["PUT /api/v1/me/preferences"] = [
+    500,
+    "Preferences unavailable",
+  ];
   await page.choose("prefSticky", "on");
   await page.choose("prefAutoApply", "on");
   assert.deepEqual(page.toasts().slice(2), [
@@ -285,10 +293,15 @@ test("themes come from the design system and apply as they are chosen", async (t
   assert.equal(page.$("prefTheme").value, "paper");
   await page.choose("prefTheme", "ink");
   assert.equal(page.themes.at(-1), "ink");
-  assert.deepEqual(page.sent("PUT", "/v1/me/preferences"), [{ theme: "ink" }]);
+  assert.deepEqual(page.sent("PUT", "/api/v1/me/preferences"), [
+    { theme: "ink" },
+  ]);
   assert.deepEqual(page.toasts(), [["success", "Theme updated."]]);
 
-  page.world.fail["PUT /v1/me/preferences"] = [500, "Preferences unavailable"];
+  page.world.fail["PUT /api/v1/me/preferences"] = [
+    500,
+    "Preferences unavailable",
+  ];
   await page.choose("prefTheme", "paper");
   assert.deepEqual(page.toasts().at(-1), ["danger", "Preferences unavailable"]);
 });
@@ -359,12 +372,18 @@ test("colours are picked, reset one by one, and saved together", async (t) => {
   assert.equal(page.colours()[0][3], "custom");
 
   await page.click("saveColorsBtn");
-  assert.deepEqual(page.sent("PUT", "/v1/me/preferences").at(-1).node_colors, {
-    "tax:identity": "#abcdef",
-  });
+  assert.deepEqual(
+    page.sent("PUT", "/api/v1/me/preferences").at(-1).node_colors,
+    {
+      "tax:identity": "#abcdef",
+    },
+  );
   assert.deepEqual(page.toasts(), [["info", "Preferences saved."]]);
 
-  page.world.fail["PUT /v1/me/preferences"] = [500, "Preferences unavailable"];
+  page.world.fail["PUT /api/v1/me/preferences"] = [
+    500,
+    "Preferences unavailable",
+  ];
   await page.click("saveColorsBtn");
   assert.deepEqual(page.toasts().at(-1), ["danger", "Preferences unavailable"]);
 });
@@ -376,7 +395,7 @@ test("resetting all colours asks first", async (t) => {
   });
   await declined.click("resetColorsBtn");
   assert.deepEqual(declined.record.confirms, ["Reset all custom colours?"]);
-  assert.deepEqual(declined.sent("PUT", "/v1/me/preferences"), []);
+  assert.deepEqual(declined.sent("PUT", "/api/v1/me/preferences"), []);
   assert.equal(declined.colours()[1][3], "custom");
 
   const page = await accountPage(t, {
@@ -384,14 +403,20 @@ test("resetting all colours asks first", async (t) => {
   });
   const untouched = page.colours()[0][2];
   await page.click("resetColorsBtn");
-  assert.deepEqual(page.sent("PUT", "/v1/me/preferences")[0].node_colors, {});
+  assert.deepEqual(
+    page.sent("PUT", "/api/v1/me/preferences")[0].node_colors,
+    {},
+  );
   assert.deepEqual(page.colours()[1].slice(2), [
     page.window.OSPMAE.defaultNodeColor("tax:wallet"),
     "default",
   ]);
   assert.equal(page.colours()[0][2], untouched);
 
-  page.world.fail["PUT /v1/me/preferences"] = [500, "Preferences unavailable"];
+  page.world.fail["PUT /api/v1/me/preferences"] = [
+    500,
+    "Preferences unavailable",
+  ];
   await page.click("resetColorsBtn");
   assert.deepEqual(page.toasts().at(-1), ["danger", "Preferences unavailable"]);
 });
@@ -403,7 +428,10 @@ test("switching framework shows that framework's categories", async (t) => {
     page.$("colorRows").textContent,
     "No categories found for this framework.",
   );
-  page.world.fail["GET /v1/frameworks/3/nodes"] = [500, "Nodes unavailable"];
+  page.world.fail["GET /api/v1/frameworks/3/nodes"] = [
+    500,
+    "Nodes unavailable",
+  ];
   await page.choose("frameworkSelect", "tax");
   // The categories read once are kept, so the list returns without a request.
   assert.equal(page.colours().length, 2);
@@ -411,7 +439,7 @@ test("switching framework shows that framework's categories", async (t) => {
 
 test("a framework whose categories cannot be read is reported", async (t) => {
   const page = await accountPage(t, {
-    fail: { "GET /v1/frameworks/4/nodes": [500, "Nodes unavailable"] },
+    fail: { "GET /api/v1/frameworks/4/nodes": [500, "Nodes unavailable"] },
   });
   await page.choose("frameworkSelect", "alt");
   assert.deepEqual(page.toasts(), [["danger", "Nodes unavailable"]]);
@@ -442,7 +470,7 @@ test("a notification switch saves that project's subscription", async (t) => {
   const box = page.$("sub_nq_5");
   box.checked = true;
   await page.choose(box, "on");
-  assert.deepEqual(page.sent("POST", "/v1/projects/5/subscription"), [
+  assert.deepEqual(page.sent("POST", "/api/v1/projects/5/subscription"), [
     { notify_new_versions: true, notify_questions: true },
   ]);
   assert.equal(page.subscriptionRows()[0][5], "Saved.");
@@ -455,7 +483,7 @@ test("switching both notifications off, or unsubscribing, removes the project", 
   const row = (id) =>
     page.doc.querySelector(`#subscriptionsList [data-project-id="${id}"]`);
   await page.click(row(5).querySelector('[data-action="unsubscribe"]'));
-  assert.deepEqual(page.sent("POST", "/v1/projects/5/subscription"), [
+  assert.deepEqual(page.sent("POST", "/api/v1/projects/5/subscription"), [
     { notify_new_versions: false, notify_questions: false },
   ]);
   assert.deepEqual(
@@ -478,7 +506,9 @@ test("switching both notifications off, or unsubscribing, removes the project", 
 test("a subscription that fails to save says so on its row", async (t) => {
   const page = await accountPage(t, {
     subscriptions: SUBSCRIPTIONS,
-    fail: { "POST /v1/projects/5/subscription": [500, "Mail is switched off"] },
+    fail: {
+      "POST /api/v1/projects/5/subscription": [500, "Mail is switched off"],
+    },
   });
   await page.choose("sub_nv_5", "on");
   assert.equal(page.subscriptionRows()[0][5], "Mail is switched off");
@@ -488,7 +518,9 @@ test("a subscription that fails to save says so on its row", async (t) => {
 
 test("subscriptions that fail to load are reported in place", async (t) => {
   const page = await accountPage(t, {
-    fail: { "GET /v1/me/subscriptions": [500, "Subscriptions unavailable"] },
+    fail: {
+      "GET /api/v1/me/subscriptions": [500, "Subscriptions unavailable"],
+    },
   });
   assert.equal(
     page.$("subscriptionsMsg").textContent,
@@ -522,7 +554,7 @@ const QUESTIONS = [
 test("an asker's questions load when the tab is first shown", async (t) => {
   const page = await accountPage(t, { questions: QUESTIONS });
   assert.equal(page.$("questionsTabItem").hidden, false);
-  assert.deepEqual(page.sent("GET", "/v1/me/questions"), []);
+  assert.deepEqual(page.sent("GET", "/api/v1/me/questions"), []);
   page
     .$("tabBtnQuestions")
     .dispatchEvent(new page.window.Event("shown.bs.tab", { bubbles: true }));
@@ -556,7 +588,7 @@ test("no questions, and a failed refresh, each say so", async (t) => {
   assert.deepEqual(page.record.tabs, ["questions"]);
   assert.equal(page.$("myQuestionsEmpty").hidden, false);
   assert.equal(page.$("myQuestionsTableWrap").hidden, true);
-  page.world.fail["GET /v1/me/questions"] = [500, "Questions unavailable"];
+  page.world.fail["GET /api/v1/me/questions"] = [500, "Questions unavailable"];
   await page.click("myQuestionsRefreshBtn");
   assert.equal(page.$("myQuestionsStatus").hidden, false);
   assert.equal(
@@ -617,7 +649,7 @@ test("a shortcut needs a name and a safe address before it is saved", async (t) 
   page.$("shortcutName").value = "Mine";
   page.$("shortcutUrl").value = "javascript:alert(1)";
   await page.click("addShortcutBtn");
-  assert.deepEqual(page.sent("POST", "/v1/me/shortcuts"), []);
+  assert.deepEqual(page.sent("POST", "/api/v1/me/shortcuts"), []);
   assert.deepEqual(page.toasts(), [
     ["danger", "Please provide both a name and a URL."],
     [
@@ -637,7 +669,7 @@ test("a shortcut needs a name and a safe address before it is saved", async (t) 
     }),
   );
   await page.wait();
-  assert.deepEqual(page.sent("POST", "/v1/me/shortcuts"), [
+  assert.deepEqual(page.sent("POST", "/api/v1/me/shortcuts"), [
     { name: "Mine", url: "https://example.org/mine" },
   ]);
   assert.equal(page.$("shortcutName").value, "");
@@ -648,7 +680,7 @@ test("a shortcut needs a name and a safe address before it is saved", async (t) 
 
 test("a refused shortcut is reported from the button and from Enter", async (t) => {
   const page = await accountPage(t, {
-    fail: { "POST /v1/me/shortcuts": [400, "Too many shortcuts"] },
+    fail: { "POST /api/v1/me/shortcuts": [400, "Too many shortcuts"] },
   });
   page.$("shortcutName").value = "Mine";
   page.$("shortcutUrl").value = "https://example.org/mine";
@@ -671,18 +703,18 @@ test("removing a shortcut asks first", async (t) => {
   });
   await declined.click(declined.doc.querySelector('[data-del="71"]'));
   assert.deepEqual(declined.record.confirms, ["Remove this shortcut?"]);
-  assert.deepEqual(declined.sent("DELETE", "/v1/me/shortcuts/71"), []);
+  assert.deepEqual(declined.sent("DELETE", "/api/v1/me/shortcuts/71"), []);
 
   const page = await accountPage(t, { shortcuts: SHORTCUTS });
   await page.click(page.doc.querySelector('[data-del="71"]'));
-  assert.deepEqual(page.sent("DELETE", "/v1/me/shortcuts/71"), [undefined]);
+  assert.deepEqual(page.sent("DELETE", "/api/v1/me/shortcuts/71"), [undefined]);
   assert.deepEqual(page.texts("#shortcutsList .fw-semibold"), [
     "Shortcut",
     "Broken",
   ]);
   assert.deepEqual(page.toasts(), [["success", "Shortcut removed."]]);
 
-  page.world.fail["DELETE /v1/me/shortcuts/72"] = [500, "Could not remove"];
+  page.world.fail["DELETE /api/v1/me/shortcuts/72"] = [500, "Could not remove"];
   await page.click(page.doc.querySelector('[data-del="72"]'));
   assert.deepEqual(page.toasts().at(-1), ["danger", "Could not remove"]);
 });
@@ -710,9 +742,9 @@ test("the password form checks its fields before sending", async (t) => {
     (await attempt("old", "longer than eight", "different"))[0],
     "Passwords do not match.",
   );
-  assert.deepEqual(page.sent("POST", "/v1/auth/change-password"), []);
+  assert.deepEqual(page.sent("POST", "/api/v1/auth/change-password"), []);
 
-  page.world.fail["POST /v1/auth/change-password"] = [
+  page.world.fail["POST /api/v1/auth/change-password"] = [
     400,
     "Current password is wrong",
   ];
@@ -734,8 +766,8 @@ test("accounts signed in elsewhere have no password, second factor or mail cards
     page.$("passwordUnavailableMsg").textContent,
     /^Password changes are only available for local accounts/,
   );
-  assert.deepEqual(page.sent("GET", "/v1/me/mfa"), []);
-  assert.deepEqual(page.sent("GET", "/v1/me/notifications"), []);
+  assert.deepEqual(page.sent("GET", "/api/v1/me/mfa"), []);
+  assert.deepEqual(page.sent("GET", "/api/v1/me/notifications"), []);
 });
 
 test("the second-factor summary describes the account's state", async (t) => {
@@ -766,7 +798,7 @@ test("the second-factor summary describes the account's state", async (t) => {
   );
   assert.equal(
     await summary(undefined, {
-      "GET /v1/me/mfa": [500, "Security unavailable"],
+      "GET /api/v1/me/mfa": [500, "Security unavailable"],
     }),
     "Security unavailable",
   );
@@ -785,9 +817,12 @@ test("managing the second factor confirms the password first", async (t) => {
     [page.$("mfaMsg").textContent, page.$("mfaMsg").className],
     ["Enter your current password.", "small mt-2 text-danger"],
   );
-  assert.deepEqual(page.sent("POST", "/v1/auth/mfa/manage/start"), []);
+  assert.deepEqual(page.sent("POST", "/api/v1/auth/mfa/manage/start"), []);
 
-  page.world.fail["POST /v1/auth/mfa/manage/start"] = [403, "Wrong password"];
+  page.world.fail["POST /api/v1/auth/mfa/manage/start"] = [
+    403,
+    "Wrong password",
+  ];
   page.$("securityPassword").value = "guess";
   await page.submit("securityForm");
   assert.equal(page.$("mfaMsg").textContent, "Wrong password");
@@ -798,7 +833,7 @@ test("managing the second factor confirms the password first", async (t) => {
   page.world.fail = {};
   page.$("securityPassword").value = "correct horse";
   await page.submit("securityForm");
-  assert.deepEqual(page.sent("POST", "/v1/auth/mfa/manage/start").at(-1), {
+  assert.deepEqual(page.sent("POST", "/api/v1/auth/mfa/manage/start").at(-1), {
     password: "correct horse",
   });
   assert.equal(page.$("securityPassword").value, "");
@@ -841,14 +876,14 @@ test("mail sent to the account is listed with its delivery state", async (t) => 
     /^Nothing has been emailed to this account/,
   );
   const failed = await accountPage(t, {
-    fail: { "GET /v1/me/notifications": [500, "Mail history unavailable"] },
+    fail: { "GET /api/v1/me/notifications": [500, "Mail history unavailable"] },
   });
   assert.equal(failed.$("mailSummary").textContent, "Mail history unavailable");
 });
 
 test("a page that cannot load its shortcuts says why", async (t) => {
   const page = await accountPage(t, {
-    fail: { "GET /v1/me/shortcuts": [500, "Shortcuts unavailable"] },
+    fail: { "GET /api/v1/me/shortcuts": [500, "Shortcuts unavailable"] },
   });
   assert.deepEqual(page.toasts(), [["danger", "Shortcuts unavailable"]]);
 });

@@ -834,6 +834,9 @@ def test_sso_sessions_are_not_subject_to_the_local_ceremony(
     bare.cookies.set("__Host-ospmae_session", sid)
     response = bare.get("/v1/me/mfa")
     assert response.status_code == 200, response.text
+    # Its sign-out goes through the provider, at the browser's address for
+    # the API, under nginx's /api/.
+    assert bare.get("/v1/me").json()["logout_url"] == "/api/v1/auth/logout"
 
 
 def test_policy_blocks_required_signins(client, db, user):

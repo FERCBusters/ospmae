@@ -102,9 +102,9 @@ function builder(t, options = {}) {
   const api = (method, path, body, query) => {
     const custom = options.api?.(method, path, body, query);
     if (custom) return custom;
-    if (path === `/v1/frameworks/${FRAMEWORK.id}/catalogue`)
+    if (path === `/api/v1/frameworks/${FRAMEWORK.id}/catalogue`)
       return [200, { tree, items: tree.flatMap((root) => flatten(root)) }];
-    if (path === "/v1/projects") {
+    if (path === "/api/v1/projects") {
       const node = query.get("node_ids");
       return [
         200,
@@ -118,9 +118,9 @@ function builder(t, options = {}) {
         },
       ];
     }
-    if (path === "/v1/manifests/export") return [200, "exported"];
-    if (path === "/v1/manifests") return [201, { id: 90 }];
-    if (path === "/v1/me/preferences")
+    if (path === "/api/v1/manifests/export") return [200, "exported"];
+    if (path === "/api/v1/manifests") return [201, { id: 90 }];
+    if (path === "/api/v1/me/preferences")
       return [200, body || options.preferences || {}];
     return null;
   };
@@ -145,7 +145,7 @@ function builder(t, options = {}) {
     return {
       ...page,
       queries,
-      projectQueries: () => queries("/v1/projects"),
+      projectQueries: () => queries("/api/v1/projects"),
       tile: (name) => within("g.cell", name),
       label: (name) => within("g.container-label", name),
       async press(node) {
@@ -233,7 +233,7 @@ test("each project card shows its organisation, type, latest version and capabil
 test("no matching projects is said in the list", async (t) => {
   const page = await builder(t, {
     api: (method, path) =>
-      path === "/v1/projects" ? [200, { items: [] }] : null,
+      path === "/api/v1/projects" ? [200, { items: [] }] : null,
   });
   assert.equal(page.$("projectsCount").textContent, "0 projects");
   assert.equal(
@@ -476,14 +476,14 @@ test("the auto-apply switch is saved as a preference", async (t) => {
   let refuse = false;
   const page = await builder(t, {
     api: (method, path) =>
-      refuse && path === "/v1/me/preferences"
+      refuse && path === "/api/v1/me/preferences"
         ? [500, { detail: "Preferences unavailable" }]
         : null,
   });
   page.$("autoApplyFilters").checked = false;
   await page.choose("autoApplyFilters", "on");
   assert.equal(
-    page.sent("PUT", "/v1/me/preferences").at(-1).auto_apply_enabled,
+    page.sent("PUT", "/api/v1/me/preferences").at(-1).auto_apply_enabled,
     false,
   );
   refuse = true;
@@ -582,7 +582,7 @@ test("exports carry the filters and the selection, named after the manifest", as
     statuses: "stable",
     project_ids: "5,6,8",
   };
-  assert.deepEqual(page.queries("/v1/manifests/export"), [
+  assert.deepEqual(page.queries("/api/v1/manifests/export"), [
     { format: "json", ...shared },
     { format: "xlsx", ...shared },
     { format: "markdown", ...shared },
@@ -598,7 +598,7 @@ test("an export without a name or filters uses the default name", async (t) => {
   const page = await builder(t);
   page.$("manifestName").value = "  ";
   await page.click("exportJsonBtn");
-  assert.deepEqual(page.queries("/v1/manifests/export"), [
+  assert.deepEqual(page.queries("/api/v1/manifests/export"), [
     { format: "json", name: "project-manifest", framework_id: "3" },
   ]);
   assert.equal(page.record.downloads[0].name, "project-manifest.json");
@@ -607,7 +607,7 @@ test("an export without a name or filters uses the default name", async (t) => {
 test("a failed export is reported", async (t) => {
   const page = await builder(t, {
     api: (method, path) =>
-      path === "/v1/manifests/export"
+      path === "/api/v1/manifests/export"
         ? [403, { detail: "Not allowed to export" }]
         : null,
   });
@@ -624,7 +624,7 @@ test("saving stores the name, filters and selected projects", async (t) => {
   page.$("manifestDescription").value = " For the review ";
   await page.type("q", "wallet");
   await page.click("saveManifestBtn");
-  assert.deepEqual(page.sent("POST", "/v1/manifests"), [
+  assert.deepEqual(page.sent("POST", "/api/v1/manifests"), [
     {
       name: "Issuers",
       description: "For the review",
@@ -639,7 +639,7 @@ test("saving stores the name, filters and selected projects", async (t) => {
   page.$("manifestDescription").value = "";
   await page.click("resetFiltersBtn");
   await page.click("saveManifestBtn");
-  assert.deepEqual(page.sent("POST", "/v1/manifests")[1], {
+  assert.deepEqual(page.sent("POST", "/api/v1/manifests")[1], {
     name: "Issuers",
     description: null,
     q: null,
@@ -652,13 +652,13 @@ test("saving stores the name, filters and selected projects", async (t) => {
 test("a manifest needs a name, and a refused save is reported", async (t) => {
   const page = await builder(t, {
     api: (method, path) =>
-      method === "POST" && path === "/v1/manifests"
+      method === "POST" && path === "/api/v1/manifests"
         ? [409, { detail: "A manifest with this name exists" }]
         : null,
   });
   page.$("manifestName").value = "   ";
   await page.click("saveManifestBtn");
-  assert.deepEqual(page.sent("POST", "/v1/manifests"), []);
+  assert.deepEqual(page.sent("POST", "/api/v1/manifests"), []);
   page.$("manifestName").value = "Issuers";
   await page.click("saveManifestBtn");
   assert.deepEqual(page.toasts(), [
@@ -670,7 +670,7 @@ test("a manifest needs a name, and a refused save is reported", async (t) => {
 test("without a framework there is no treemap and nothing to save against", async (t) => {
   const page = await builder(t, {
     api: (method, path) =>
-      path === "/v1/frameworks" ? [200, { items: [] }] : null,
+      path === "/api/v1/frameworks" ? [200, { items: [] }] : null,
   });
   assert.equal(
     page.$("capabilityTreemap").textContent,
@@ -681,7 +681,7 @@ test("without a framework there is no treemap and nothing to save against", asyn
   assert.deepEqual(page.toasts(), [
     ["warning", "Please pick a framework first."],
   ]);
-  assert.deepEqual(page.sent("POST", "/v1/manifests"), []);
+  assert.deepEqual(page.sent("POST", "/api/v1/manifests"), []);
 });
 
 test("a framework without capabilities says so", async (t) => {
@@ -753,7 +753,7 @@ test("a project list that fails to refresh is reported", async (t) => {
   let refuse = false;
   const page = await builder(t, {
     api: (method, path) =>
-      refuse && path === "/v1/projects"
+      refuse && path === "/api/v1/projects"
         ? [500, { detail: "Search unavailable" }]
         : null,
   });

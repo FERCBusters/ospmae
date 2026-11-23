@@ -24,7 +24,9 @@ test("the dependency tab reports the scan and draws the tree", async (t) => {
   const page = await dependencyTab(t);
   assert.deepEqual(page.errors, []);
   assert.ok(
-    page.asked().includes("GET /v1/projects/5/dependency-graph?version_id=12"),
+    page
+      .asked()
+      .includes("GET /api/v1/projects/5/dependency-graph?version_id=12"),
   );
   const badge = page.$("depScanStatus");
   assert.equal(badge.textContent, "Complete");
@@ -246,7 +248,7 @@ test("the owner starts a scan and sees it queued", async (t) => {
     api: (method, path, body, answers) => {
       if (
         method === "POST" &&
-        path === "/v1/project-versions/12/dependency-discovery"
+        path === "/api/v1/project-versions/12/dependency-discovery"
       ) {
         scanned += 1;
         answers.dependencies = queued;
@@ -262,7 +264,7 @@ test("the owner starts a scan and sees it queued", async (t) => {
     page
       .asked()
       .includes(
-        "POST /v1/project-versions/12/dependency-discovery?run_now=true",
+        "POST /api/v1/project-versions/12/dependency-discovery?run_now=true",
       ),
   );
   assert.equal(page.$("depScanStatus").textContent, "Queued");
@@ -320,7 +322,9 @@ test("another version's dependencies load when it is chosen", async (t) => {
   const page = await dependencyTab(t);
   await page.choose("depVersionSelect", "11");
   assert.ok(
-    page.asked().includes("GET /v1/projects/5/dependency-graph?version_id=11"),
+    page
+      .asked()
+      .includes("GET /api/v1/projects/5/dependency-graph?version_id=11"),
   );
   // Returning to the tab reuses what is loaded.
   const loads = page
@@ -338,7 +342,7 @@ test("another version's dependencies load when it is chosen", async (t) => {
 test("a dependency graph that fails to load says why", async (t) => {
   const page = await dependencyTab(t, {
     api: (method, path) =>
-      path === "/v1/projects/5/dependency-graph"
+      path === "/api/v1/projects/5/dependency-graph"
         ? [404, { detail: "Project has no versions" }]
         : null,
   });

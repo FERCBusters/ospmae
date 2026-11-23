@@ -58,7 +58,7 @@
   async function loadOrganisations() {
     if (!el.orgList) return;
     try {
-      const rows = await OSPMAE.api("/v1/organisations");
+      const rows = await OSPMAE.api("/api/v1/organisations");
       if (!rows.length) {
         el.orgList.innerHTML =
           '<div class="small text-muted">No organisations yet. Projects created with an organisation name create one automatically.</div>';
@@ -109,12 +109,12 @@
     }
     try {
       if (editing) {
-        await OSPMAE.api(`/v1/admin/organisations/${editing}`, {
+        await OSPMAE.api(`/api/v1/admin/organisations/${editing}`, {
           method: "PATCH",
           body: payload,
         });
       } else {
-        await OSPMAE.api("/v1/admin/organisations", {
+        await OSPMAE.api("/api/v1/admin/organisations", {
           method: "POST",
           body: payload,
         });
@@ -131,7 +131,7 @@
   async function loadOutbox() {
     if (!el.mailTable) return;
     try {
-      const body = await OSPMAE.api("/v1/admin/notifications");
+      const body = await OSPMAE.api("/api/v1/admin/notifications");
       el.mailSummary.textContent = `${body.pending} pending · ${body.failed} failed · ${body.notifications.length} rows shown`;
       if (!body.notifications.length) {
         el.mailTable.innerHTML =
@@ -161,9 +161,12 @@
     if (!el.discoverAllBtn) return;
     el.discoverAllBtn.disabled = true;
     try {
-      const body = await OSPMAE.api("/v1/admin/release-feeds/discover-all", {
-        method: "POST",
-      });
+      const body = await OSPMAE.api(
+        "/api/v1/admin/release-feeds/discover-all",
+        {
+          method: "POST",
+        },
+      );
       if (el.feedMsg)
         el.feedMsg.textContent = `Queued ${body.enqueued} release feed discovery task(s); pending outbox rows: ${body.pending_notifications}.`;
       OSPMAE.toast(`Queued ${body.enqueued} feed(s).`, "success");
@@ -348,7 +351,7 @@
     });
     let data;
     try {
-      data = await OSPMAE.api(`/v1/admin/audit?${params.toString()}`);
+      data = await OSPMAE.api(`/api/v1/admin/audit?${params.toString()}`);
     } catch (err) {
       renderAuditTrail();
       throw err;
@@ -425,7 +428,7 @@
     let data;
     try {
       data = await OSPMAE.api(
-        `/v1/admin/entity-changelog?${params.toString()}`,
+        `/api/v1/admin/entity-changelog?${params.toString()}`,
       );
     } catch (err) {
       renderEntityChangelog();
@@ -480,17 +483,17 @@
   }
 
   async function loadUsers() {
-    const data = await OSPMAE.api("/v1/admin/users");
+    const data = await OSPMAE.api("/api/v1/admin/users");
     state.users = Array.isArray(data?.items) ? data.items : [];
   }
 
   async function loadGroups() {
-    const data = await OSPMAE.api("/v1/admin/groups");
+    const data = await OSPMAE.api("/api/v1/admin/groups");
     state.groups = Array.isArray(data?.items) ? data.items : [];
   }
 
   async function loadPermissions() {
-    const data = await OSPMAE.api("/v1/admin/permissions");
+    const data = await OSPMAE.api("/api/v1/admin/permissions");
     state.permissions = Array.isArray(data?.items) ? data.items : [];
   }
 
@@ -710,7 +713,7 @@
       role: String(fd.get("role") || "viewer"),
     };
 
-    await OSPMAE.api("/v1/admin/users", { method: "POST", body: payload });
+    await OSPMAE.api("/api/v1/admin/users", { method: "POST", body: payload });
     form.reset();
     setMessage("User created.", "success");
     await refreshAll();
@@ -723,7 +726,7 @@
       role: String(fd.get("role") || "").trim() || null,
     };
 
-    await OSPMAE.api("/v1/admin/groups", { method: "POST", body: payload });
+    await OSPMAE.api("/api/v1/admin/groups", { method: "POST", body: payload });
     form.reset();
     setMessage("Group created.", "success");
     await refreshAll();
@@ -752,7 +755,7 @@
         is_active: Boolean(activeEl?.checked),
         email: String(emailEl?.value || "").trim(),
       };
-      await OSPMAE.api(`/v1/admin/users/${userId}`, {
+      await OSPMAE.api(`/api/v1/admin/users/${userId}`, {
         method: "PATCH",
         body: payload,
       });
@@ -766,7 +769,7 @@
       const label = target?.username || `#${userId}`;
       const password = window.prompt(`Set a new password for ${label}:`);
       if (!password) return;
-      await OSPMAE.api(`/v1/admin/users/${userId}/password`, {
+      await OSPMAE.api(`/api/v1/admin/users/${userId}/password`, {
         method: "POST",
         body: { new_password: password },
       });
@@ -783,7 +786,7 @@
         )
       )
         return;
-      await OSPMAE.api(`/v1/admin/users/${userId}`, { method: "DELETE" });
+      await OSPMAE.api(`/api/v1/admin/users/${userId}`, { method: "DELETE" });
       setMessage(`User ${label} deleted.`, "success");
       await refreshAll();
       return;
@@ -791,7 +794,7 @@
 
     if (action === "edit-user-access" && userId) {
       state.editingUserAccess = await OSPMAE.api(
-        `/v1/admin/users/${userId}/access`,
+        `/api/v1/admin/users/${userId}/access`,
       );
       renderUsers();
       return;
@@ -811,7 +814,7 @@
       const permissionIds = Array.from(
         panel.querySelectorAll('input[data-kind="perm"]:checked'),
       ).map((cb) => Number(cb.value));
-      await OSPMAE.api(`/v1/admin/users/${userId}/access`, {
+      await OSPMAE.api(`/api/v1/admin/users/${userId}/access`, {
         method: "PUT",
         body: {
           group_ids: groupIds,
@@ -841,7 +844,7 @@
       const descEl = el.groupsTable.querySelector(
         `input[data-field="group-description"][data-group-id="${groupId}"]`,
       );
-      await OSPMAE.api(`/v1/admin/groups/${groupId}`, {
+      await OSPMAE.api(`/api/v1/admin/groups/${groupId}`, {
         method: "PATCH",
         body: {
           name: String(nameEl?.value || "").trim(),
@@ -863,7 +866,7 @@
         )
       )
         return;
-      await OSPMAE.api(`/v1/admin/groups/${groupId}`, { method: "DELETE" });
+      await OSPMAE.api(`/api/v1/admin/groups/${groupId}`, { method: "DELETE" });
       setMessage(`Group ${label} deleted.`, "success");
       await refreshAll();
       return;
@@ -871,7 +874,7 @@
 
     if (action === "edit-group-perms" && groupId) {
       state.editingGroupPerms = await OSPMAE.api(
-        `/v1/admin/groups/${groupId}/permissions`,
+        `/api/v1/admin/groups/${groupId}/permissions`,
       );
       renderGroups();
       return;
@@ -888,7 +891,7 @@
       const permissionIds = Array.from(
         panel.querySelectorAll('input[data-kind="perm"]:checked'),
       ).map((cb) => Number(cb.value));
-      await OSPMAE.api(`/v1/admin/groups/${groupId}/permissions`, {
+      await OSPMAE.api(`/api/v1/admin/groups/${groupId}/permissions`, {
         method: "PUT",
         body: { permission_ids: permissionIds },
       });

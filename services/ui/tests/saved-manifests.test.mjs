@@ -128,11 +128,11 @@ async function saved(t, options = {}) {
     api: (method, path, body) => {
       const hooked = options.hooks?.[`${method} ${path}`];
       if (hooked) return hooked(body, data);
-      if (path === "/v1/me/groups") return [200, { items: groups }];
-      if (path === "/v1/frameworks/3/nodes") return [200, NODES];
-      if (path === "/v1/manifests" && method === "GET")
+      if (path === "/api/v1/me/groups") return [200, { items: groups }];
+      if (path === "/api/v1/frameworks/3/nodes") return [200, NODES];
+      if (path === "/api/v1/manifests" && method === "GET")
         return [200, { items: data.manifests }];
-      const one = /^\/v1\/manifests\/(\d+)$/.exec(path);
+      const one = /^\/api\/v1\/manifests\/(\d+)$/.exec(path);
       if (one && method === "GET") {
         const found = data.manifests.find((m) => m.id === Number(one[1]));
         return found ? [200, found] : [404, { detail: "Manifest not found" }];
@@ -141,7 +141,7 @@ async function saved(t, options = {}) {
         data.manifests = data.manifests.filter((m) => m.id !== Number(one[1]));
         return [200, {}];
       }
-      const share = /^\/v1\/manifests\/(\d+)\/sharing$/.exec(path);
+      const share = /^\/api\/v1\/manifests\/(\d+)\/sharing$/.exec(path);
       if (share) {
         Object.assign(
           data.manifests.find((m) => m.id === Number(share[1])),
@@ -152,7 +152,7 @@ async function saved(t, options = {}) {
         );
         return [200, {}];
       }
-      const clone = /^\/v1\/manifests\/(\d+)\/clone$/.exec(path);
+      const clone = /^\/api\/v1\/manifests\/(\d+)\/clone$/.exec(path);
       if (clone) {
         const source = data.manifests.find((m) => m.id === Number(clone[1]));
         data.manifests.push({
@@ -168,7 +168,7 @@ async function saved(t, options = {}) {
         });
         return [200, { id: 10 }];
       }
-      if (/^\/v1\/manifests\/\d+\/export$/.test(path))
+      if (/^\/api\/v1\/manifests\/\d+\/export$/.test(path))
         return [200, "file-body"];
       return null;
     },
@@ -277,7 +277,7 @@ test("a manifest shared with the reader can be copied but not managed", async (t
   assert.equal(page.$("cloneManifestBtn").style.display, "");
 
   await page.click("cloneManifestBtn");
-  assert.deepEqual(page.sent("POST", "/v1/manifests/2/clone"), [{}]);
+  assert.deepEqual(page.sent("POST", "/api/v1/manifests/2/clone"), [{}]);
   assert.deepEqual(page.toasts(), [
     ["info", "Manifest cloned to your saved manifests."],
   ]);
@@ -299,7 +299,7 @@ test("sharing with one group is a tick box; saving reloads the manifest", async 
   group.checked = true;
   page.$("makePublicChk").checked = true;
   await page.click("saveSharingBtn");
-  assert.deepEqual(page.sent("PATCH", "/v1/manifests/1/sharing"), [
+  assert.deepEqual(page.sent("PATCH", "/api/v1/manifests/1/sharing"), [
     { owner_group_id: 8, is_public: true },
   ]);
   assert.deepEqual(page.toasts(), [["info", "Sharing updated."]]);
@@ -314,7 +314,7 @@ test("sharing with one group is a tick box; saving reloads the manifest", async 
   page.$("shareWithGroupChk").checked = false;
   page.$("makePublicChk").checked = false;
   await page.click("saveSharingBtn");
-  assert.deepEqual(page.sent("PATCH", "/v1/manifests/1/sharing")[1], {
+  assert.deepEqual(page.sent("PATCH", "/api/v1/manifests/1/sharing")[1], {
     owner_group_id: null,
     is_public: false,
   });
@@ -336,14 +336,14 @@ test("several groups become a list; none leaves only the public choice", async (
   assert.equal(many.$("shareGroupSelect").value, "0");
   many.$("shareGroupSelect").value = "9";
   await many.click("saveSharingBtn");
-  assert.deepEqual(many.sent("PATCH", "/v1/manifests/1/sharing"), [
+  assert.deepEqual(many.sent("PATCH", "/api/v1/manifests/1/sharing"), [
     { owner_group_id: 9, is_public: false },
   ]);
   assert.equal(many.$("shareGroupSelect").value, "9");
   many.$("shareGroupSelect").value = "0";
   await many.click("saveSharingBtn");
   assert.equal(
-    many.sent("PATCH", "/v1/manifests/1/sharing")[1].owner_group_id,
+    many.sent("PATCH", "/api/v1/manifests/1/sharing")[1].owner_group_id,
     null,
   );
 
@@ -356,7 +356,7 @@ test("several groups become a list; none leaves only the public choice", async (
   );
   none.$("makePublicChk").checked = true;
   await none.click("saveSharingBtn");
-  assert.deepEqual(none.sent("PATCH", "/v1/manifests/1/sharing"), [
+  assert.deepEqual(none.sent("PATCH", "/api/v1/manifests/1/sharing"), [
     { owner_group_id: null, is_public: true },
   ]);
 });
@@ -373,7 +373,7 @@ test("a manifest exports under its own name in each format", async (t) => {
   assert.deepEqual(
     page.asked().filter((r) => r.includes("/export")),
     ["json", "xlsx", "markdown"].map(
-      (f) => `GET /v1/manifests/1/export?format=${f}`,
+      (f) => `GET /api/v1/manifests/1/export?format=${f}`,
     ),
   );
   // The file name keeps only characters safe in a file name.
@@ -402,13 +402,13 @@ test("a refused action is reported instead of failing silently", async (t) => {
   const refuse = (detail) => () => [403, { detail }];
   const page = await saved(t, {
     hooks: {
-      "GET /v1/manifests/1/export": refuse("Export not allowed"),
-      "DELETE /v1/manifests/1": refuse("Delete not allowed"),
-      "PATCH /v1/manifests/1/sharing": refuse(
+      "GET /api/v1/manifests/1/export": refuse("Export not allowed"),
+      "DELETE /api/v1/manifests/1": refuse("Delete not allowed"),
+      "PATCH /api/v1/manifests/1/sharing": refuse(
         "Cannot share with a group you are not part of",
       ),
-      "POST /v1/manifests/2/clone": refuse("Clone not allowed"),
-      "GET /v1/manifests/3": refuse(
+      "POST /api/v1/manifests/2/clone": refuse("Clone not allowed"),
+      "GET /api/v1/manifests/3": refuse(
         "You do not have permission to modify this manifest",
       ),
     },
@@ -438,15 +438,15 @@ test("refresh rereads the list and the open manifest", async (t) => {
   const count = (path) =>
     page.asked().filter((r) => r === `GET ${path}`).length;
   await page.click("savedRefreshBtn");
-  assert.equal(count("/v1/manifests"), 2);
-  assert.equal(count("/v1/manifests/1"), 0);
+  assert.equal(count("/api/v1/manifests"), 2);
+  assert.equal(count("/api/v1/manifests/1"), 0);
   await open(page, 1);
   page.data.manifests[0].name = "Renamed elsewhere";
   // The builder saves into this list, so showing the tab reloads it too.
   page.$("tabBtnSaved").dispatchEvent(new page.window.Event("shown.bs.tab"));
   await page.wait();
-  assert.equal(count("/v1/manifests"), 3);
-  assert.equal(count("/v1/manifests/1"), 2);
+  assert.equal(count("/api/v1/manifests"), 3);
+  assert.equal(count("/api/v1/manifests/1"), 2);
   assert.equal(page.$("manifestDetailsTitle").textContent, "Renamed elsewhere");
 });
 
@@ -466,7 +466,7 @@ test("a shared link opens its manifest straight away", async (t) => {
 
 test("an empty list, a role without access and a switched-off feature", async (t) => {
   const empty = await saved(t, {
-    hooks: { "GET /v1/manifests": () => [200, { items: [] }] },
+    hooks: { "GET /api/v1/manifests": () => [200, { items: [] }] },
   });
   assert.equal(
     empty.$("manifestList").textContent.trim(),
@@ -475,7 +475,7 @@ test("an empty list, a role without access and a switched-off feature", async (t
 
   const engineer = await saved(t, { me: account("engineer") });
   assert.equal(
-    engineer.asked().filter((r) => r.includes("/v1/manifests")).length,
+    engineer.asked().filter((r) => r.includes("/api/v1/manifests")).length,
     0,
   );
 
@@ -484,7 +484,7 @@ test("an empty list, a role without access and a switched-off feature", async (t
   });
   assert.equal(off.navigations(), 1);
   assert.equal(
-    off.asked().filter((r) => r.includes("/v1/manifests")).length,
+    off.asked().filter((r) => r.includes("/api/v1/manifests")).length,
     0,
   );
   assert.equal(FRAMEWORK.id, 3);

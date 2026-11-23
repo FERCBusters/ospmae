@@ -25,7 +25,7 @@
   } = OSPMAE;
 
   // Theme palettes come from the shared design system; the server may narrow
-  // them per deployment through available_themes on /v1/me.
+  // them per deployment through available_themes on /api/v1/me.
   const THEMES =
     window.mospUi &&
     Array.isArray(window.mospUi.THEMES) &&
@@ -137,7 +137,7 @@
   // SSO email addresses, as KEEN's account security page manages them.
   async function loadSsoEmails() {
     if (!el.ssoEmailList) return;
-    const data = await api("/v1/me/sso-emails");
+    const data = await api("/api/v1/me/sso-emails");
     if (el.ssoEmailForm) el.ssoEmailForm.hidden = !data.smtp_configured;
     if (el.ssoEmailStatus)
       el.ssoEmailStatus.textContent = data.smtp_configured
@@ -163,7 +163,7 @@
           return;
         button.disabled = true;
         try {
-          await api("/v1/me/sso-emails/remove", {
+          await api("/api/v1/me/sso-emails/remove", {
             method: "POST",
             body: { email: address.email },
           });
@@ -189,7 +189,7 @@
     const button = el.ssoEmailForm?.querySelector("button");
     if (button) button.disabled = true;
     try {
-      const result = await api("/v1/me/sso-emails/request", {
+      const result = await api("/api/v1/me/sso-emails/request", {
         method: "POST",
         body: { email: el.ssoEmail?.value || "" },
       });
@@ -254,7 +254,7 @@
 
   async function loadSubscriptions() {
     try {
-      const res = await api("/v1/me/subscriptions");
+      const res = await api("/api/v1/me/subscriptions");
       state.subscriptions = Array.isArray(res?.items) ? res.items : [];
       if (el.subscriptionsMsg) el.subscriptionsMsg.textContent = "";
     } catch (err) {
@@ -285,7 +285,7 @@
     _rowStatus(row, "Saving…");
 
     try {
-      const res = await api(`/v1/projects/${pid}/subscription`, {
+      const res = await api(`/api/v1/projects/${pid}/subscription`, {
         method: "POST",
         body: {
           notify_new_versions: nv,
@@ -534,7 +534,7 @@
   }
 
   async function loadShortcuts() {
-    const data = await api("/v1/me/shortcuts");
+    const data = await api("/api/v1/me/shortcuts");
     state.shortcuts = Array.isArray(data?.items)
       ? data.items
       : Array.isArray(data)
@@ -583,7 +583,7 @@
         if (!id) return;
         if (!confirm("Remove this shortcut?")) return;
         try {
-          await api(`/v1/me/shortcuts/${encodeURIComponent(id)}`, {
+          await api(`/api/v1/me/shortcuts/${encodeURIComponent(id)}`, {
             method: "DELETE",
           });
           await loadShortcuts();
@@ -610,7 +610,7 @@
       );
       return;
     }
-    await api("/v1/me/shortcuts", { method: "POST", body: { name, url } });
+    await api("/api/v1/me/shortcuts", { method: "POST", body: { name, url } });
     el.shortcutName.value = "";
     el.shortcutUrl.value = "";
     await loadShortcuts();
@@ -643,7 +643,7 @@
       return;
     }
 
-    await api("/v1/auth/change-password", {
+    await api("/api/v1/auth/change-password", {
       method: "POST",
       body: { current_password, new_password, confirm_password },
     });
@@ -668,7 +668,7 @@
   async function loadMyMail() {
     if (!el.mailList) return;
     try {
-      const body = await api("/v1/me/notifications");
+      const body = await api("/api/v1/me/notifications");
       if (!body.length) {
         el.mailSummary.textContent =
           "Nothing has been emailed to this account from the current configuration yet.";
@@ -696,7 +696,7 @@
   async function loadMfaStatus() {
     if (!el.securitySummary) return;
     try {
-      const state2 = await api("/v1/me/mfa");
+      const state2 = await api("/api/v1/me/mfa");
       if (!state2.local_enabled) {
         el.securitySummary.textContent =
           "Password sign-in is disabled. Manage multi-factor authentication with your sign-in provider.";
@@ -725,7 +725,7 @@
     }
     if (el.manageMfaBtn) el.manageMfaBtn.disabled = true;
     try {
-      await api("/v1/auth/mfa/manage/start", {
+      await api("/api/v1/auth/mfa/manage/start", {
         method: "POST",
         body: { password },
       });
@@ -905,7 +905,7 @@
   async function loadMyQuestions() {
     el.myQuestionsStatus.hidden = true;
     try {
-      const data = await api("/v1/me/questions");
+      const data = await api("/api/v1/me/questions");
       renderMyQuestions(Array.isArray(data?.items) ? data.items : []);
     } catch (err) {
       el.myQuestionsStatus.textContent =

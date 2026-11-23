@@ -418,7 +418,7 @@
     }
 
     try {
-      const created = await apiFetch("/v1/frameworks", {
+      const created = await apiFetch("/api/v1/frameworks", {
         method: "POST",
         body: {
           machine_name: machine,
@@ -461,7 +461,7 @@
     }
 
     try {
-      const updated = await apiFetch(`/v1/frameworks/${fw.id}`, {
+      const updated = await apiFetch(`/api/v1/frameworks/${fw.id}`, {
         method: "PUT",
         body: payload,
       });
@@ -489,7 +489,7 @@
     if (!ok) return;
 
     try {
-      await apiFetch(`/v1/frameworks/${fw.id}`, { method: "DELETE" });
+      await apiFetch(`/api/v1/frameworks/${fw.id}`, { method: "DELETE" });
     } catch (err) {
       // If the framework is referenced, offer a force-delete.
       if (err?.status === 409) {
@@ -497,7 +497,7 @@
           `${err.message}\n\nDelete anyway? This will remove nodes and any mappings that reference them.`,
         );
         if (!okForce) return;
-        await apiFetch(`/v1/frameworks/${fw.id}?force=true`, {
+        await apiFetch(`/api/v1/frameworks/${fw.id}?force=true`, {
           method: "DELETE",
         });
       } else {
@@ -544,13 +544,13 @@
 
     try {
       if (state.editingMode === "edit" && state.selectedNodeId) {
-        await apiFetch(`/v1/framework-nodes/${state.selectedNodeId}`, {
+        await apiFetch(`/api/v1/framework-nodes/${state.selectedNodeId}`, {
           method: "PUT",
           body: payload,
         });
         setMsg(el.nodeMsg, "Node updated.", "success");
       } else {
-        await apiFetch(`/v1/frameworks/${fw.id}/nodes`, {
+        await apiFetch(`/api/v1/frameworks/${fw.id}/nodes`, {
           method: "POST",
           body: payload,
         });
@@ -568,7 +568,7 @@
     const ok = window.confirm("Delete this node? This cannot be undone.");
     if (!ok) return;
 
-    const nodeUrl = `/v1/framework-nodes/${state.selectedNodeId}`;
+    const nodeUrl = `/api/v1/framework-nodes/${state.selectedNodeId}`;
     try {
       try {
         await apiFetch(nodeUrl, { method: "DELETE" });

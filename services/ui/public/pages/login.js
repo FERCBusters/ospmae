@@ -99,7 +99,7 @@
         {
           key: "oidc",
           label: methods.oidc.label || "Single sign-on",
-          start_url: methods.oidc.start_url || "/v1/auth/oidc/start",
+          start_url: methods.oidc.start_url || "/api/v1/auth/oidc/start",
         },
       ];
     }
@@ -113,7 +113,7 @@
         .trim()
         .toLowerCase();
       const startUrl =
-        String(provider?.start_url || "").trim() || "/v1/auth/oidc/start";
+        String(provider?.start_url || "").trim() || "/api/v1/auth/oidc/start";
 
       const button = document.createElement("button");
       button.className = "btn btn-outline-primary w-100";
@@ -136,7 +136,7 @@
 
   async function initAuthMethods() {
     try {
-      const methods = await window.OSPMAE?.api?.("/v1/auth/methods", {
+      const methods = await window.OSPMAE?.api?.("/api/v1/auth/methods", {
         allowErrorStatuses: [404, 500],
       });
       if (!methods) return null;
@@ -161,7 +161,7 @@
 
   async function pingMe() {
     try {
-      const me = await window.OSPMAE?.api?.("/v1/me", {
+      const me = await window.OSPMAE?.api?.("/api/v1/me", {
         allowErrorStatuses: [401],
       });
       if (me && me.username) {
@@ -188,7 +188,7 @@
         return;
       }
 
-      const res = await window.OSPMAE?.api?.("/v1/auth/login", {
+      const res = await window.OSPMAE?.api?.("/api/v1/auth/login", {
         method: "POST",
         body: { username, password },
       });

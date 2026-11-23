@@ -234,9 +234,12 @@ async function openSubscriptionModal() {
 
   try {
     el.subscribeBtn?.setAttribute("disabled", "disabled");
-    const sub = await apiFetch(`/v1/projects/${state.projectId}/subscription`, {
-      method: "GET",
-    });
+    const sub = await apiFetch(
+      `/api/v1/projects/${state.projectId}/subscription`,
+      {
+        method: "GET",
+      },
+    );
     const subscribed = !!sub?.subscribed;
 
     // Defaults for a new subscription.
@@ -267,10 +270,13 @@ async function saveSubscriptionFromModal() {
 
   try {
     el.subscriptionSaveBtn?.setAttribute("disabled", "disabled");
-    const res = await apiFetch(`/v1/projects/${state.projectId}/subscription`, {
-      method: "POST",
-      body: { notify_new_versions, notify_questions },
-    });
+    const res = await apiFetch(
+      `/api/v1/projects/${state.projectId}/subscription`,
+      {
+        method: "POST",
+        body: { notify_new_versions, notify_questions },
+      },
+    );
 
     const subscribed = !!res?.subscribed;
     state.project.is_subscribed = subscribed;
@@ -298,7 +304,7 @@ async function unsubscribeFromModal() {
   if (!state.projectId) return;
   try {
     el.subscriptionUnsubscribeBtn?.setAttribute("disabled", "disabled");
-    await apiFetch(`/v1/projects/${state.projectId}/subscription`, {
+    await apiFetch(`/api/v1/projects/${state.projectId}/subscription`, {
       method: "DELETE",
     });
     state.project.is_subscribed = false;
@@ -320,13 +326,13 @@ async function toggleSubscriptionLegacy() {
   try {
     el.subscribeBtn?.setAttribute("disabled", "disabled");
     if (subscribed) {
-      await apiFetch(`/v1/projects/${state.projectId}/subscription`, {
+      await apiFetch(`/api/v1/projects/${state.projectId}/subscription`, {
         method: "DELETE",
       });
       state.project.is_subscribed = false;
       toast("Unsubscribed", "success");
     } else {
-      await apiFetch(`/v1/projects/${state.projectId}/subscription`, {
+      await apiFetch(`/api/v1/projects/${state.projectId}/subscription`, {
         method: "POST",
       });
       state.project.is_subscribed = true;
@@ -453,7 +459,7 @@ async function exportProjectManifest(format) {
     version_id: state.currentVersionId || undefined,
   };
 
-  const path = `/v1/projects/${state.projectId}/manifest/export${toQueryString(query)}`;
+  const path = `/api/v1/projects/${state.projectId}/manifest/export${toQueryString(query)}`;
   try {
     const blob = await apiFetch(path, { responseType: "blob" });
     const ext =
@@ -488,7 +494,7 @@ async function saveProjectManifest() {
     owner_group_id: null,
   };
 
-  const path = `/v1/projects/${state.projectId}/manifest/save${toQueryString(query)}`;
+  const path = `/api/v1/projects/${state.projectId}/manifest/save${toQueryString(query)}`;
 
   try {
     const res = await apiFetch(path, { method: "POST", body });
@@ -515,7 +521,7 @@ function canRunDependencyDiscovery() {
   const meId = Number(state.me?.id || 0);
   if (ownerId > 0 && meId > 0 && ownerId === meId) return true;
 
-  // The API also permits project owner groups. /v1/me does not expose group
+  // The API also permits project owner groups. /api/v1/me does not expose group
   // membership, so the client can only positively identify direct owners here.
   return false;
 }
@@ -595,7 +601,7 @@ async function loadProjectChangelog() {
   if (!state.projectId || state.changelogLoaded) return;
   await loadEntityChangelog(
     el.projectChangelog,
-    `/v1/projects/${encodeURIComponent(String(state.projectId))}/changelog?limit=100`,
+    `/api/v1/projects/${encodeURIComponent(String(state.projectId))}/changelog?limit=100`,
     { empty: "No project changelog entries yet." },
   );
   state.changelogLoaded = true;
@@ -2272,7 +2278,7 @@ async function loadGraph(versionId) {
     params.set("framework_id", String(state.activeFramework.id));
   const query = params.toString() ? `?${params.toString()}` : "";
   const graphData = await apiFetch(
-    `/v1/projects/${state.projectId}/graph${query}`,
+    `/api/v1/projects/${state.projectId}/graph${query}`,
   );
   state.graphData = normalizeGraphData(graphData, versionId);
 }
@@ -2323,7 +2329,7 @@ async function loadProject() {
   state.projectId = id;
   const fwId = state.activeFramework?.id;
   state.project = await apiFetch(
-    `/v1/projects/${id}${fwId ? `?framework_id=${encodeURIComponent(String(fwId))}` : ""}`,
+    `/api/v1/projects/${id}${fwId ? `?framework_id=${encodeURIComponent(String(fwId))}` : ""}`,
   );
   state.versions = Array.isArray(state.project.versions)
     ? state.project.versions
@@ -2393,7 +2399,7 @@ async function loadQuestions(force) {
   state.loadingQuestions = true;
 
   try {
-    const res = await apiFetch(`/v1/projects/${state.projectId}/questions`);
+    const res = await apiFetch(`/api/v1/projects/${state.projectId}/questions`);
     state.questionThreads = Array.isArray(res.items) ? res.items : [];
     state.canAnswerQuestions = !!res.can_answer;
     state.questionsLoaded = true;
@@ -2513,7 +2519,7 @@ function renderQuestions() {
 async function submitQuestion(body) {
   if (!state.projectId) return;
   try {
-    await apiFetch(`/v1/projects/${state.projectId}/questions`, {
+    await apiFetch(`/api/v1/projects/${state.projectId}/questions`, {
       method: "POST",
       body: { body },
     });
@@ -2527,7 +2533,7 @@ async function submitQuestion(body) {
 
 async function submitReply(threadId, body) {
   try {
-    await apiFetch(`/v1/questions/${threadId}/reply`, {
+    await apiFetch(`/api/v1/questions/${threadId}/reply`, {
       method: "POST",
       body: { body },
     });
@@ -2760,7 +2766,7 @@ async function loadDependencyGraph(versionId) {
   const params = new URLSearchParams();
   params.set("version_id", String(versionId));
   const res = await apiFetch(
-    `/v1/projects/${state.projectId}/dependency-graph?${params.toString()}`,
+    `/api/v1/projects/${state.projectId}/dependency-graph?${params.toString()}`,
   );
   state.depGraphData = res;
   state.depGraphVersionId = Number(versionId);
@@ -3993,7 +3999,7 @@ function bindEvents() {
     try {
       setDepStatusBadge("queued", "Queued now • you can come back later");
       const res = await apiFetch(
-        `/v1/project-versions/${id}/dependency-discovery?run_now=true`,
+        `/api/v1/project-versions/${id}/dependency-discovery?run_now=true`,
         { method: "POST" },
       );
       if (res?.launched) {
