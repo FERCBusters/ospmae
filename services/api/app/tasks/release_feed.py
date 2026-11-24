@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 import xml.etree.ElementTree as ET
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-import httpx
+import httpx2 as httpx
 from celery.utils.log import get_task_logger
+from mosp.core.datetime_utils import (
+    parse_iso_datetime_or_none,
+    to_utc_naive,
+    utc_now_naive,
+)
+from mosp.core.task_deadline import TIME_LIMITS
+from mosp.security.xml import parse_untrusted_xml
 from sqlalchemy import func, true
 from sqlalchemy.exc import IntegrityError
 
@@ -22,7 +30,7 @@ from app.db.models import (
     ProjectVersion,
     ProjectVersionFrameworkNode,
     User,
-    UserGroup,
+    user_groups,
 )
 from app.db.session import SessionLocal
 from app.depscan.scan import repository_url_for_release_link
@@ -33,11 +41,7 @@ from app.security.regex_shape import (
     compile_supplied_pattern,
     search_within,
 )
-from app.security.url_safety import (
-    contains_xml_dtd_or_entity,
-    parse_xml_without_dtd,
-    validate_public_https_url,
-)
+from app.security.url_safety import validate_public_https_url
 from app.services.entity_changelog import (
     project_version_changelog_state,
     record_entity_changelog,
@@ -164,18 +168,6 @@ def _feed_validator(value: str | None) -> str | None:
     return text
 
 
-def _utcnow_naive() -> datetime:
-    return datetime.utcnow()
-
-
-def _to_naive_utc(dt: datetime | None) -> datetime | None:
-    if not dt:
-        return None
-    if dt.tzinfo is None:
-        return dt
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-
 def _localname(tag: str) -> str:
     return tag.split("}")[-1] if "}" in tag else tag
 
@@ -196,22 +188,16 @@ def _find_children(el: ET.Element, name: str) -> list[ET.Element]:
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
-    if not value:
+    """A feed entry's date, Atom's ISO 8601 or RSS's RFC 822, as naive UTC."""
+    text = (value or "").strip()
+    if not text:
         return None
-    v = value.strip()
-    if not v:
-        return None
-    # Atom (ISO 8601)
+    parsed = parse_iso_datetime_or_none(text)
+    if parsed is not None:
+        return parsed
     try:
-        if v.endswith("Z"):
-            return datetime.fromisoformat(v.replace("Z", "+00:00"))
-        return datetime.fromisoformat(v)
-    except Exception:
-        pass
-    # RSS (RFC822)
-    try:
-        return parsedate_to_datetime(v)
-    except Exception:
+        return to_utc_naive(parsedate_to_datetime(text))
+    except (TypeError, ValueError):
         return None
 
 
@@ -223,12 +209,13 @@ def _parse_feed_entries(xml_data: bytes) -> list[dict[str, Any]]:
     Returns list of entries, each with keys: id, title, link, published_dt.
     """
 
-    if contains_xml_dtd_or_entity(xml_data):
-        raise ValueError("DTD/ENTITY not allowed in release feeds")
-
-    # The byte scan above sees ASCII-compatible encodings only (a UTF-16
-    # feed passes it); the parser refuses a declaration in any encoding.
-    root = parse_xml_without_dtd(xml_data)
+    # Feeds have no use for a document type declaration or a processing
+    # instruction, so any is refused, in whatever encoding (mosp.security.xml).
+    root = parse_untrusted_xml(
+        xml_data,
+        strict=True,
+        max_bytes=max(int(settings.release_feed_max_bytes), 1),
+    )
     root_name = _localname(root.tag).lower()
 
     entries: list[dict[str, Any]] = []
@@ -294,7 +281,7 @@ def _parse_feed_entries(xml_data: bytes) -> list[dict[str, Any]]:
         dt = e.get("published_dt")
         if isinstance(dt, datetime):
             return dt
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return datetime.min
 
     entries.sort(key=sort_key)
     return entries
@@ -323,6 +310,8 @@ def _guess_version_from_entry(title: str, link: str | None) -> str | None:
             for i in range(len(parts) - 1):
                 if parts[i] == "tag" and i + 1 < len(parts):
                     return parts[i + 1]
+        except TIME_LIMITS:
+            raise
         except Exception:
             pass
 
@@ -498,7 +487,7 @@ def _source_code_url_for_entry(
 def _owner_emails(db, project: Project) -> list[str]:
     """Return canonical primary notification addresses for project owners."""
 
-    users: dict[int, User] = {}
+    users: dict[uuid.UUID, User] = {}
 
     if project.created_by_user_id:
         owner = (
@@ -511,7 +500,7 @@ def _owner_emails(db, project: Project) -> list[str]:
             users[owner.id] = owner
 
     owner_group_ids = {
-        int(gid)
+        gid
         for (gid,) in db.query(ProjectOwnerGroup.group_id)
         .filter(ProjectOwnerGroup.project_id == project.id)
         .all()
@@ -521,8 +510,8 @@ def _owner_emails(db, project: Project) -> list[str]:
     if owner_group_ids:
         group_users = (
             db.query(User)
-            .join(UserGroup, UserGroup.user_id == User.id)
-            .filter(UserGroup.group_id.in_(sorted(owner_group_ids)))
+            .join(user_groups, user_groups.c.user_id == User.id)
+            .filter(user_groups.c.group_id.in_(sorted(owner_group_ids)))
             .filter(User.is_active.is_(True))
             .all()
         )
@@ -600,10 +589,12 @@ def _mark_feed_checked(db, project_id: int) -> None:
     of it failed: the next poll starts with the projects waiting longest."""
     try:
         db.query(Project).filter(Project.id == project_id).update(
-            {Project.release_rss_last_checked_at: _utcnow_naive()},
+            {Project.release_rss_last_checked_at: utc_now_naive()},
             synchronize_session=False,
         )
         db.commit()
+    except TIME_LIMITS:
+        raise
     except Exception:
         db.rollback()
         log.exception("Could not record the feed check for project_id=%s", project_id)
@@ -726,14 +717,16 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                         resp, content, final_url = _safe_fetch_feed(
                             client, url, headers
                         )
+                    except TIME_LIMITS:
+                        raise
                     except Exception:
                         log.exception("Release feed fetch failed")
-                        project.release_rss_last_checked_at = _utcnow_naive()
+                        project.release_rss_last_checked_at = utc_now_naive()
                         db.add(project)
                         db.commit()
                         continue
 
-                    project.release_rss_last_checked_at = _utcnow_naive()
+                    project.release_rss_last_checked_at = utc_now_naive()
                     if resp.status_code == 304:
                         db.add(project)
                         db.commit()
@@ -763,6 +756,8 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
 
                     try:
                         entries = _parse_feed_entries(content)
+                    except TIME_LIMITS:
+                        raise
                     except Exception:
                         log.exception(
                             "Failed to parse release feed for project_id=%s", project.id
@@ -865,7 +860,7 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                             )
                             continue
 
-                        release_dt = _to_naive_utc(entry.get("published_dt"))
+                        release_dt = entry.get("published_dt")
 
                         link_to_source = _source_code_url_for_entry(
                             project, link, inheritance_source
@@ -967,6 +962,8 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                                 notify_subscribers_published(
                                     db, project=project, version=pv
                                 )
+                            except TIME_LIMITS:
+                                raise
                             except Exception:
                                 db.rollback()
                                 log.exception(
@@ -1014,6 +1011,8 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                                                 project.id,
                                                 pv.version,
                                             )
+                                        except TIME_LIMITS:
+                                            raise
                                         except Exception:
                                             log.exception(
                                                 "Draft release notification failed to %s for project_id=%s version=%s",
@@ -1021,6 +1020,8 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
                                                 project.id,
                                                 pv.version,
                                             )
+                except TIME_LIMITS:
+                    raise
                 except Exception:
                     db.rollback()
                     log.exception(
@@ -1032,6 +1033,8 @@ def poll_release_feeds(limit_projects: int = 50) -> dict[str, Any]:
             from app.tasks.notifications import kick_delivery
 
             kick_delivery()
+        except TIME_LIMITS:
+            raise
         except Exception:
             log.exception("Failed to kick notification delivery after feed poll")
 
@@ -1086,7 +1089,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             resp, content, final_url = _safe_fetch_feed(client, url, {})
 
         if resp.status_code != 200 or not content:
-            project.release_rss_last_checked_at = _utcnow_naive()
+            project.release_rss_last_checked_at = utc_now_naive()
             db.add(project)
             db.commit()
             return {
@@ -1105,6 +1108,8 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
 
         try:
             entries = _parse_feed_entries(content)
+        except TIME_LIMITS:
+            raise
         except Exception:
             log.exception("Discovery feed parse failed for project_id=%s", project_id)
             db.add(project)
@@ -1112,7 +1117,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             return {"enabled": True, "checked": 1, "created": 0, "error": "parse"}
 
         if not entries:
-            project.release_rss_last_checked_at = _utcnow_naive()
+            project.release_rss_last_checked_at = utc_now_naive()
             db.add(project)
             db.commit()
             return {"enabled": True, "checked": 1, "created": 0, "reason": "empty"}
@@ -1123,8 +1128,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             sorted(
                 entries,
                 key=lambda e: (
-                    _to_naive_utc(e.get("published_dt"))
-                    or datetime.min.replace(tzinfo=None)
+                    e.get("published_dt") or datetime.min.replace(tzinfo=None)
                 ),
             )
         )
@@ -1177,7 +1181,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
             pv = ProjectVersion(
                 project_id=project.id,
                 version=version_name,
-                release_date=_to_naive_utc(entry.get("published_dt")),
+                release_date=entry.get("published_dt"),
                 status=None,
                 link_to_source_code=link_to_source,
                 notes=notes,
@@ -1223,7 +1227,7 @@ def discover_project_release_feed(project_id: int) -> dict[str, Any]:
 
         if newest_id:
             project.release_rss_last_entry_id = newest_id
-        project.release_rss_last_checked_at = _utcnow_naive()
+        project.release_rss_last_checked_at = utc_now_naive()
         db.add(project)
         db.commit()
 

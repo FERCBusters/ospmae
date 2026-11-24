@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query
+from mosp.api.routing import Router
+from mosp.security.auth import require_authenticated
+from mosp.security.permissions import has_permission
+from mosp.security.roles import ROLE_ADMIN, attach_effective_role
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
+from app.api.deps import DbId
 from app.api.payloads import (
     FrameworkCreatePayload,
     FrameworkNodeCreatePayload,
@@ -23,11 +28,9 @@ from app.db.models import (
     User,
 )
 from app.db.session import get_db
-from app.security.auth import get_current_user
-from app.security.permissions import PERM_FRAMEWORK_WRITE, has_permission
-from app.security.roles import ROLE_ADMIN, attach_effective_role
+from app.security.permissions import PERM_FRAMEWORK_WRITE
 
-router = APIRouter()
+router = Router()
 
 
 def _build_tree(nodes: list[FrameworkNode]) -> list[dict]:
@@ -222,10 +225,13 @@ def _require_framework_write(db: Session, user: User) -> None:
 
 
 @router.get("/v1/frameworks")
-def list_frameworks(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def list_frameworks(
+    db: Session = Depends(get_db), _: User = Depends(require_authenticated)
+):
     ensure_default_frameworks(db)
     items = (
         db.query(Framework)
+        .options(joinedload(Framework.created_by_user))
         .order_by(Framework.display_name.asc(), Framework.machine_name.asc())
         .all()
     )
@@ -238,6 +244,9 @@ def list_frameworks(db: Session = Depends(get_db), _: User = Depends(get_current
                 "display_name": f.display_name,
                 "description": f.description,
                 "created_by_user_id": f.created_by_user_id,
+                "created_by_username": (
+                    f.created_by_user.username if f.created_by_user else None
+                ),
             }
             for f in items
         ]
@@ -248,7 +257,7 @@ def list_frameworks(db: Session = Depends(get_db), _: User = Depends(get_current
 def create_framework(
     payload: FrameworkCreatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_framework_write(db, user)
 
@@ -284,9 +293,9 @@ def create_framework(
 
 @router.get("/v1/frameworks/{framework_id}")
 def get_framework(
-    framework_id: int,
+    framework_id: DbId,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_authenticated),
 ):
     fw = db.query(Framework).filter(Framework.id == framework_id).one_or_none()
     if not fw:
@@ -302,10 +311,10 @@ def get_framework(
 
 @router.put("/v1/frameworks/{framework_id}")
 def update_framework(
-    framework_id: int,
+    framework_id: DbId,
     payload: FrameworkUpdatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_framework_write(db, user)
 
@@ -343,10 +352,10 @@ def update_framework(
 
 @router.delete("/v1/frameworks/{framework_id}")
 def delete_framework(
-    framework_id: int,
+    framework_id: DbId,
     force: bool = Query(False, description="Force delete even if referenced"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     """Delete a framework (and its taxonomy) if the caller is the owner or an admin.
 
@@ -362,9 +371,7 @@ def delete_framework(
     effective_role = attach_effective_role(db, user)
     is_admin = effective_role == ROLE_ADMIN
 
-    is_owner = fw.created_by_user_id is not None and int(fw.created_by_user_id) == int(
-        user.id
-    )
+    is_owner = fw.created_by_user_id is not None and fw.created_by_user_id == user.id
     if not (is_admin or is_owner):
         raise HTTPException(
             status_code=403,
@@ -398,9 +405,9 @@ def delete_framework(
 
 @router.get("/v1/frameworks/{framework_id}/nodes")
 def get_framework_nodes(
-    framework_id: int,
+    framework_id: DbId,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_authenticated),
 ):
     fw = db.query(Framework).filter(Framework.id == framework_id).one_or_none()
     if not fw:
@@ -447,12 +454,12 @@ def get_framework_nodes(
 
 @router.get("/v1/frameworks/{framework_id}/catalogue")
 def get_framework_catalogue(
-    framework_id: int,
+    framework_id: DbId,
     latest_only: bool = Query(
         True, description="Count projects mapped via latest versions only"
     ),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_authenticated),
 ):
     """Framework taxonomy plus project counts per node.
 
@@ -542,10 +549,10 @@ def get_framework_catalogue(
 
 @router.post("/v1/frameworks/{framework_id}/nodes")
 def create_framework_node(
-    framework_id: int,
+    framework_id: DbId,
     payload: FrameworkNodeCreatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_framework_write(db, user)
 
@@ -610,10 +617,10 @@ def create_framework_node(
 
 @router.put("/v1/framework-nodes/{node_id}")
 def update_framework_node(
-    node_id: int,
+    node_id: DbId,
     payload: FrameworkNodeUpdatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_framework_write(db, user)
 
@@ -716,10 +723,10 @@ def update_framework_node(
 
 @router.delete("/v1/framework-nodes/{node_id}")
 def delete_framework_node(
-    node_id: int,
+    node_id: DbId,
     force: bool = Query(False, description="Delete even if projects map to it"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_framework_write(db, user)
 

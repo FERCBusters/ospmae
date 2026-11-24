@@ -214,17 +214,20 @@ def test_an_account_sees_what_was_mailed_to_it_without_the_bodies(outbox):
     ok(
         owner.patch(
             f"/v1/manifests/{saved['id']}/sharing",
-            json={"owner_group_id": team},
+            json={"owner_group_id": str(team)},
             headers=csrf(owner),
         )
     )
-    (entry,) = ok(peer.get("/v1/me/notifications", params={"limit": 500}))
+    (entry,) = ok(peer.get("/v1/me/notifications", params={"limit": 200}))
     assert entry["recipient"] == "peer@x.test"
     assert "Board pack" in entry["subject"]
     assert (entry["status"], entry["sent_at"]) == ("pending", None)
     assert "body" not in entry
-    # The sharer was mailed nothing, and a zero limit still means one page.
-    assert ok(owner.get("/v1/me/notifications", params={"limit": 0})) == []
+    # The sharer was mailed nothing, and a page is between 1 and 200 rows.
+    assert ok(owner.get("/v1/me/notifications")) == []
+    for limit in (0, 201):
+        asked = owner.get("/v1/me/notifications", params={"limit": limit})
+        assert asked.status_code == 422
 
 
 @pytest.mark.parametrize(

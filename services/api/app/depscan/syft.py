@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from celery.utils.log import get_task_logger
+from mosp.core.task_deadline import TIME_LIMITS
+from mosp.security.json_shape import decode_json
 
 from app.core.config import settings
 from app.depscan.ecosystems import ecosystem, purl_type
@@ -46,6 +47,8 @@ def _location_paths(artifact: dict[str, Any], repo_root: Path) -> list[str]:
             p = Path(raw)
             if p.is_absolute():
                 raw = str(p.relative_to(repo_root))
+        except TIME_LIMITS:
+            raise
         except Exception:
             pass
         if raw and raw not in paths:
@@ -94,7 +97,9 @@ def scan_syft(repo_root: Path) -> list[DiscoveredDependency] | None:
         return None
 
     try:
-        data = json.loads(proc.stdout or "{}")
+        data = decode_json(proc.stdout or "{}")
+    except TIME_LIMITS:
+        raise
     except Exception:
         log.warning("Syft returned non-JSON output")
         return None

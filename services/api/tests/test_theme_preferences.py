@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from tests.conftest import login, make_user
+import pytest
+
+from tests.conftest import auth_client, login, make_user
 
 
 def _signed_in(client, username: str, role: str = "viewer"):
@@ -66,10 +68,20 @@ def test_theme_defaults_to_the_application_palette(client):
     assert r.json()["theme"] == "ink"
 
 
-def test_start_pages_follow_the_page_layout(client):
-    """Projects (/index.html) and Manifests are everyone's start pages; the
-    retired pages normalise to the entry page instead of a dead link."""
-    csrf = _signed_in(client, "StartPages", role="viewer")
+@pytest.mark.parametrize(
+    ("role", "extra"),
+    [
+        ("viewer", set()),
+        ("framework_admin", {"/framework-manage.html"}),
+        ("admin", {"/framework-manage.html", "/admin.html"}),
+    ],
+)
+def test_start_pages_follow_the_page_layout(role, extra):
+    """The catalogue, manifests and account pages are everyone's start
+    pages; framework management needs framework.write and the admin page the
+    admin role. Anything else becomes the catalogue instead of a dead link."""
+    client, _ = auth_client(username=f"start-{role}", role=role)
+    csrf = client.cookies.get("__Host-ospmae_csrf") or ""
 
     def _save(page):
         r = client.put(
@@ -80,14 +92,13 @@ def test_start_pages_follow_the_page_layout(client):
         assert r.status_code == 200, r.text
         return r.json()["default_start_page"]
 
-    assert _save("/manifests.html") == "/manifests.html"
-    assert _save("/index.html") == "/index.html"
-    for retired in (
-        "/saved-manifests.html",
-        "/project-manage.html",
-        "/dashboard.html",
-        "/my-questions.html",
-    ):
-        assert _save(retired) == "/index.html"
-    # Admin-only pages stay out of reach for other roles.
-    assert _save("/admin.html") == "/index.html"
+    everyone = {"/index.html", "/manifests.html", "/account.html"}
+    for page in everyone | extra:
+        assert _save(page) == page
+    for refused in ({"/framework-manage.html", "/admin.html"} - extra) | {
+        "/dependencies.html",
+        "/login.html",
+        "//evil.example/",
+        "javascript:alert(1)",
+    }:
+        assert _save(refused) == "/index.html", refused

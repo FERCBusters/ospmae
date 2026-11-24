@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db.models import User  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
-from app.security.mfa import operator_reset  # noqa: E402
+from mosp.security.mfa import operator_reset  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

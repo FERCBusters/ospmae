@@ -138,12 +138,20 @@
       .replaceAll("'", "&#39;");
   }
 
-  // One CSV cell: quoted with inner quotes doubled, and a leading = + - @
-  // or tab neutralised with an apostrophe so a spreadsheet reads text rather
-  // than a formula (the rule of the API's _excel_safe_cell).
+  // One CSV cell: quoted with inner quotes doubled, and text a spreadsheet
+  // would read as a formula neutralised with an apostrophe (the rule of
+  // MOSP's spreadsheet_cell, which guards the API's exports). A formula is
+  // looked for past the characters importers skip at the start of a cell,
+  // and after each semicolon, tab or line break, where a spreadsheet that
+  // splits on those starts a cell of its own whatever this file's quoting.
+  // Numbers keep their value.
   function csvCell(value) {
     let s = String(value ?? "");
-    if (/^[=+\-@\t]/.test(s)) s = `'${s}`;
+    if (typeof value === "string") {
+      s = s.replace(/([;\t\r\n][ \t\r\n\v\f\0\ufeff]*)(?=[=+\-@])/g, "$1'");
+      if (/^[ \t\r\n\v\f\0\ufeff]*[=+\-@]/.test(s) || /^[\t\r\n]/.test(s))
+        s = `'${s}`;
+    }
     return `"${s.replace(/"/g, '""')}"`;
   }
 
@@ -309,15 +317,13 @@
       el.textContent = "";
       return;
     }
-    const role = state.me.effective_role || state.me.role || "viewer";
+    const role = state.me.effective_role || state.me.role || "normal";
     el.textContent = `${state.me.username} (${role})`;
   }
 
   function applyNavPermissions() {
-    const currentRole = role();
-    const canFrameworks =
-      currentRole === "admin" || currentRole === "framework_admin";
-    const adminOnly = currentRole === "admin";
+    const canFrameworks = can("framework.write");
+    const adminOnly = role() === "admin";
 
     document.querySelectorAll('a[href="/admin.html"]').forEach((el) => {
       el.style.display = adminOnly ? "" : "none";
@@ -331,19 +337,11 @@
   }
 
   function canAnswerQuestions() {
-    const r = role();
-    return r === "admin" || r === "maintainer" || r === "contributor";
+    return can("project.answer");
   }
 
-  // Askers open threads; every answering role can ask as well.
   function canAskQuestions() {
-    const r = role();
-    return (
-      canAnswerQuestions() ||
-      r === "engineer" ||
-      r === "product_owner" ||
-      r === "architect"
-    );
+    return can("project.question");
   }
 
   function wsBaseUrl() {
@@ -423,8 +421,18 @@
     return (
       state.me?.effective_role ||
       state.me?.role ||
-      "viewer"
+      "normal"
     ).toLowerCase();
+  }
+
+  // Whether the signed-in account may do what a permission allows: an
+  // administrator may do everything, an ordinary account what its
+  // permissions (granted directly or through its groups) name. This only
+  // chooses what the page offers; the API decides.
+  function can(code) {
+    if (role() === "admin") return true;
+    const granted = state.me?.permissions;
+    return Array.isArray(granted) && granted.includes(code);
   }
 
   // Default palette keyed by '<framework_machine_name>:<node_key>'
@@ -452,14 +460,15 @@
   };
 
   // Start page choices shown in Preferences.
-  // `permission` is used client-side only to filter options by role.
+  // `permission` only filters the options shown: "public" is everyone's,
+  // "admin" the admin role's, and anything else a permission code.
   const ALLOWED_START_PAGES = [
     { value: "/index.html", label: "Projects", permission: "public" },
     { value: "/manifests.html", label: "Manifests", permission: "public" },
     {
       value: "/framework-manage.html",
       label: "Framework administration",
-      permission: "framework_admin",
+      permission: "framework.write",
     },
     { value: "/account.html", label: "Account", permission: "public" },
     { value: "/admin.html", label: "Admin", permission: "admin" },
@@ -1011,13 +1020,11 @@
   }
 
   function canMaintainProjects() {
-    const r = role();
-    return r === "admin" || r === "maintainer";
+    return can("project.write");
   }
 
   function canExportManifests() {
-    const r = role();
-    return r === "admin" || r === "architect" || r === "product_owner";
+    return can("manifest.export");
   }
 
   function _changelogValueHtml(value) {
@@ -1223,6 +1230,7 @@
     safeHref,
     csvCell,
     isAdmin,
+    can,
     canMaintainProjects,
     canExportManifests,
     canAnswerQuestions,

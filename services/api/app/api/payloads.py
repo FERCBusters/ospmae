@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
+from mosp.security.passwords import MAX_PASSWORD_LENGTH
+from mosp.security.urls import external_url
+from mosp.services.text import split_filter_values
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.api.deps import DB_INT_MAX
 from app.depscan.scan import validate_git_ref_name, validate_repo_url
-from app.security.passwords import MAX_PASSWORD_LENGTH
 from app.security.regex_shape import (
     MAX_IGNORE_PATTERNS,
     MAX_PATTERN_CHARS,
@@ -20,11 +24,20 @@ from app.security.repo_credentials import (
     clean_token,
     clean_username,
 )
-from app.security.url_safety import validate_public_https_url, validate_safe_href
+from app.security.url_safety import validate_public_https_url
 from app.services.branch_tracking import (
     MAX_POLL_INTERVAL_HOURS,
     MIN_POLL_INTERVAL_HOURS,
 )
+
+# A row identifier in a request body: an integer PostgreSQL can hold.
+DbIdField = Annotated[int, Field(ge=1, le=DB_INT_MAX)]
+# Ordering within a list of siblings.
+# A node's parent: a node id, or 0 for the top of the framework.
+ParentIdField = Annotated[int, Field(ge=0, le=DB_INT_MAX)]
+SortOrder = Annotated[int, Field(ge=-1_000_000, le=1_000_000)]
+# The most identifiers one request may name.
+MAX_IDS = 2000
 
 
 def _optional_repo_url(value: Any) -> str | None:
@@ -60,17 +73,6 @@ def _clean_tag_list(values: list[str]) -> list[str]:
 # -----------------------------------------------------------------------------
 
 
-class LoginPayload(BaseModel):
-    username: str = Field(min_length=1, max_length=160)
-    password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
-
-
-class ChangePasswordPayload(BaseModel):
-    current_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
-    new_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
-    confirm_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
-
-
 class AdminSetPasswordPayload(BaseModel):
     new_password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
 
@@ -79,11 +81,11 @@ class AdminUserCreatePayload(BaseModel):
     username: str = Field(min_length=1, max_length=160)
     email: str | None = Field(default=None, max_length=255)
     password: str = Field(min_length=8, max_length=MAX_PASSWORD_LENGTH)
-    role: str = Field(min_length=1, max_length=50)
+    role: Literal["admin", "normal", "inherit"] = "normal"
 
 
 class AdminUserUpdatePayload(BaseModel):
-    role: str | None = Field(default=None, min_length=1, max_length=50)
+    role: Literal["admin", "normal", "inherit"] | None = None
     is_active: bool | None = None
     email: str | None = Field(default=None, max_length=255)
 
@@ -103,12 +105,12 @@ class AdminGroupUpdatePayload(BaseModel):
 # Identifier lists are JSON arrays of integers: a string such as "12" is
 # refused rather than read character by character.
 class AdminUserAccessUpdatePayload(BaseModel):
-    group_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
-    permission_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
+    group_ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
+    permission_ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
 
 
 class AdminGroupPermissionsUpdatePayload(BaseModel):
-    permission_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
+    permission_ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
 
 
 # -----------------------------------------------------------------------------
@@ -132,16 +134,16 @@ class FrameworkNodeCreatePayload(BaseModel):
     key: str = Field(min_length=1, max_length=160)
     display_name: str = Field(min_length=1, max_length=200)
     description: str | None = None
-    parent_id: int | None = None
-    sort_order: int | None = 0
+    parent_id: ParentIdField | None = None
+    sort_order: SortOrder | None = 0
 
 
 class FrameworkNodeUpdatePayload(BaseModel):
     key: str | None = Field(default=None, min_length=1, max_length=160)
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
-    parent_id: int | None = None
-    sort_order: int | None = None
+    parent_id: ParentIdField | None = None
+    sort_order: SortOrder | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -245,7 +247,7 @@ class ProjectCreatePayload(BaseModel):
     display_name: str = Field(min_length=1, max_length=200)
 
     organisation: str | None = Field(default=None, max_length=200)
-    organisation_id: int | None = None
+    organisation_id: DbIdField | None = None
     project_type: str | None = Field(default=None, max_length=120)
     license: str | None = Field(default=None, max_length=120)
 
@@ -317,7 +319,7 @@ class ProjectCreatePayload(BaseModel):
         if not s:
             return None
         # Allow same-origin relative links; block javascript:/data: URLs.
-        return validate_safe_href(s, allow_relative=True)
+        return external_url(s, allow_relative=True)
 
     @field_validator("release_rss_feed_url", mode="before")
     @classmethod
@@ -402,7 +404,7 @@ class ProjectCreatePayload(BaseModel):
         if v is None:
             return None
         if isinstance(v, str):
-            return [x.strip() for x in v.split(",") if x.strip()]
+            return split_filter_values(v)
         return _clean_tag_list(list(v))
 
 
@@ -452,8 +454,8 @@ class ProjectVersionUpdatePayload(BaseModel):
 
 
 class ProjectVersionFrameworkNodesPayload(BaseModel):
-    framework_id: int
-    node_ids: list[int] = Field(default_factory=list)
+    framework_id: DbIdField
+    node_ids: list[DbIdField] = Field(default_factory=list, max_length=MAX_IDS)
 
     @field_validator("node_ids", mode="before")
     @classmethod
@@ -461,7 +463,7 @@ class ProjectVersionFrameworkNodesPayload(BaseModel):
         if v is None:
             return []
         if isinstance(v, str):
-            return [int(x) for x in v.split(",") if x.strip()]
+            return [int(x) for x in split_filter_values(v)]
         return [int(x) for x in v]
 
 
@@ -474,17 +476,17 @@ class ManifestCreatePayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
     q: str | None = None
-    framework_id: int | None = None
-    node_ids: list[int] = Field(default_factory=list)
-    project_ids: list[int] = Field(default_factory=list)
-    owner_group_id: int | None = None
+    framework_id: DbIdField | None = None
+    node_ids: list[DbIdField] = Field(default_factory=list, max_length=MAX_IDS)
+    project_ids: list[DbIdField] = Field(default_factory=list, max_length=MAX_IDS)
+    owner_group_id: uuid.UUID | None = None
 
 
 class ManifestSharingUpdatePayload(BaseModel):
     # If set to True, everyone with manifest access can view/export this manifest.
     is_public: bool | None = None
     # If set, share with a group the user is a member of. If explicitly null, unshare.
-    owner_group_id: int | None = None
+    owner_group_id: uuid.UUID | None = None
 
 
 class ManifestClonePayload(BaseModel):
@@ -494,7 +496,7 @@ class ManifestClonePayload(BaseModel):
 
 class UserPreferencesUpdatePayload(BaseModel):
     node_colors: dict | None = None
-    default_start_page: str | None = None
+    default_start_page: str | None = Field(default=None, max_length=200)
     sticky_enabled: bool | None = None
     auto_apply_enabled: bool | None = None
     theme: str | None = Field(default=None, max_length=16)
@@ -510,7 +512,7 @@ class UserShortcutCreatePayload(BaseModel):
         s = str(v or "").strip()
         if not s:
             return s
-        return validate_safe_href(s, allow_relative=True)
+        return external_url(s, allow_relative=True)
 
 
 # -----------------------------------------------------------------------------
@@ -527,17 +529,24 @@ class ProjectQuestionReplyPayload(BaseModel):
 
 
 class AdminProjectOwnershipPayload(BaseModel):
-    owner_user_id: int | None = Field(default=None, ge=1)
-    owner_group_ids: list[int] | None = None
+    owner_user_id: uuid.UUID | None = None
+    owner_group_ids: list[uuid.UUID] | None = Field(default=None, max_length=200)
 
 
 class OrganisationPayload(BaseModel):
     name: str | None = Field(default=None, max_length=200)
-    description: str | None = None
-    website: str | None = None
+    description: str | None = Field(default=None, max_length=4000)
+    website: str | None = Field(default=None, max_length=600)
+
+    @field_validator("website", mode="before")
+    @classmethod
+    def _validate_website(cls, v):
+        # Pages link to it, so it is an HTTP(S) address without credentials.
+        s = str(v or "").strip()
+        return external_url(s) if s else s
 
 
 class OrganisationMemberPayload(BaseModel):
-    user_id: int | None = None
-    group_id: int | None = None
+    user_id: uuid.UUID | None = None
+    group_id: uuid.UUID | None = None
     role: str | None = Field(default=None, max_length=50)

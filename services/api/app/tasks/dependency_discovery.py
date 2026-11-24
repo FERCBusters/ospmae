@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from billiard.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import get_task_logger
+from mosp.core import task_deadline
+from mosp.core.datetime_utils import utc_now_naive
+from mosp.core.task_deadline import TIME_LIMITS
+from mosp.security.redaction import redact_str
 from sqlalchemy import func, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -24,7 +28,7 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal
 from app.depscan.grype import scan_grype
-from app.depscan.parsers import DiscoveredDependency, parse_lockfile, redact_url
+from app.depscan.parsers import DiscoveredDependency, parse_lockfile
 from app.depscan.scan import clone_repo, find_lockfiles
 from app.depscan.syft import scan_syft
 from app.security.repo_credentials import project_credential
@@ -312,7 +316,7 @@ def _scan_error_text(exc: BaseException) -> str:
     if isinstance(exc, (ValueError, RuntimeError)) and not isinstance(
         exc, SQLAlchemyError
     ):
-        return _TEMP_PATH.sub("<scan directory>", redact_url(str(exc)))[:2000]
+        return _TEMP_PATH.sub("<scan directory>", redact_str(str(exc)))[:2000]
     return f"The scan failed ({type(exc).__name__})"
 
 
@@ -370,7 +374,7 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
             .where(ProjectVersion.dependency_discovery_status == "queued")
             .values(
                 dependency_discovery_status="running",
-                dependency_discovery_started_at=datetime.utcnow(),
+                dependency_discovery_started_at=utc_now_naive(),
                 dependency_discovery_finished_at=None,
                 dependency_discovery_error=None,
             )
@@ -436,7 +440,7 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
             .where(ProjectVersion.id == project_version_id)
             .values(
                 dependency_discovery_status="complete",
-                dependency_discovery_finished_at=datetime.utcnow(),
+                dependency_discovery_finished_at=utc_now_naive(),
                 dependency_last_commit=commit,
                 dependency_count=dep_count,
                 vulnerability_count=vuln_count,
@@ -452,26 +456,27 @@ def discover_project_version_dependencies(project_version_id: int) -> dict:
         }
     except Exception as exc:
         log.exception("Dependency discovery failed")
+        # Recorded even past the task's time limit (mosp.core.task_deadline):
+        # a scan stopped there says so, and is not left running.
         try:
-            db.execute(
-                update(ProjectVersion)
-                .where(ProjectVersion.id == project_version_id)
-                .values(
-                    dependency_discovery_status="error",
-                    dependency_discovery_finished_at=datetime.utcnow(),
-                    dependency_discovery_error=_scan_error_text(exc),
+            with task_deadline.grace():
+                db.rollback()
+                db.execute(
+                    update(ProjectVersion)
+                    .where(ProjectVersion.id == project_version_id)
+                    .values(
+                        dependency_discovery_status="error",
+                        dependency_discovery_finished_at=utc_now_naive(),
+                        dependency_discovery_error=_scan_error_text(exc),
+                    )
                 )
-            )
-            db.commit()
+                db.commit()
+        except TIME_LIMITS:
+            raise
         except Exception:
             db.rollback()
         return {"ok": False, "error": _scan_error_text(exc)}
     finally:
-        try:
-            if repo_dir:
-                import shutil
-
-                shutil.rmtree(repo_dir, ignore_errors=True)
-        except Exception:
-            pass
+        if repo_dir:
+            shutil.rmtree(repo_dir, ignore_errors=True)
         db.close()

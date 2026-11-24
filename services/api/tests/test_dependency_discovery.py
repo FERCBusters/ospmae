@@ -418,8 +418,16 @@ def test_the_dispatcher_hands_over_what_is_still_queued(scanner, monkeypatch):
                 "Command failed (128): git clone -- https://bot:s3cr3t@github.com/o/r "
                 "/tmp/ospmae-scan-abc123/repo\nremote: Repository not found."
             ),
-            "Command failed (128): git clone -- https://***:***@github.com/o/r "
+            "Command failed (128): git clone -- https://REDACTED@github.com/o/r "
             "<scan directory>\nremote: Repository not found.",
+        ),
+        (
+            RuntimeError(
+                "Command failed (128): git ls-remote -- https://ghp_t0ken@github.com/o/r"
+                "\nfatal: https://github.com/o/r?access_token=t0ken not found"
+            ),
+            "Command failed (128): git ls-remote -- https://REDACTED@github.com/o/r"
+            "\nfatal: https://github.com/o/r?access_token=REDACTED not found",
         ),
         (ValueError("Repo host not allowed: evil.example"), None),
         (
@@ -442,22 +450,12 @@ def test_the_dispatcher_hands_over_what_is_still_queued(scanner, monkeypatch):
     ],
 )
 def test_a_stored_scan_error_says_what_an_owner_can_act_on(error, stored):
-    from app.depscan.parsers import redact_url
     from app.tasks.dependency_discovery import _scan_error_text
 
     text = _scan_error_text(error)
-    if stored is None:
-        assert text == str(error)
-    elif "***" in stored:
-        # Credentials are masked however the redactor writes the mask, and
-        # the worker's directory is not named.
-        assert "s3cr3t" not in text and "/tmp/" not in text
-        assert text == redact_url(str(error)).replace(
-            "/tmp/ospmae-scan-abc123/repo", "<scan directory>"
-        )
-    else:
-        assert text == stored
-    assert "secret-internal-package" not in text
+    assert text == (str(error) if stored is None else stored)
+    for secret in ("s3cr3t", "t0ken", "/tmp/", "secret-internal-package"):
+        assert secret not in text
 
 
 def test_only_the_projects_owners_read_why_a_scan_failed(scanner):

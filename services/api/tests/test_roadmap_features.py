@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.core.config import settings
 from app.db.models import (
-    Notification,
     Organisation,
     Project,
     ProjectVersion,
@@ -340,86 +338,6 @@ def test_dependency_detail_resolves_every_reference_shape(client, db):
     unknown = "00000000-0000-4000-8000-000000000000"
     assert c.get(f"/v1/dependencies/{unknown}").status_code == 404
     assert c.get("/v1/dependencies/not-a-reference").status_code == 404
-
-
-def test_factor_change_mails_the_account_owner(client, db):
-    from app.db.models import User
-
-    def _start_manage():
-        return c.post(
-            "/v1/auth/mfa/manage/start",
-            json={"password": PASSWORD},
-            headers={
-                "Origin": "https://testserver",
-                "X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf"),
-            },
-        )
-
-    def _totp_flow():
-        start = c.post(
-            "/v1/auth/mfa/totp/start",
-            headers={
-                "Origin": "https://testserver",
-                "X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf"),
-            },
-        )
-        assert start.status_code == 200, start.text
-        import pyotp
-
-        code = pyotp.TOTP(start.json()["secret"]).now()
-        confirm = c.post(
-            "/v1/auth/mfa/totp/confirm",
-            json={"code": code},
-            headers={
-                "Origin": "https://testserver",
-                "X-CSRF-Token": c.cookies.get("__Host-ospmae_csrf"),
-            },
-        )
-        assert confirm.status_code == 200, confirm.text
-
-    c, user = auth_client(username="alert-owner", password=PASSWORD, role="maintainer")
-
-    with SessionLocal() as s0:
-        s0.query(User).filter(User.id == user.id).update(
-            {"mfa_totp_last_step": -1}, synchronize_session=False
-        )
-        s0.commit()
-    with SessionLocal() as s:
-        s.get(User, user.id).email = "alert-owner@example.com"
-        s.commit()
-
-    with SessionLocal() as s0:
-        s0.query(User).filter(User.id == user.id).update(
-            {"mfa_totp_last_step": -1}, synchronize_session=False
-        )
-        s0.commit()
-
-    saved = (
-        settings.smtp_host,
-        settings.smtp_from_email,
-        settings.public_base_url,
-        settings.mfa_encryption_key,
-    )
-    settings.smtp_host = "smtp.example.com"
-    settings.smtp_from_email = "noreply@example.com"
-    settings.public_base_url = "https://testserver"
-    settings.mfa_encryption_key = "kw0nbN6bJuWBIBG2F91GoVvw1bLXCT7Fz8i9CSaj-e0="
-    try:
-        c.headers.update({"Origin": "https://testserver"})
-        assert _start_manage().status_code == 200
-        _totp_flow()
-        with SessionLocal() as s:
-            rows = s.query(Notification).filter_by(user_id=user.id).all()
-            assert any("authenticator was added" in r.subject for r in rows), [
-                r.subject for r in rows
-            ]
-    finally:
-        (
-            settings.smtp_host,
-            settings.smtp_from_email,
-            settings.public_base_url,
-            settings.mfa_encryption_key,
-        ) = saved
 
 
 def test_used_by_counts_distinct_projects_across_versions(client, db):

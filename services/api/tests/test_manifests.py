@@ -10,6 +10,7 @@ from datetime import datetime
 import pytest
 from app.db.models import Manifest, ProjectVersion
 from app.db.session import SessionLocal
+from fastapi.encoders import jsonable_encoder
 from openpyxl import load_workbook
 
 from tests.support import (
@@ -24,6 +25,9 @@ from tests.support import (
     record_dependency,
     signed_in,
 )
+
+# A group id no group holds.
+UNKNOWN = "00000000-0000-4000-8000-000000000000"
 
 
 @pytest.fixture()
@@ -356,7 +360,8 @@ def test_a_saved_manifest_is_a_snapshot_that_outlives_later_edits(catalogue):
                 "description": " for the board ",
                 "framework_id": fw,
                 "node_ids": [catalogue["nodes"]["issuer"]],
-                "project_ids": [catalogue["alpha"], catalogue["beta"], -1],
+                # An id no project holds matches nothing.
+                "project_ids": [catalogue["alpha"], catalogue["beta"], 999999],
             },
             headers=csrf(admin),
         )
@@ -378,7 +383,11 @@ def test_a_saved_manifest_is_a_snapshot_that_outlives_later_edits(catalogue):
     detail = ok(admin.get(f"/v1/manifests/{saved['id']}"))
     assert detail["filters"] == detail["filters_json"]
     assert detail["filters"]["node_ids"] == [catalogue["nodes"]["issuer"]]
-    assert detail["filters"]["project_ids"] == [catalogue["alpha"], catalogue["beta"]]
+    assert detail["filters"]["project_ids"] == [
+        catalogue["alpha"],
+        catalogue["beta"],
+        999999,
+    ]
     assert (detail["can_manage"], detail["can_clone"]) == (True, False)
     assert detail["framework_machine_name"] == "tax"
     items = {row["machine_name"]: row for row in detail["items"]}
@@ -398,7 +407,7 @@ def test_a_saved_manifest_is_a_snapshot_that_outlives_later_edits(catalogue):
     listed = ok(admin.get("/v1/manifests"))["items"]
     assert [
         (m["id"], m["item_count"], m["node_count"], m["project_count"]) for m in listed
-    ] == [(saved["id"], 2, 1, 2)]
+    ] == [(saved["id"], 2, 1, 3)]
     assert listed[0]["created_by_username"]
 
 
@@ -528,14 +537,19 @@ def test_a_private_manifest_is_its_owners_until_shared(catalogue, outbox):
     # The owner shares only with a group they belong to, and it must exist.
     def share(client, **body):
         return client.patch(
-            f"/v1/manifests/{mid}/sharing", json=body, headers=csrf(client)
+            f"/v1/manifests/{mid}/sharing",
+            json=jsonable_encoder(body),
+            headers=csrf(client),
         )
 
     assert share(owner, owner_group_id=elsewhere).status_code == 403
-    assert share(catalogue["admin"], owner_group_id=999999).status_code == 400
+    assert share(catalogue["admin"], owner_group_id=UNKNOWN).status_code == 400
     assert share(peer, owner_group_id=team).status_code == 403
     shared = ok(share(owner, owner_group_id=team))
-    assert (shared["owner_group_id"], shared["owner_group_name"]) == (team, "Team")
+    assert (shared["owner_group_id"], shared["owner_group_name"]) == (
+        str(team),
+        "Team",
+    )
     assert (shared["is_public"], shared["can_manage"]) == (False, True)
     # Members who can use manifests are told; the sharer and others are not.
     mails = [(m.recipient, m.subject) for m in outbox.messages()]
@@ -586,15 +600,15 @@ def test_saving_into_a_group_follows_the_same_membership_rule(catalogue):
             return client.post(
                 path,
                 params=params,
-                json={"name": "grouped", "owner_group_id": group_id},
+                json={"name": "grouped", "owner_group_id": str(group_id)},
                 headers=csrf(client),
             )
 
         assert save(owner, theirs).status_code == 403
-        assert save(owner, mine).json()["owner_group_id"] == mine
-        assert save(catalogue["admin"], 999999).status_code == 400
+        assert save(owner, mine).json()["owner_group_id"] == str(mine)
+        assert save(catalogue["admin"], UNKNOWN).status_code == 400
         # An administrator may place a manifest in any group.
-        assert save(catalogue["admin"], theirs).json()["owner_group_id"] == theirs
+        assert save(catalogue["admin"], theirs).json()["owner_group_id"] == str(theirs)
 
 
 def test_a_copy_is_private_to_whoever_made_it(catalogue):
@@ -726,28 +740,44 @@ def test_a_markdown_cell_is_one_line_of_plain_text():
     assert "<script>" not in body.replace("\\<script>", "")
 
 
-@pytest.mark.parametrize(
-    "value, guarded",
-    [
-        ("=1+1", True),
-        ("+1", True),
-        ("-1", True),
-        ("@SUM(A1)", True),
-        ("\t=1+1", True),
-        ("\r=1+1", True),
-        ("\n=1+1", True),
-        ("  =1+1", True),
-        ("\r\n\t @cmd", True),
-        ("\nplain", True),
-        ("plain = text", False),
-        ("  plain", False),
-        ("", False),
-    ],
-)
-def test_a_cell_a_spreadsheet_would_read_as_a_formula_is_quoted(value, guarded):
-    from app.api.routes.projects import _excel_safe_cell
+def test_spreadsheet_exports_hold_no_formula():
+    """CSV and XLSX manifests pass every text cell through MOSP's
+    spreadsheet_cell, so neither a leading formula nor one after a separator
+    a semicolon-splitting spreadsheet would honour survives."""
+    from io import BytesIO
 
-    assert _excel_safe_cell(value) == ("'" + value if guarded else value)
+    from app.api.routes.projects import _manifest_response
+    from openpyxl import load_workbook
+
+    rows = [
+        {
+            "project_id": 1,
+            "machine_name": "@SUM(A1)",
+            "display_name": "\ufeff=1+1",
+            "capabilities": ["Wallet", "=cmd|' /C calc'!A0"],
+        }
+    ]
+    csv_body = _manifest_response(rows, fmt="csv", name="x").body.decode()
+    assert csv_body.splitlines()[1] == (
+        "1,'@SUM(A1),'\ufeff=1+1,Wallet; '=cmd|' /C calc'!A0"
+    )
+    workbook = load_workbook(
+        BytesIO(_manifest_response(rows, fmt="xlsx", name="x").body)
+    )
+    texts = [
+        cell.value
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str)
+    ]
+    assert "'@SUM(A1)" in texts
+    formulas = [
+        text
+        for text in texts
+        if text.lstrip("\ufeff \t\r\n").startswith(("=", "+", "-", "@"))
+    ]
+    assert formulas == []
 
 
 @pytest.mark.parametrize(

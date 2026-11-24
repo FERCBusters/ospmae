@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from celery.utils.log import get_task_logger
+from mosp.core.datetime_utils import utc_now_naive
+from mosp.core.task_deadline import TIME_LIMITS
 from sqlalchemy import update
 from sqlalchemy.engine import CursorResult
 
@@ -47,7 +48,7 @@ def poll_tracked_branches(limit_projects: int = 200) -> dict[str, Any]:
     checked = 0
     queued = 0
     try:
-        now = datetime.utcnow()
+        now = utc_now_naive()
         projects = (
             db.query(Project)
             .filter(Project.track_branch.is_(True))
@@ -94,6 +95,8 @@ def poll_tracked_branches(limit_projects: int = 200) -> dict[str, Any]:
                     mark_scan_queued(version)
                     queued += 1
                 db.commit()
+            except TIME_LIMITS:
+                raise
             except Exception:
                 log.exception(
                     "Tracked branch poll failed for project_id=%s", project.id

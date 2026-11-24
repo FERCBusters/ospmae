@@ -76,19 +76,25 @@
   }
 
   function roleOf(me) {
-    return (me?.effective_role || me?.role || "viewer").toLowerCase();
+    return (me?.effective_role || me?.role || "normal").toLowerCase();
   }
 
   function canMaintainFrameworks(me) {
-    const r = roleOf(me);
-    return r === "admin" || r === "framework_admin";
+    if (roleOf(me) === "admin") return true;
+    return (
+      Array.isArray(me?.permissions) &&
+      me.permissions.includes("framework.write")
+    );
+  }
+
+  // Account ids are UUIDs, compared as text.
+  function isMine(me, userId) {
+    return !!userId && !!me?.id && String(userId) === String(me.id);
   }
 
   function canDeleteFramework(me, fw) {
-    const r = roleOf(me);
-    if (r === "admin") return true;
-    const ownerId = fw?.created_by_user_id;
-    return ownerId && Number(ownerId) === Number(me?.id);
+    if (roleOf(me) === "admin") return true;
+    return isMine(me, fw?.created_by_user_id);
   }
 
   function deleteFrameworkReason(me, fw) {
@@ -129,10 +135,9 @@
           ${state.frameworks
             .map((f) => {
               const selected = Number(f.id) === Number(currentId);
-              const owner =
-                Number(f.created_by_user_id) === Number(state.me?.id)
-                  ? "you"
-                  : `user:${f.created_by_user_id}`;
+              const owner = isMine(state.me, f.created_by_user_id)
+                ? "you"
+                : f.created_by_username || "—";
               return `
                 <tr data-framework-id="${f.id}" style="cursor:pointer; ${selected ? "background:#f4effb;" : ""}">
                   <td><strong>${escapeHtml(f.display_name || f.machine_name)}</strong><div class="small muted">${escapeHtml(f.description || "")}</div></td>
@@ -521,7 +526,8 @@
       key,
       display_name: display,
       description: description || null,
-      parent_id: parentStr ? Number(parentStr) : null,
+      // 0 places the node at the top of the framework.
+      parent_id: parentStr ? Number(parentStr) : 0,
       sort_order: sortStr ? Number(sortStr) : 0,
     };
   }

@@ -8,28 +8,30 @@ project. Every route asks here, so the rule is written once.
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import HTTPException
+from mosp.security.roles import ROLE_ADMIN, attach_effective_role
 from sqlalchemy.orm import Session
 
-from app.db.models import Project, ProjectOwnerGroup, ProjectVersion, User, UserGroup
-from app.security.roles import ROLE_ADMIN, attach_effective_role
+from app.db.models import Project, ProjectOwnerGroup, ProjectVersion, User, user_groups
 
 VERSION_NOT_FOUND = "Project version not found"
 
 
-def user_group_ids(db: Session, user_id: int) -> set[int]:
+def user_group_ids(db: Session, user_id: uuid.UUID) -> set[uuid.UUID]:
     return {
-        int(gid)
-        for (gid,) in db.query(UserGroup.group_id)
-        .filter(UserGroup.user_id == user_id)
+        gid
+        for (gid,) in db.query(user_groups.c.group_id)
+        .filter(user_groups.c.user_id == user_id)
         .all()
         if gid is not None
     }
 
 
-def project_owner_group_ids(db: Session, project_id: int) -> set[int]:
+def project_owner_group_ids(db: Session, project_id: int) -> set[uuid.UUID]:
     return {
-        int(gid)
+        gid
         for (gid,) in db.query(ProjectOwnerGroup.group_id)
         .filter(ProjectOwnerGroup.project_id == project_id)
         .all()
@@ -45,9 +47,7 @@ def owns_project(db: Session, user: User, project: Project) -> bool:
     """Administrator, creator, or member of one of the project's owner groups."""
     if is_admin(db, user):
         return True
-    if project.created_by_user_id is not None and int(
-        project.created_by_user_id
-    ) == int(user.id):
+    if project.created_by_user_id == user.id:
         return True
     return bool(user_group_ids(db, user.id) & project_owner_group_ids(db, project.id))
 

@@ -59,6 +59,19 @@ jobs:
           set -eu
           npm ci --prefix services/ui/tests --ignore-scripts --no-audit --no-fund
 
+      # No dependency's install script runs, and the design system (fetched
+      # from a git host, which npm does not checksum) must be the tree
+      # recorded when it was reviewed before any of its code runs; the
+      # vendored assets must then build. The image build repeats both.
+      - name: Check reviewed git dependencies and vendored assets
+        run: |
+          set -eu
+          cd services/ui
+          npm ci --ignore-scripts --no-audit --no-fund
+          node scripts/check-git-packages.mjs --fetched
+          npm --prefix node_modules/@fercbusters/mosp-design-system run build
+          npm run build
+
       - name: Install Poetry
         run: |
           set -eu

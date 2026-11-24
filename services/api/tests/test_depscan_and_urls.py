@@ -12,17 +12,11 @@ from app.depscan.parsers import (
     _bounded_read,
     is_supported_lockfile,
     parse_lockfile,
-    redact_url,
 )
 from app.depscan.scan import (
     _candidate_refs,
     _extract_repo_and_tag,
     validate_repo_url,
-)
-from app.security.url_safety import (
-    contains_xml_dtd_or_entity,
-    parse_xml_without_dtd,
-    safe_relative_route_path,
 )
 from app.tasks.release_feed import _parse_feed_entries
 
@@ -137,13 +131,6 @@ def test_git_itself_runs_no_command_named_by_a_url(tmp_path):
     assert marker.exists()
 
 
-def test_redact_url_masks_credentials():
-    out = redact_url("git clone https://user:secretpw@github.com/o/r")
-    assert "secretpw" not in out
-    assert "user:secretpw" not in out
-    assert "github.com/o/r" in out
-
-
 def test_extract_repo_and_tag():
     url, tag = _extract_repo_and_tag(
         "https://github.com/owner/repo/releases/tag/v1.2.3"
@@ -157,19 +144,16 @@ def test_candidate_ref_variants():
     assert "v1.2.3" in refs and "1.2.3" in refs
 
 
-def test_safe_relative_route_path_rejects_hosts():
-    assert safe_relative_route_path("/index.html") == "/index.html"
-    for bad in ("//evil", "/\\evil", None, "", "x:/y", "/a\nb"):
-        assert safe_relative_route_path(bad) is None
-
-
-def test_xml_dtd_scan_covers_the_whole_payload():
-    head = b"<feed>" + b"<entry>ok</entry>" * 9000
-    dtd = b"<!DOCTYPE feed [<!ENTITY x SYSTEM 'x'>]>"
-    hidden = head + dtd  # entity declaration far beyond any head window
-    assert contains_xml_dtd_or_entity(hidden)
-    assert contains_xml_dtd_or_entity(b"<!doctype html><rss/>")
-    assert not contains_xml_dtd_or_entity(b"<rss><entry>plain</entry></rss>")
+def test_a_declaration_anywhere_in_a_feed_is_refused():
+    head = b"<rss><channel>" + b"<item><title>ok</title></item>" * 9000
+    with pytest.raises(ET.ParseError):
+        # A declaration may only precede the root; this one cannot even parse.
+        _parse_feed_entries(head + b"<!DOCTYPE rss [<!ENTITY x 'x'>]></channel></rss>")
+    with pytest.raises(ET.ParseError):
+        _parse_feed_entries(b"<!doctype html><rss/>")
+    with pytest.raises(ET.ParseError):
+        # Processing instructions are refused too.
+        _parse_feed_entries(b"<?xml-stylesheet href='x'?><rss/>")
 
 
 def _write(tmp_path, name: str, content: bytes):
@@ -201,33 +185,19 @@ def _feed(encoding: str, *, declared: bool) -> bytes:
     return (head + "?>").encode("ascii") + body.encode(encoding)
 
 
-@pytest.mark.parametrize(
-    ("encoding", "scan_sees_it"),
-    [
-        ("utf-8", True),
-        ("latin-1", True),
-        # UTF-16 spells the declaration in other bytes: the scan passes it.
-        ("utf-16", False),
-    ],
-)
-def test_a_declaration_is_refused_in_every_encoding_the_parser_reads(
-    encoding, scan_sees_it
-):
+@pytest.mark.parametrize("encoding", ["utf-8", "latin-1", "utf-16"])
+def test_a_declaration_is_refused_in_every_encoding_the_parser_reads(encoding):
     raw = _feed(encoding, declared=True)
-    assert contains_xml_dtd_or_entity(raw) is scan_sees_it
     # Unguarded, the standard parser reads the declaration and expands it.
     expanded = ET.fromstring(raw).find(".//title").text  # noqa: S314 - the unsafe baseline
     assert expanded == "v1.0.0 AAAAAAAAAA"
-    with pytest.raises(ValueError, match="DTD/ENTITY not allowed"):
-        parse_xml_without_dtd(raw)
-    with pytest.raises(ValueError, match="DTD/ENTITY not allowed"):
+    with pytest.raises(ET.ParseError, match="document type declaration"):
         _parse_feed_entries(raw)
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "latin-1", "utf-16"])
 def test_a_feed_without_declarations_parses_in_any_encoding(encoding):
     raw = _feed(encoding, declared=False)
-    assert parse_xml_without_dtd(raw).find(".//title").text == "v1.0.0"
     entries = _parse_feed_entries(raw)
     assert [entry["title"] for entry in entries] == ["v1.0.0"]
     assert entries[0]["link"] == "https://github.com/owner/repo/releases/tag/v1.0.0"
@@ -237,12 +207,20 @@ def test_an_encoding_the_parser_cannot_read_is_a_parse_error():
     # EBCDIC shares no bytes with ASCII; the parser refuses the document
     # outright, so nothing in it is read, declarations included.
     with pytest.raises(ET.ParseError):
-        parse_xml_without_dtd(_feed("cp037", declared=True))
+        _parse_feed_entries(_feed("cp037", declared=True))
 
 
 def test_malformed_xml_is_still_a_parse_error():
     with pytest.raises(ET.ParseError):
-        parse_xml_without_dtd(b"<rss><channel>")
+        _parse_feed_entries(b"<rss><channel>")
+
+
+def test_a_feed_over_the_size_limit_is_refused_before_parsing(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "release_feed_max_bytes", 64)
+    with pytest.raises(ET.ParseError, match="are refused"):
+        _parse_feed_entries(_feed("utf-8", declared=False))
 
 
 def test_bounded_read_skips_oversize_files(tmp_path):
@@ -313,34 +291,3 @@ def test_go_mod_and_sum_parsing(tmp_path):
     p2 = _write(tmp_path, "go.sum", b"golang.org/x/text v0.14.0 h1:abc=\n")
     deps = parse_lockfile(p2, max_bytes=100_000)
     assert any(d.name.startswith("golang.org") for d in deps)
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/.//evil.example/x",
-        "/..//evil.example",
-        "/a/..//evil.example",
-        "/%2e//evil.example",
-        "/%2E%2e//evil.example",
-        "/a/./b",
-        "/a/..",
-        "/.",
-    ],
-)
-def test_a_route_with_a_dot_segment_is_not_a_route(path):
-    """A browser resolves the segment first, and "/.//host" becomes "//host"."""
-    assert safe_relative_route_path(path) is None
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/project.html?id=3&tab=../x",
-        "/dependencies.html#./section",
-        "/a.b/c..d/.hidden",
-        "/files/v1.2.3/notes...txt",
-    ],
-)
-def test_dots_that_are_not_segments_are_kept(path):
-    assert safe_relative_route_path(path) == path

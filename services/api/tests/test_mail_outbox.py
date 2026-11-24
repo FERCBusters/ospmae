@@ -7,7 +7,7 @@ mail never left: each case here reads the outbox from a fresh session.
 
 from __future__ import annotations
 
-from app.db.models import Group, User, UserGroup
+from app.db.models import Group, User, user_groups
 from app.db.session import SessionLocal
 
 from tests.conftest import auth_client, make_user
@@ -114,11 +114,12 @@ def test_sharing_a_manifest_mails_the_group(outbox):
         group = Group(name="architects")
         s.add(group)
         s.flush()
-        s.add_all(
+        s.execute(
+            user_groups.insert(),
             [
-                UserGroup(user_id=sharer_user.id, group_id=group.id),
-                UserGroup(user_id=colleague.id, group_id=group.id),
-            ]
+                {"user_id": sharer_user.id, "group_id": group.id},
+                {"user_id": colleague.id, "group_id": group.id},
+            ],
         )
         s.commit()
         group_id = group.id
@@ -129,7 +130,7 @@ def test_sharing_a_manifest_mails_the_group(outbox):
 
     response = sharer.patch(
         f"/v1/manifests/{saved.json()['id']}/sharing",
-        json={"owner_group_id": group_id},
+        json={"owner_group_id": str(group_id)},
         headers=_csrf(sharer),
     )
     assert response.status_code == 200, response.text

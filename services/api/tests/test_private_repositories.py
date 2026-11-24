@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.db.models import EntityChangelog, Project, ProjectVersion
 from app.db.session import SessionLocal
 from app.depscan import scan as scan_mod
-from app.security import mfa
 from app.security.repo_credentials import (
     RepoCredential,
     RepoTokenUnavailable,
@@ -21,6 +20,7 @@ from app.security.repo_credentials import (
     project_credential,
 )
 from cryptography.fernet import Fernet
+from mosp.security import mfa
 
 from tests.conftest import auth_client
 

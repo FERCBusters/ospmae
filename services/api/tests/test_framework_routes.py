@@ -49,8 +49,13 @@ def test_frameworks_are_created_normalised_and_unique(admin):
         headers=_h(admin),
     )
     assert dup.status_code == 409
-    listed = [f["machine_name"] for f in admin.get("/v1/frameworks").json()["items"]]
-    assert "tax" in listed
+    listed = {f["machine_name"]: f for f in admin.get("/v1/frameworks").json()["items"]}
+    # The list names who made each framework.
+    mine = listed["tax"]
+    assert (mine["created_by_user_id"], mine["created_by_username"]) == (
+        fw["created_by_user_id"],
+        admin.get("/v1/me").json()["username"],
+    )
     assert admin.get("/v1/frameworks/999999").status_code == 404
 
 

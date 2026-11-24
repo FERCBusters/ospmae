@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query, Request
+from mosp.api.routing import Router
+from mosp.core.datetime_utils import iso_or_none, utc_now_naive
+from mosp.security.auth import require_admin, require_authenticated
+from mosp.security.permissions import has_permission
+from mosp.security.roles import ROLE_ADMIN, attach_effective_role
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.api.deps import DbId, OptionalDbId, PageOffset, SearchText
 from app.core.config import settings
 from app.db.models import (
     DependencyPackage,
@@ -24,26 +30,15 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.depscan.scan import repository_url_for_release_link
-from app.security.auth import get_current_user
-from app.security.permissions import PERM_PROJECT_WRITE, has_permission
+from app.security.permissions import PERM_PROJECT_WRITE
 from app.security.project_access import (
     can_view_drafts,
     ensure_version_visible,
     owns_project,
 )
-from app.security.roles import ROLE_ADMIN, attach_effective_role
 from app.services.scan_queue import launch_dependency_scan, mark_scan_queued
 
-router = APIRouter()
-
-
-def _is_admin(db: Session, user: User) -> bool:
-    return (attach_effective_role(db, user) or "").lower() == ROLE_ADMIN
-
-
-def _require_admin(db: Session, user: User) -> None:
-    if not _is_admin(db, user):
-        raise HTTPException(status_code=403, detail="Admin role required")
+router = Router()
 
 
 def _can_view_drafts_for_project(db: Session, user: User, project_id: int) -> bool:
@@ -125,11 +120,11 @@ def _dependency_namespace(ecosystem: str, package_name: str) -> str:
 
 @router.get("/v1/projects/{project_id}/dependency-graph")
 def get_project_dependency_graph(
-    project_id: int,
-    version_id: int | None = Query(default=None),
+    project_id: DbId,
+    version_id: OptionalDbId = None,
     include_vulnerabilities: bool = Query(default=True),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ) -> dict[str, Any]:
     """Return hierarchical dependency data for D3 (tidy-tree/treemap/sunburst/radial-tree).
 
@@ -390,10 +385,10 @@ def get_project_dependency_graph(
 
 @router.post("/v1/project-versions/{project_version_id}/dependency-discovery")
 def enqueue_dependency_discovery(
-    project_version_id: int,
+    project_version_id: DbId,
     run_now: bool = Query(default=True),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ) -> dict[str, Any]:
     """Queue (and optionally start) dependency discovery for a project version."""
 
@@ -451,7 +446,7 @@ def enqueue_dependency_discovery(
     if (
         pv.dependency_discovery_status == "running"
         and started is not None
-        and datetime.utcnow() - started
+        and utc_now_naive() - started
         < timedelta(seconds=int(settings.scan_task_time_limit_seconds))
     ):
         raise HTTPException(
@@ -477,11 +472,9 @@ def dependencies_bipartite(
     limit_dependencies: int = Query(default=60, ge=1, le=500),
     min_usage: int = Query(default=1, ge=1, le=1000),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     """Cross-project bipartite graph: project versions <-> dependency versions."""
-
-    _require_admin(db, user)
 
     # Top dependencies by usage across (distinct) project versions.
     usage_rows = (
@@ -921,13 +914,14 @@ def _licenses_bipartite(
 
 @router.get("/v1/visualisations/bipartite")
 def visualisations_bipartite(
+    request: Request,
     lens: str = Query(default="dependencies"),
     latest_only: bool = Query(default=True),
     limit_projects: int = Query(default=30, ge=1, le=200),
     limit_items: int = Query(default=80, ge=1, le=500),
     min_usage: int = Query(default=2, ge=1, le=1000),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ) -> dict[str, Any]:
     """Cross-project bipartite visualisations.
 
@@ -940,6 +934,8 @@ def visualisations_bipartite(
     lens_value = str(lens or "dependencies").lower().strip()
 
     if lens_value in {"dependency", "dependencies", "deps"}:
+        # Called directly, the lens route checks what its own route would.
+        require_admin(request)
         return dependencies_bipartite(
             latest_only=latest_only,
             limit_projects=limit_projects,
@@ -973,15 +969,6 @@ def visualisations_bipartite(
 # -----------------------------------------------------------------------------
 # Dependency detail pages
 # -----------------------------------------------------------------------------
-
-
-def _iso(dt: datetime | None) -> str | None:
-    if not dt:
-        return None
-    try:
-        return dt.isoformat()
-    except Exception:
-        return str(dt)
 
 
 def _severity_rank(value: str | None) -> int:
@@ -1077,15 +1064,13 @@ def dependency_version_detail(
     dependency_version_id: str,
     namespace_limit: int = Query(default=120, ge=1, le=500),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ) -> dict[str, Any]:
     """Dependency version detail for the UI.
 
     Includes backlink metadata (projects using this dependency), vulnerability list,
     and (for npm scopes) other packages under the same @namespace.
     """
-
-    _require_admin(db, user)
 
     # Ensure user is authenticated (and attach role for future policy), but currently
     # dependency metadata is global within the instance.
@@ -1175,7 +1160,7 @@ def dependency_version_detail(
                 "fixed_version": v.fixed_version,
                 "references": list(v.references or []),
                 "raw": v.raw or {},
-                "created_at": _iso(v.created_at),
+                "created_at": iso_or_none(v.created_at),
             }
         )
 
@@ -1280,7 +1265,7 @@ def dependency_version_detail(
             "name": dv.name,
             "normalized_name": dv.normalized_name,
             "version": dv.version,
-            "created_at": _iso(dv.created_at),
+            "created_at": iso_or_none(dv.created_at),
         },
         "projects": projects,
         "vulnerabilities": vulns,
@@ -1296,9 +1281,9 @@ def dependency_version_detail(
 
 @router.get("/v1/capabilities/{framework_node_id}")
 def capability_detail(
-    framework_node_id: int,
+    framework_node_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ) -> dict[str, Any]:
     """Capability (framework node) detail for the UI.
 
@@ -1424,13 +1409,13 @@ def capability_detail(
 
 @router.get("/v1/dependencies")
 def dependency_index(
-    q: str | None = None,
+    q: SearchText = None,
     ecosystem: str | None = None,
     vulnerable: bool | None = None,
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: PageOffset = 0,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ) -> dict[str, Any]:
     """A searchable directory of every dependency the catalogue knows.
 
@@ -1618,9 +1603,9 @@ def dependency_index(
 
 @router.get("/v1/dashboard")
 def global_dashboard(
-    organisation_id: int | None = None,
+    organisation_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ) -> dict[str, Any]:
     """A dependency-first overview for the whole catalogue.
 

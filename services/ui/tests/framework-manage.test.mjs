@@ -2,7 +2,7 @@
 // taxonomy editor, against an API fixture that keeps what is saved.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { account, appPage, FEATURES } from "./support/app-page.mjs";
+import { account, appPage, FEATURES, uuid } from "./support/app-page.mjs";
 
 function catalogue() {
   const frameworks = [
@@ -11,14 +11,15 @@ function catalogue() {
       machine_name: "tax",
       display_name: "Taxonomy",
       description: "Main <one>",
-      created_by_user_id: 7,
+      created_by_user_id: uuid(7),
     },
     {
       id: 4,
       machine_name: "other",
       display_name: "",
       description: null,
-      created_by_user_id: 99,
+      created_by_user_id: uuid(99),
+      created_by_username: "bob",
     },
   ];
   const nodes = {
@@ -79,7 +80,7 @@ function catalogue() {
       if (path === "/api/v1/frameworks" && method === "GET")
         return [200, { items: frameworks }];
       if (path === "/api/v1/frameworks" && method === "POST") {
-        const created = { id: 9, created_by_user_id: 7, ...body };
+        const created = { id: 9, created_by_user_id: uuid(7), ...body };
         frameworks.push(created);
         nodes[9] = [];
         return [200, created];
@@ -156,7 +157,7 @@ test("the page lists frameworks and opens the first with its taxonomy", async (t
     ),
     [
       ["TaxonomyMain <one>", "tax", "you"],
-      ["other", "other", "user:99"],
+      ["other", "other", "bob"],
     ],
   );
   assert.equal(rows[0].querySelector("one"), null);
@@ -216,7 +217,7 @@ test("choosing a node loads it for editing and bars it from its own subtree", as
       key: "store",
       display_name: "Store",
       description: "Where things live",
-      parent_id: null,
+      parent_id: 0,
       sort_order: 5,
     },
   ]);

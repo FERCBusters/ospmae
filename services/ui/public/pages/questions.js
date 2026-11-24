@@ -103,7 +103,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const me = await initAuth({ redirectOnFail: true });
   if (window.OSPMAE && !window.OSPMAE.gateFeature("questions")) return null;
   if (el.whoami && me) {
-    const r = me.effective_role || me.role || "viewer";
+    const r = me.effective_role || me.role || "normal";
     el.whoami.textContent = `${me.username} (${r})`;
   }
 

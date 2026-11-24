@@ -21,15 +21,33 @@ export const FRAMEWORK = {
   display_name: "Taxonomy",
 };
 
-export function account(role = "admin", extra = {}) {
+// The permission sets the tests name by the job they describe, as the API
+// suite's fixtures do. Each is an ordinary account holding those
+// permissions; "admin" is the admin role, which may do everything.
+export const PERMISSION_SETS = {
+  viewer: [],
+  framework_admin: ["framework.write"],
+  maintainer: ["project.write", "project.answer"],
+  contributor: ["project.diff", "project.answer"],
+  engineer: ["project.diff", "project.question"],
+  product_owner: ["manifest.export", "project.question"],
+  architect: ["manifest.export", "project.question"],
+};
+
+// Accounts and groups are named by UUID.
+export const uuid = (n) =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+export function account(kind = "admin", extra = {}) {
+  const role = kind === "admin" || kind === "inherit" ? kind : "normal";
   return {
-    id: 7,
+    id: uuid(7),
     username: "ada",
     role,
     effective_role: role,
     csrf_token: "token",
     preferences: {},
-    permissions: [],
+    permissions: [...(PERMISSION_SETS[kind] || [])],
     group_ids: [],
     features: FEATURES,
     ...extra,

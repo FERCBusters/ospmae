@@ -5,18 +5,34 @@ import io
 import json
 import logging
 import re
+import uuid
 from collections import defaultdict
 from datetime import datetime
 from io import BytesIO
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi import Body, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
+from mosp.api.routing import Router
+from mosp.core.datetime_utils import iso_or_none, utc_now_naive
+from mosp.security.auth import require_authenticated
+from mosp.security.csv import spreadsheet_cell
+from mosp.security.permissions import has_permission
+from mosp.security.roles import ROLE_ADMIN, attach_effective_role
+from mosp.services.text import split_filter_values
 from openpyxl import Workbook
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
+from app.api.deps import (
+    DbId,
+    OptionalDbId,
+    PageLimit,
+    PageOffset,
+    QueryDbId,
+    SearchText,
+)
 from app.api.payloads import (
     ManifestClonePayload,
     ManifestCreatePayload,
@@ -48,15 +64,13 @@ from app.db.models import (
     ProjectVersionDependency,
     ProjectVersionFrameworkNode,
     User,
-    UserGroup,
+    user_groups,
 )
 from app.db.session import get_db
-from app.security.auth import get_current_user
 from app.security.permissions import (
     PERM_MANIFEST_EXPORT,
     PERM_PROJECT_DIFF,
     PERM_PROJECT_WRITE,
-    has_permission,
 )
 from app.security.project_access import (
     can_view_drafts,
@@ -71,7 +85,6 @@ from app.security.repo_credentials import (
     encrypt_token,
     same_repository,
 )
-from app.security.roles import ROLE_ADMIN, attach_effective_role
 from app.services.branch_tracking import (
     DEFAULT_POLL_INTERVAL_HOURS,
     ensure_branch_version,
@@ -103,7 +116,7 @@ from app.services.versioning import (
 )
 from app.tasks.notifications import commit_and_kick
 
-router = APIRouter()
+router = Router()
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +126,7 @@ def _can_view_drafts(db: Session, user: User, project: Project) -> bool:
     return can_view_drafts(db, user, project)
 
 
-def _is_subscribed(db: Session, *, user_id: int, project_id: int) -> bool:
+def _is_subscribed(db: Session, *, user_id: uuid.UUID, project_id: int) -> bool:
     return (
         db.query(ProjectSubscription.id)
         .filter(ProjectSubscription.user_id == user_id)
@@ -124,17 +137,12 @@ def _is_subscribed(db: Session, *, user_id: int, project_id: int) -> bool:
 
 
 def _normalize_csv_ints(value: str | None) -> list[int]:
-    if not value:
-        return []
     out: list[int] = []
     seen = set()
-    for chunk in value.split(","):
-        token = chunk.strip()
-        if not token:
-            continue
+    for token in split_filter_values(value):
         try:
             num = int(token)
-        except Exception:
+        except ValueError:
             continue
         if num <= 0 or num in seen:
             continue
@@ -146,34 +154,16 @@ def _normalize_csv_ints(value: str | None) -> list[int]:
     return out
 
 
-_EXCEL_FORMULA_PREFIXES = ("=", "+", "-", "@")
-
 # Characters that start Markdown or HTML markup inside a table cell: emphasis,
 # code, links and images, tags, entities, and the cell delimiter.
 _MARKDOWN_SPECIAL = re.compile(r"[\\`*_\[\]<&|]")
-
-
-def _excel_safe_cell(value: str) -> str:
-    """Prevent spreadsheet/CSV formula injection when opened in Excel.
-
-    If a cell begins with one of =+-@ (or a leading tab), prefix with a single quote.
-    """
-
-    s = str(value or "")
-    if not s:
-        return s
-    # A spreadsheet skips leading line breaks, tabs and spaces before it
-    # decides whether a cell is a formula.
-    if s[:1] in "\t\r\n" or s.lstrip("\t\r\n ")[:1] in _EXCEL_FORMULA_PREFIXES:
-        return "'" + s
-    return s
 
 
 def _clean_tag_list(values) -> list[str]:
     if not values:
         return []
     if isinstance(values, str):
-        values = [x.strip() for x in values.split(",") if x.strip()]
+        values = split_filter_values(values)
     out: list[str] = []
     seen = set()
     for raw in values:
@@ -210,11 +200,11 @@ def _require_manifest_access(db: Session, user: User) -> None:
         )
 
 
-def _user_group_ids(db: Session, user_id: int) -> set[int]:
+def _user_group_ids(db: Session, user_id: uuid.UUID) -> set[uuid.UUID]:
     return user_group_ids(db, user_id)
 
 
-def _project_owner_group_ids(db: Session, project_id: int) -> set[int]:
+def _project_owner_group_ids(db: Session, project_id: int) -> set[uuid.UUID]:
     return project_owner_group_ids(db, project_id)
 
 
@@ -242,7 +232,7 @@ def _can_run_dependency_discovery(db: Session, user: User, project: Project) -> 
 
 
 def _set_project_owner_groups(
-    db: Session, project: Project, owner_group_ids: set[int]
+    db: Session, project: Project, owner_group_ids: set[uuid.UUID]
 ) -> None:
     db.query(ProjectOwnerGroup).filter(
         ProjectOwnerGroup.project_id == project.id
@@ -393,7 +383,7 @@ def _serialize_project(
     scan_detail: bool = False,
 ) -> dict:
     owner_group_ids = [
-        int(link.group_id)
+        str(link.group_id)
         for link in (project.owner_group_links or [])
         if link.group_id is not None
     ]
@@ -798,8 +788,8 @@ def _selected_capability_tree(
 
 @router.get("/v1/projects")
 async def list_projects(
-    q: str | None = Query(default=None),
-    framework_id: int | None = Query(default=None),
+    q: SearchText = None,
+    framework_id: OptionalDbId = None,
     node_ids: str | None = Query(default=None),
     # Backwards-compatible alias (treated as node_ids)
     capability_ids: str | None = Query(default=None),
@@ -808,7 +798,7 @@ async def list_projects(
     programming_languages: str | None = Query(default=None),
     statuses: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     framework = _ensure_framework(db, framework_id)
 
@@ -973,7 +963,7 @@ def _apply_repo_access(project: Project, changes: dict) -> None:
             project.repo_token_encrypted = encrypt_token(token)
         except RepoTokenUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from None
-        project.repo_token_updated_at = datetime.utcnow()
+        project.repo_token_updated_at = utc_now_naive()
     if not project.repo_token_encrypted:
         raise HTTPException(
             status_code=422,
@@ -996,7 +986,7 @@ def _start_branch_scan(
 
     from app.core.features import is_enabled
 
-    now = datetime.utcnow()
+    now = utc_now_naive()
     version, created = ensure_branch_version(db, project)
     if created:
         record_entity_changelog(
@@ -1029,7 +1019,7 @@ def create_project(
     request: Request,
     payload: ProjectCreatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_write_access(db, user)
 
@@ -1090,7 +1080,7 @@ def create_project(
     if is_tracking(project):
         # Committed with the project, so the poller never sees a tracked
         # branch that this request is about to scan as overdue.
-        project.branch_last_polled_at = datetime.utcnow()
+        project.branch_last_polled_at = utc_now_naive()
 
     db.add(project)
     db.commit()
@@ -1134,13 +1124,13 @@ def create_project(
     "/v1/projects/compare", dependencies=[Depends(require_feature("comparisons"))]
 )
 def compare_projects(
-    left_project_id: int = Query(..., ge=1),
-    right_project_id: int = Query(..., ge=1),
-    left_version_id: int | None = Query(None, ge=1),
-    right_version_id: int | None = Query(None, ge=1),
-    framework_id: int | None = Query(default=None),
+    left_project_id: QueryDbId,
+    right_project_id: QueryDbId,
+    left_version_id: OptionalDbId = None,
+    right_version_id: OptionalDbId = None,
+    framework_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     """Generate a unified diff between two projects (and optionally specific versions).
 
@@ -1264,10 +1254,10 @@ def compare_projects(
 
 @router.get("/v1/projects/{project_id}")
 def get_project(
-    project_id: int,
-    framework_id: int | None = Query(default=None),
+    project_id: DbId,
+    framework_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     framework = _ensure_framework(db, framework_id)
     project = _ensure_project(db, project_id)
@@ -1319,10 +1309,10 @@ def get_project(
 
 @router.get("/v1/projects/{project_id}/versions")
 def list_project_versions(
-    project_id: int,
-    framework_id: int | None = Query(default=None),
+    project_id: DbId,
+    framework_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     framework = _ensure_framework(db, framework_id)
     project = _ensure_project(db, project_id)
@@ -1358,11 +1348,11 @@ def list_project_versions(
 
 @router.get("/v1/projects/{project_id}/changelog")
 def get_project_changelog(
-    project_id: int,
-    limit: int = 50,
-    offset: int = 0,
+    project_id: DbId,
+    limit: PageLimit = 50,
+    offset: PageOffset = 0,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _ensure_project(db, project_id)
     return list_entity_changelogs(
@@ -1376,11 +1366,11 @@ def get_project_changelog(
 
 @router.get("/v1/project-versions/{version_id}/changelog")
 def get_project_version_changelog(
-    version_id: int,
-    limit: int = 50,
-    offset: int = 0,
+    version_id: DbId,
+    limit: PageLimit = 50,
+    offset: PageOffset = 0,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     version = _ensure_version(db, version_id)
     project = _ensure_project(db, version.project_id)
@@ -1403,10 +1393,10 @@ def get_project_version_changelog(
 @router.put("/v1/projects/{project_id}")
 def update_project(
     request: Request,
-    project_id: int,
+    project_id: DbId,
     payload: ProjectUpdatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     project = _ensure_project(db, project_id)
     _ensure_project_manage_access(db, user, project)
@@ -1475,7 +1465,7 @@ def update_project(
     if tracking_target_changed:
         # Claimed before commit: the poller's compare-and-set loses to this
         # request, which scans the new target itself below.
-        project.branch_last_polled_at = datetime.utcnow()
+        project.branch_last_polled_at = utc_now_naive()
 
     # If the release feed URL changed, reset polling state so the worker can baseline.
     if rss_changed:
@@ -1539,9 +1529,9 @@ def update_project(
 @router.delete("/v1/projects/{project_id}")
 def delete_project(
     request: Request,
-    project_id: int,
+    project_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     project = _ensure_project(db, project_id)
     _ensure_project_manage_access(db, user, project)
@@ -1565,9 +1555,9 @@ def delete_project(
 
 @router.get("/v1/projects/{project_id}/subscription")
 def get_project_subscription(
-    project_id: int,
+    project_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _ensure_project(db, project_id)
 
@@ -1594,10 +1584,10 @@ def get_project_subscription(
 
 @router.post("/v1/projects/{project_id}/subscription")
 def subscribe_to_project(
-    project_id: int,
+    project_id: DbId,
     payload: ProjectSubscriptionUpdatePayload | None = Body(default=None),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _ensure_project(db, project_id)
 
@@ -1660,9 +1650,9 @@ def subscribe_to_project(
 
 @router.delete("/v1/projects/{project_id}/subscription")
 def unsubscribe_from_project(
-    project_id: int,
+    project_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _ensure_project(db, project_id)
     db.query(ProjectSubscription).filter(
@@ -1676,10 +1666,10 @@ def unsubscribe_from_project(
 @router.post("/v1/projects/{project_id}/versions")
 def create_project_version(
     request: Request,
-    project_id: int,
+    project_id: DbId,
     payload: ProjectVersionCreatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     project = _ensure_project(db, project_id)
     _ensure_project_manage_access(db, user, project)
@@ -1795,10 +1785,10 @@ def create_project_version(
 @router.put("/v1/project-versions/{version_id}")
 def update_project_version(
     request: Request,
-    version_id: int,
+    version_id: DbId,
     payload: ProjectVersionUpdatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     version = _ensure_version(db, version_id)
     project = _ensure_project(db, version.project_id)
@@ -1913,9 +1903,9 @@ def update_project_version(
 @router.delete("/v1/project-versions/{version_id}")
 def delete_project_version(
     request: Request,
-    version_id: int,
+    version_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     version = _ensure_version(db, version_id)
     project = _ensure_project(db, version.project_id)
@@ -1950,10 +1940,10 @@ def delete_project_version(
     dependencies=[Depends(require_feature("frameworks"))],
 )
 def get_project_version_framework_nodes(
-    version_id: int,
-    framework_id: int | None = Query(default=None),
+    version_id: DbId,
+    framework_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     version = _ensure_version(db, version_id)
     project = _ensure_project(db, version.project_id)
@@ -2016,10 +2006,10 @@ def get_project_version_framework_nodes(
     dependencies=[Depends(require_feature("frameworks"))],
 )
 def get_project_version_capabilities(
-    version_id: int,
-    framework_id: int | None = Query(default=None),
+    version_id: DbId,
+    framework_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     return get_project_version_framework_nodes(
         version_id=version_id,
@@ -2035,10 +2025,10 @@ def get_project_version_capabilities(
 )
 def set_project_version_framework_nodes(
     request: Request,
-    version_id: int,
+    version_id: DbId,
     payload: ProjectVersionFrameworkNodesPayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     version = _ensure_version(db, version_id)
     project = _ensure_project(db, version.project_id)
@@ -2101,10 +2091,10 @@ def set_project_version_framework_nodes(
 )
 def set_project_version_capabilities(
     request: Request,
-    version_id: int,
+    version_id: DbId,
     payload: ProjectVersionFrameworkNodesPayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     # If caller sent legacy payload shape, try to interpret.
     fw_id = getattr(payload, "framework_id", None)
@@ -2123,11 +2113,11 @@ def set_project_version_capabilities(
 
 @router.get("/v1/projects/{project_id}/graph")
 def get_project_graph(
-    project_id: int,
-    framework_id: int | None = Query(default=None),
-    version_id: int | None = Query(default=None),
+    project_id: DbId,
+    framework_id: OptionalDbId = None,
+    version_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     framework = _ensure_framework(db, framework_id)
     project = _ensure_project(db, project_id)
@@ -2397,7 +2387,7 @@ def _manifest_dependencies_for_versions(
                     "title": r.title,
                     "fixed_version": r.fixed_version,
                     "references": list(r.references or []),
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "created_at": iso_or_none(r.created_at),
                 }
             )
 
@@ -2529,8 +2519,8 @@ def _collect_manifest_rows(
                 "supported_profiles": _clean_tag_list(comp.supported_profiles),
                 "supported_formats": _clean_tag_list(comp.supported_formats),
                 "link_to_app": comp.link_to_app,
-                "created_at": comp.created_at.isoformat() if comp.created_at else None,
-                "updated_at": comp.updated_at.isoformat() if comp.updated_at else None,
+                "created_at": iso_or_none(comp.created_at),
+                "updated_at": iso_or_none(comp.updated_at),
             }
         )
 
@@ -2618,10 +2608,8 @@ def _manifest_rows_from_saved(
                 "supported_profiles": _clean_tag_list(item.supported_profiles),
                 "supported_formats": _clean_tag_list(item.supported_formats),
                 "link_to_app": item.link_to_app,
-                "created_at": item.created_at.isoformat() if item.created_at else None,
-                "updated_at": (
-                    manifest.updated_at.isoformat() if manifest.updated_at else None
-                ),
+                "created_at": iso_or_none(item.created_at),
+                "updated_at": (iso_or_none(manifest.updated_at)),
             }
         )
     return rows
@@ -2934,16 +2922,11 @@ def _manifest_xlsx(rows: list[dict]) -> bytes:
                     ]
                 )
 
-    # Spreadsheet/CSV formula injection hardening: escape leading =+-@
+    # No text a spreadsheet would read as a formula.
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for cell in row:
-                try:
-                    v = cell.value
-                    if isinstance(v, str):
-                        cell.value = _excel_safe_cell(v)
-                except Exception:
-                    pass
+                cell.value = spreadsheet_cell(cell.value)
 
     buffer = BytesIO()
     wb.save(buffer)
@@ -2991,9 +2974,9 @@ def _manifest_response(rows: list[dict], *, fmt: str, name: str) -> Response:
             writer.writerow(
                 [
                     row.get("project_id"),
-                    _excel_safe_cell(row.get("machine_name") or ""),
-                    _excel_safe_cell(row.get("display_name") or ""),
-                    _excel_safe_cell("; ".join(row.get("capabilities", []))),
+                    spreadsheet_cell(row.get("machine_name") or ""),
+                    spreadsheet_cell(row.get("display_name") or ""),
+                    spreadsheet_cell("; ".join(row.get("capabilities", []))),
                 ]
             )
         headers = _attachment(name, "csv")
@@ -3090,13 +3073,13 @@ def _save_manifest_snapshot(
     q: str | None,
     capability_ids: list[int],
     project_ids: list[int],
-    owner_group_id: int | None,
+    owner_group_id: uuid.UUID | None,
 ) -> Manifest:
-    valid_owner_group_id: int | None = None
-    user_groups = _user_group_ids(db, user.id)
+    valid_owner_group_id: uuid.UUID | None = None
+    member_of = _user_group_ids(db, user.id)
     if owner_group_id is not None:
         if (
-            owner_group_id not in user_groups
+            owner_group_id not in member_of
             and attach_effective_role(db, user) != ROLE_ADMIN
         ):
             raise HTTPException(
@@ -3176,14 +3159,14 @@ def _save_manifest_snapshot(
     dependencies=[Depends(require_feature("manifests"))],
 )
 def export_project_manifest(
-    project_id: int,
+    project_id: DbId,
     format: str = Query(default="json"),
     fmt: str | None = Query(default=None),
     name: str = Query(default=None),
-    framework_id: int | None = Query(default=None),
-    version_id: int | None = Query(default=None),
+    framework_id: OptionalDbId = None,
+    version_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     """Export a manifest for a single project (optionally for a specific version).
 
@@ -3284,8 +3267,8 @@ def export_project_manifest(
         "supported_profiles": _clean_tag_list(project.supported_profiles),
         "supported_formats": _clean_tag_list(project.supported_formats),
         "link_to_app": project.link_to_app,
-        "created_at": project.created_at.isoformat() if project.created_at else None,
-        "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+        "created_at": iso_or_none(project.created_at),
+        "updated_at": iso_or_none(project.updated_at),
     }
 
     effective_format = (fmt or format or "json").strip().lower()
@@ -3301,12 +3284,12 @@ def export_project_manifest(
     dependencies=[Depends(require_feature("manifests"))],
 )
 def save_project_manifest(
-    project_id: int,
+    project_id: DbId,
     payload: ManifestCreatePayload,
-    framework_id: int | None = Query(default=None),
-    version_id: int | None = Query(default=None),
+    framework_id: OptionalDbId = None,
+    version_id: OptionalDbId = None,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     """Save a manifest snapshot for a single project/version.
 
@@ -3375,11 +3358,11 @@ def save_project_manifest(
     capability_pairs = sorted(pairs.items(), key=lambda item: item[1].lower())
 
     # Owner group handling (same rules as /v1/manifests)
-    valid_owner_group_id: int | None = None
-    user_groups = _user_group_ids(db, user.id)
+    valid_owner_group_id: uuid.UUID | None = None
+    member_of = _user_group_ids(db, user.id)
     if payload.owner_group_id is not None:
         if (
-            payload.owner_group_id not in user_groups
+            payload.owner_group_id not in member_of
             and attach_effective_role(db, user) != ROLE_ADMIN
         ):
             raise HTTPException(
@@ -3391,7 +3374,7 @@ def save_project_manifest(
         )
         if not group_exists:
             raise HTTPException(status_code=400, detail="owner_group_id does not exist")
-        valid_owner_group_id = int(payload.owner_group_id)
+        valid_owner_group_id = payload.owner_group_id
 
     default_name = f"{project.machine_name}-{target_version.version}".strip("-")
     manifest = Manifest(
@@ -3459,8 +3442,8 @@ def export_manifest(
     format: str = Query(default="json"),
     fmt: str | None = Query(default=None),
     name: str = Query(default="project-manifest"),
-    q: str | None = Query(default=None),
-    framework_id: int | None = Query(default=None),
+    q: SearchText = None,
+    framework_id: OptionalDbId = None,
     node_ids: str | None = Query(default=None),
     capability_ids: str | None = Query(default=None),
     project_ids: str | None = Query(default=None),
@@ -3468,7 +3451,7 @@ def export_manifest(
     programming_languages: str | None = Query(default=None),
     statuses: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
 
@@ -3499,13 +3482,13 @@ def export_manifest(
 def save_manifest(
     payload: ManifestCreatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
 
     framework = _ensure_framework(db, payload.framework_id)
     capability_ids = _ensure_node_ids(db, framework.id, payload.node_ids)
-    project_ids = sorted({int(x) for x in payload.project_ids if int(x) > 0})
+    project_ids = sorted(set(payload.project_ids))
 
     manifest = _save_manifest_snapshot(
         db,
@@ -3534,7 +3517,7 @@ def save_manifest(
 @router.get("/v1/manifests", dependencies=[Depends(require_feature("manifests"))])
 def list_manifests(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
 
@@ -3547,13 +3530,13 @@ def list_manifests(
     )
 
     if effective_role != ROLE_ADMIN:
-        user_groups = _user_group_ids(db, user.id)
+        member_of = _user_group_ids(db, user.id)
         conditions = [
             Manifest.created_by_user_id == user.id,
             Manifest.is_public.is_(True),
         ]
-        if user_groups:
-            conditions.append(Manifest.owner_group_id.in_(user_groups))
+        if member_of:
+            conditions.append(Manifest.owner_group_id.in_(member_of))
         query = query.filter(or_(*conditions))
 
     manifests = query.order_by(
@@ -3600,9 +3583,9 @@ def list_manifests(
     "/v1/manifests/{manifest_id}", dependencies=[Depends(require_feature("manifests"))]
 )
 def get_manifest(
-    manifest_id: int,
+    manifest_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
     manifest = _ensure_manifest_manage(db, user, manifest_id)
@@ -3643,9 +3626,9 @@ def get_manifest(
     "/v1/manifests/{manifest_id}", dependencies=[Depends(require_feature("manifests"))]
 )
 def delete_manifest(
-    manifest_id: int,
+    manifest_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
     manifest = _ensure_manifest_manage(db, user, manifest_id)
@@ -3659,12 +3642,12 @@ def delete_manifest(
     dependencies=[Depends(require_feature("manifests"))],
 )
 def export_saved_manifest(
-    manifest_id: int,
+    manifest_id: DbId,
     format: str = Query(default="json"),
     fmt: str | None = Query(default=None),
     name: str | None = Query(default=None),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
     manifest = _ensure_manifest_access(db, user, manifest_id)
@@ -3679,16 +3662,16 @@ def _notify_group_manifest_shared(
     *,
     shared_by: User,
     manifest: Manifest,
-    group_id: int,
+    group_id: uuid.UUID,
 ) -> None:
     # Only notify active users in the group who can access manifests.
     group = db.query(Group).filter(Group.id == group_id).one_or_none()
     group_name = group.name if group else None
 
     user_ids = [
-        int(uid)
-        for (uid,) in db.query(UserGroup.user_id)
-        .filter(UserGroup.group_id == group_id)
+        uid
+        for (uid,) in db.query(user_groups.c.user_id)
+        .filter(user_groups.c.group_id == group_id)
         .all()
         if uid is not None
     ]
@@ -3741,10 +3724,10 @@ def _notify_group_manifest_shared(
     dependencies=[Depends(require_feature("manifests"))],
 )
 def update_manifest_sharing(
-    manifest_id: int,
+    manifest_id: DbId,
     payload: ManifestSharingUpdatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
     manifest = _ensure_manifest_manage(db, user, manifest_id)
@@ -3759,23 +3742,21 @@ def update_manifest_sharing(
         new_group_id = payload.owner_group_id
         if new_group_id is not None:
             # Only allow sharing to groups the user is a member of (unless admin).
-            user_groups = _user_group_ids(db, user.id)
+            member_of = _user_group_ids(db, user.id)
             if (
-                int(new_group_id) not in user_groups
+                new_group_id not in member_of
                 and attach_effective_role(db, user) != ROLE_ADMIN
             ):
                 raise HTTPException(
                     status_code=403,
                     detail="Cannot share with a group you are not part of",
                 )
-            exists = (
-                db.query(Group.id).filter(Group.id == int(new_group_id)).one_or_none()
-            )
+            exists = db.query(Group.id).filter(Group.id == new_group_id).one_or_none()
             if not exists:
                 raise HTTPException(
                     status_code=400, detail="owner_group_id does not exist"
                 )
-            manifest.owner_group_id = int(new_group_id)
+            manifest.owner_group_id = new_group_id
         else:
             manifest.owner_group_id = None
 
@@ -3790,7 +3771,7 @@ def update_manifest_sharing(
     new_group_id = manifest.owner_group_id
     if new_group_id is not None and new_group_id != old_group_id:
         _notify_group_manifest_shared(
-            db, shared_by=user, manifest=manifest, group_id=int(new_group_id)
+            db, shared_by=user, manifest=manifest, group_id=new_group_id
         )
 
     return {
@@ -3816,10 +3797,10 @@ def update_manifest_sharing(
     dependencies=[Depends(require_feature("manifests"))],
 )
 def clone_manifest(
-    manifest_id: int,
+    manifest_id: DbId,
     payload: ManifestClonePayload | None = Body(default=None),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     _require_manifest_access(db, user)
     src = _ensure_manifest_access(db, user, manifest_id)

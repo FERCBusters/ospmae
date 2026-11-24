@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from mosp.core.task_deadline import TIME_LIMITS
+from mosp.security.redaction import redact_str
+
 from app.core.config import settings
 from app.security.repo_credentials import RepoCredential, git_auth_env
 
@@ -17,7 +20,6 @@ DEFAULT_ALLOWED_HOSTS = {"github.com", "gitlab.com", "codeberg.org"}
 from .parsers import (  # noqa: E402 - module re-export root; config import precedes
     DiscoveredDependency,
     is_supported_lockfile,
-    redact_url,
 )
 
 SKIP_DIRS = {
@@ -282,7 +284,7 @@ def _run(
         # credentials redacted.
         raise RuntimeError(
             f"Command failed ({proc.returncode}): "
-            f"{' '.join(redact_url(part) for part in cmd)}\n{redact_url(proc.stdout)}"
+            f"{' '.join(redact_str(part) for part in cmd)}\n{redact_str(proc.stdout)}"
         )
     return proc.stdout
 
@@ -298,6 +300,8 @@ def _extract_repo_and_tag(url: str) -> tuple[str, str | None]:
     """
     try:
         parsed = urlparse(url)
+    except TIME_LIMITS:
+        raise
     except Exception:
         return url, None
 
@@ -477,10 +481,14 @@ def clone_repo(
         commit = None
         try:
             commit = _run(["git", "rev-parse", "HEAD"], cwd=tmpdir, timeout=30).strip()
+        except TIME_LIMITS:
+            raise
         except Exception:
             commit = None
         return tmpdir, commit
-    except Exception:
+    except BaseException:
+        # A clone that does not finish, the time limit included, leaves no
+        # directory behind.
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
 

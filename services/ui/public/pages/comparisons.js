@@ -35,7 +35,7 @@
   };
 
   function roleOf(me) {
-    return String(me?.effective_role || me?.role || "viewer").toLowerCase();
+    return String(me?.effective_role || me?.role || "normal").toLowerCase();
   }
 
   // -----------------------------------------------------------------------------

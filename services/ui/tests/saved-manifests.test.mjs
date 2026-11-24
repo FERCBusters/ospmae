@@ -2,7 +2,13 @@
 // and deletion, against an API fixture that keeps what is changed.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { account, appPage, FEATURES, FRAMEWORK } from "./support/app-page.mjs";
+import {
+  account,
+  appPage,
+  FEATURES,
+  FRAMEWORK,
+  uuid,
+} from "./support/app-page.mjs";
 
 const NODES = {
   tree: [],
@@ -49,7 +55,7 @@ function store() {
       name: "Board <pack>",
       description: "For the <board>",
       updated_at: "2026-03-01T00:00:00",
-      created_by_user_id: 7,
+      created_by_user_id: uuid(7),
       created_by_username: "ada",
       framework_id: 3,
       owner_group_id: null,
@@ -89,11 +95,11 @@ function store() {
       name: "Shared plan",
       description: null,
       updated_at: "2026-03-05T00:00:00",
-      created_by_user_id: 99,
+      created_by_user_id: uuid(99),
       created_by_username: "bob",
       framework_id: null,
       framework_machine_name: "legacy",
-      owner_group_id: 8,
+      owner_group_id: uuid(8),
       owner_group_name: "Team",
       is_public: false,
       filters: {},
@@ -121,7 +127,7 @@ function store() {
 
 async function saved(t, options = {}) {
   const data = store();
-  const groups = options.groups ?? [{ id: 8, name: "Team <A>" }];
+  const groups = options.groups ?? [{ id: uuid(8), name: "Team <A>" }];
   const page = await appPage(t, "manifests.html", "pages/saved-manifests.js", {
     me: account("architect"),
     ...options,
@@ -159,7 +165,7 @@ async function saved(t, options = {}) {
           ...source,
           id: 10,
           name: `${source.name} (copy)`,
-          created_by_user_id: 7,
+          created_by_user_id: uuid(7),
           can_manage: true,
           can_delete: true,
           can_clone: false,
@@ -300,7 +306,7 @@ test("sharing with one group is a tick box; saving reloads the manifest", async 
   page.$("makePublicChk").checked = true;
   await page.click("saveSharingBtn");
   assert.deepEqual(page.sent("PATCH", "/api/v1/manifests/1/sharing"), [
-    { owner_group_id: 8, is_public: true },
+    { owner_group_id: uuid(8), is_public: true },
   ]);
   assert.deepEqual(page.toasts(), [["info", "Sharing updated."]]);
   assert.ok(
@@ -323,8 +329,8 @@ test("sharing with one group is a tick box; saving reloads the manifest", async 
 test("several groups become a list; none leaves only the public choice", async (t) => {
   const many = await saved(t, {
     groups: [
-      { id: 8, name: "Team" },
-      { id: 9, name: "Docs" },
+      { id: uuid(8), name: "Team" },
+      { id: uuid(9), name: "Docs" },
     ],
   });
   await open(many, 1);
@@ -333,14 +339,14 @@ test("several groups become a list; none leaves only the public choice", async (
     "Team",
     "Docs",
   ]);
-  assert.equal(many.$("shareGroupSelect").value, "0");
-  many.$("shareGroupSelect").value = "9";
+  assert.equal(many.$("shareGroupSelect").value, "");
+  many.$("shareGroupSelect").value = uuid(9);
   await many.click("saveSharingBtn");
   assert.deepEqual(many.sent("PATCH", "/api/v1/manifests/1/sharing"), [
-    { owner_group_id: 9, is_public: false },
+    { owner_group_id: uuid(9), is_public: false },
   ]);
-  assert.equal(many.$("shareGroupSelect").value, "9");
-  many.$("shareGroupSelect").value = "0";
+  assert.equal(many.$("shareGroupSelect").value, uuid(9));
+  many.$("shareGroupSelect").value = "";
   await many.click("saveSharingBtn");
   assert.equal(
     many.sent("PATCH", "/api/v1/manifests/1/sharing")[1].owner_group_id,

@@ -3,29 +3,20 @@ from __future__ import annotations
 from datetime import timedelta
 
 from celery import Celery
+from mosp import worker as mosp_worker
 
 from app.core.config import settings
 
 
 def _broker_url() -> str:
-    explicit = str(getattr(settings, "celery_broker_url", "") or "").strip()
-    if explicit:
-        return explicit
-    # Default for local docker-compose
-    return "redis://redis:6379/0"
-
-
-def _result_backend() -> str:
-    explicit = str(getattr(settings, "celery_result_backend", "") or "").strip()
-    if explicit:
-        return explicit
-    return "redis://redis:6379/1"
+    # Compose sets OSPMAE_CELERY_BROKER_URL with the Valkey password; this
+    # default only serves a local broker that needs none.
+    return settings.celery_broker_url.strip() or "redis://redis:6379/0"
 
 
 celery_app = Celery(
     "ospmae",
     broker=_broker_url(),
-    backend=_result_backend(),
     include=[
         "app.tasks.branch_tracking",
         "app.tasks.dependency_discovery",
@@ -106,8 +97,8 @@ if bool(getattr(settings, "release_feed_poll_enabled", True)) and _feature_on(
     }
 
 
-# Housekeeping: expired login states, used/expired reset and verification
-# tokens and stale rate-limit ledger rows never accumulate without bound.
+# Housekeeping: expired sign-in states, second-factor challenges, SSO e-mail
+# proofs and audit rows past retention never accumulate.
 celery_app.conf.beat_schedule = {
     **(celery_app.conf.beat_schedule or {}),
     "sweep-expired-rows": {
@@ -124,3 +115,6 @@ _celery_beat["deliver-notifications"] = {
     "schedule": timedelta(minutes=2),
 }
 celery_app.conf.beat_schedule = _celery_beat
+
+# Each task's deadline, and its statement labels with OSPMAE_SQL_TRACE on.
+mosp_worker.connect(celery_app, sql_trace=settings.sql_trace)

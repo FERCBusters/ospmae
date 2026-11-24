@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import Depends
+from mosp.api.routing import Router
+from mosp.security.auth import require_authenticated
 from sqlalchemy.orm import Session
 
 from app.core.features import public_dict
 from app.db.models import User
 from app.db.session import get_db
-from app.security.auth import get_current_user
 
-router = APIRouter()
+router = Router()
 
 
 @router.get("/v1/system/health")
@@ -17,6 +18,8 @@ def health():
 
 
 @router.get("/v1/system/features")
-def features(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def features(
+    user: User = Depends(require_authenticated), db: Session = Depends(get_db)
+):
     """Installation feature switches for the UI; authentication required."""
     return public_dict(db)

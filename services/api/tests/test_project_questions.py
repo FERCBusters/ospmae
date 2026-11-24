@@ -13,13 +13,13 @@ from tests.support import csrf, make_group, make_project, ok, signed_in
 
 @pytest.fixture()
 def told(monkeypatch):
-    """The live notices the hub would push, as (recipients, payload)."""
-    sent: list[tuple[set[int], dict]] = []
+    """The live notices sent to signed-in browsers, as (recipients, payload)."""
+    sent: list[tuple[set, dict]] = []
 
-    async def broadcast(user_ids, payload):
+    async def notify_users(user_ids, payload):
         sent.append((set(user_ids), payload))
 
-    monkeypatch.setattr(project_questions.hub, "broadcast", broadcast)
+    monkeypatch.setattr(project_questions, "notify_users", notify_users)
     return sent
 
 
@@ -49,7 +49,7 @@ def test_a_question_goes_from_open_to_answered_and_back(told):
         pid,
         None,
     )
-    assert thread["created_by"]["id"] == asker_id
+    assert thread["created_by"]["id"] == str(asker_id)
     assert [p["body"] for p in thread["posts"]] == ["How does it rotate keys?"]
     recipients, notice = told[-1]
     # The owner, administrators and the asker hear of it at once.
@@ -59,13 +59,16 @@ def test_a_question_goes_from_open_to_answered_and_back(told):
         "thread_id": thread["id"],
         "project_id": pid,
         "project_display_name": "Alpha",
-        "created_by_user_id": asker_id,
+        "created_by_user_id": str(asker_id),
     }
 
     answered = ok(reply(owner, thread["id"]))
     assert answered["status"] == "answered"
     assert answered["last_answer_at"] is not None
-    assert [p["created_by"]["id"] for p in answered["posts"]] == [asker_id, owner_id]
+    assert [p["created_by"]["id"] for p in answered["posts"]] == [
+        str(asker_id),
+        str(owner_id),
+    ]
     assert told[-1][1]["kind"] == "project_question_replied"
     assert told[-1][0] == {admin_id, owner_id, asker_id}
 
@@ -122,18 +125,21 @@ def test_asking_and_answering_follow_role_and_ownership(told):
 
 
 def test_a_granted_answer_permission_still_needs_a_stake_in_the_project(told):
-    from app.db.models import Permission, UserPermission
-    from app.security.permissions import seed_default_permissions
+    from app.db.models import Permission, user_permissions
+    from mosp.security.permissions import bump_authz_versions
 
     owner, owner_id = signed_in("maintainer")
     helper, helper_id = signed_in("viewer")
     outsider, outsider_id = signed_in("viewer")
     make_group("Team", members=[owner_id, helper_id])
     with SessionLocal() as s:
-        seed_default_permissions(s)
         answer = s.query(Permission.id).filter_by(code="project.answer").scalar()
         for user_id in (helper_id, outsider_id):
-            s.add(UserPermission(user_id=user_id, permission_id=answer))
+            s.execute(
+                user_permissions.insert().values(user_id=user_id, permission_id=answer)
+            )
+        # As the administration routes do: the accounts' sessions pick it up.
+        bump_authz_versions(s, [helper_id, outsider_id])
         s.commit()
     pid = make_project(owner, "alpha")["id"]
     asker, _ = signed_in("engineer")
@@ -205,7 +211,7 @@ def test_the_answer_queue_lists_open_questions_the_account_may_answer(told):
     assert queue["open_count"] == 1
     (item,) = queue["items"]
     assert (item["thread_id"], item["project_display_name"]) == (first["id"], "Mine")
-    assert item["asked_by"]["id"] == asker_id
+    assert item["asked_by"]["id"] == str(asker_id)
     # The preview is one line, cut to length.
     assert item["question_preview"].startswith("Why   x")
     assert len(item["question_preview"]) == 160 and item["question_preview"].endswith(
@@ -258,7 +264,7 @@ def test_owners_and_question_subscribers_are_mailed_but_never_the_poster(told, o
     first = outbox.messages()[0]
     assert "New question on Alpha" in first.subject
     assert "Is it audited?" in first.body
-    assert "https://ospmae.example.com/project.html?id=" in first.body
+    assert "https://testserver/project.html?id=" in first.body
 
     ok(reply(owner, thread["id"], "Yes, yearly."))
     replied = sorted(
@@ -295,3 +301,29 @@ def test_questions_are_absent_while_the_feature_is_off(monkeypatch):
     assert admin.get(f"/v1/projects/{pid}/questions").status_code == 404
     assert ask(admin, pid).status_code == 404
     assert admin.get("/v1/me/questions").status_code == 404
+
+
+def test_a_live_notice_reaches_each_account_through_the_bus(monkeypatch):
+    """Each recipient's notice goes to every API process through Valkey; when
+    Valkey cannot take it, this process delivers to its own sockets."""
+    import asyncio
+
+    from app.realtime import notifications
+
+    published, local = [], []
+
+    async def publish(message):
+        if message["user_id"] == "b":
+            raise ConnectionError("Valkey is unavailable")
+        published.append(message)
+
+    async def broadcast_user(user_id, message):
+        local.append((user_id, message))
+
+    monkeypatch.setattr(notifications.notification_bus, "publish", publish)
+    monkeypatch.setattr(
+        notifications.notification_hub, "broadcast_user", broadcast_user
+    )
+    asyncio.run(notifications.notify_users(["a", "b", "a"], {"kind": "k"}))
+    assert published == [{"kind": "k", "scope": "user", "user_id": "a"}]
+    assert local == [("b", {"kind": "k", "scope": "user", "user_id": "b"})]

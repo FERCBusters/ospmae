@@ -7,9 +7,9 @@ sign-on linking (user_sso_emails) are never mailed.
 
 from __future__ import annotations
 
+from mosp.core.email_address import single_mailbox
 from sqlalchemy.orm import Session
 
-from app.core.email_address import single_mailbox
 from app.db.models import User
 
 

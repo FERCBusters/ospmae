@@ -12,14 +12,16 @@ from app.db.models import (
     DependencyVersion,
     DependencyVulnerability,
     Group,
+    Permission,
     ProjectVersion,
     ProjectVersionDependency,
     User,
-    UserGroup,
+    user_groups,
 )
 from app.db.session import SessionLocal
+from mosp.security.permissions import bump_authz_versions
 
-from tests.conftest import auth_client
+from tests.conftest import ROLE_PERMISSIONS, auth_client
 
 SOURCE = "https://github.com/example/repo"
 
@@ -89,13 +91,21 @@ def map_nodes(client, version_id: int, framework_id: int, node_ids: list[int]) -
     )
 
 
-def make_group(name: str, *, role: str | None = None, members=()) -> int:
+def make_group(name: str, *, role: str | None = None, members=()):
+    """A group with mosp's role (admin or normal), or one of OSPMAE's former
+    role names given as the permissions it held."""
+    codes = ROLE_PERMISSIONS.get(role or "", ())
+    if role in ROLE_PERMISSIONS:
+        role = "normal"
     with SessionLocal() as s:
         group = Group(name=name, role=role)
+        group.permissions = s.query(Permission).filter(Permission.code.in_(codes)).all()
         s.add(group)
         s.flush()
         for user_id in members:
-            s.add(UserGroup(user_id=user_id, group_id=group.id))
+            s.execute(user_groups.insert().values(user_id=user_id, group_id=group.id))
+        # As the administration routes do: members' sessions pick up the change.
+        bump_authz_versions(s, list(members))
         s.commit()
         return group.id
 

@@ -27,12 +27,15 @@ os.environ["OSPMAE_CELERY_BROKER_URL"] = "memory://"
 os.environ["OSPMAE_CELERY_RESULT_BACKEND"] = "cache+memory://"
 # Test clients authenticate over https so Secure cookies round-trip.
 os.environ.setdefault("OSPMAE_COOKIE_SECURE", "true")
-os.environ.setdefault("OSPMAE_TRUST_PROXY_CIDRS", "127.0.0.1,::1")
+os.environ["OSPMAE_SECURITY_TRUSTED_PROXY_CIDRS"] = "127.0.0.1,::1"
+# The browser-facing origin the test clients use.
+os.environ["OSPMAE_PUBLIC_BASE_URL"] = "https://testserver"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.api.routes  # noqa: E402,F401
 import app.db.models  # noqa: E402,F401
+import fakeredis  # noqa: E402
 import pytest  # noqa: E402
 
 # Import the model modules so their tables register on the shared metadata
@@ -82,11 +85,34 @@ def truncate_all() -> None:
 
 @pytest.fixture(autouse=True)
 def _fresh_database():
-    """Every test starts from empty tables."""
+    """Every test starts from empty tables and the permission catalogue."""
+    from app.security.permissions import seed_default_permissions
+
     create_all()
     truncate_all()
+    with SessionLocal() as s:
+        seed_default_permissions(s)
     yield
     truncate_all()
+
+
+@pytest.fixture(autouse=True)
+def valkey(monkeypatch):
+    """Sessions, allowances and sign-in throttles in a private in-memory
+    Valkey for each test."""
+    from mosp.core import valkey as store
+
+    server = fakeredis.FakeServer()
+
+    class FakeValkey:
+        @staticmethod
+        def from_url(*args, **kwargs):
+            return fakeredis.FakeRedis(server=server, decode_responses=True)
+
+    store.get_valkey.cache_clear()
+    monkeypatch.setattr(store, "Redis", FakeValkey)
+    yield store.get_valkey()
+    store.get_valkey.cache_clear()
 
 
 @pytest.fixture()
@@ -156,12 +182,39 @@ def generated_password() -> str:
     return f"Synthetic-{secrets.token_hex(8)}-passphrase"
 
 
-def make_user(username: str, password: str, role: str = "admin", **kw):
-    from app.security.auth import create_user
+# OSPMAE's former roles, as the accounts tests sign in with: each is an
+# ordinary account holding the permissions the role granted.
+ROLE_PERMISSIONS = {
+    "viewer": (),
+    "framework_admin": ("framework.write",),
+    "maintainer": ("project.write", "project.answer"),
+    "contributor": ("project.diff", "project.answer"),
+    "engineer": ("project.diff", "project.question"),
+    "product_owner": ("manifest.export", "project.question"),
+    "architect": ("manifest.export", "project.question"),
+}
 
+
+def make_user(username: str, password: str, role: str = "admin", **kw):
+    """An account with mosp's role (admin, normal or inherit), or one of
+    OSPMAE's former role names given as the permissions it held."""
+    from app.db.models import Permission
+    from mosp.security.auth import create_user
+
+    codes = ROLE_PERMISSIONS.get(role, ())
+    if role in ROLE_PERMISSIONS:
+        role = "normal"
     s = SessionLocal()
     try:
-        return create_user(s, username=username, password=password, role=role, **kw)
+        user = create_user(s, username=username, password=password, role=role, **kw)
+        if codes:
+            user.permissions = (
+                s.query(Permission).filter(Permission.code.in_(codes)).all()
+            )
+            s.commit()
+            s.refresh(user)
+        s.expunge(user)
+        return user
     finally:
         s.close()
 
@@ -175,6 +228,7 @@ def login(client: TestClient, username: str, password: str, peer: str = "8.8.8.8
     """
     client.headers["X-Test-Peer"] = "127.0.0.1"
     client.headers["X-Forwarded-For"] = peer
+    client.headers["Origin"] = "https://testserver"
     return client.post(
         "/v1/auth/login", json={"username": username, "password": password}
     )
@@ -234,7 +288,6 @@ def outbox(monkeypatch):
 
     monkeypatch.setattr(settings, "smtp_host", "smtp.example.com")
     monkeypatch.setattr(settings, "smtp_from_email", "noreply@example.com")
-    monkeypatch.setattr(settings, "public_base_url", "https://ospmae.example.com")
     box = _Outbox()
     monkeypatch.setattr(notification_tasks, "deliver_notifications", box)
     return box

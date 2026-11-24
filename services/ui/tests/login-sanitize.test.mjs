@@ -17,13 +17,9 @@ const source = readFileSync(
 const match = source.match(/function sanitizeNext\(rawNext\) \{[\s\S]*?\n  \}/);
 assert.ok(match, "sanitizeNext must exist as a plain function");
 
-function withStubs(fnSource, allowedHosts = []) {
-  const fn = new Function(
-    "redirectAllowedHosts",
-    "window",
-    `${fnSource}\n return sanitizeNext;`,
-  );
-  return fn(allowedHosts, {
+function withStubs(fnSource) {
+  const fn = new Function("window", `${fnSource}\n return sanitizeNext;`);
+  return fn({
     location: { origin: "https://ospmae.test", replace: () => {} },
   });
 }
@@ -47,18 +43,19 @@ test("backslash and control-character bypasses fall back", () => {
   assert.equal(sanitizeNext(""), "/index.html");
 });
 
-test("allowed hosts still permit absolute same-protocol redirects", () => {
-  // In the page, redirectAllowedHosts is a mutable closure variable normally
-  // filled from /v1/auth/methods; the harness feeds it via argument.
-  const allow = withStubs(match[0], ["partner.example.com"]);
-  assert.ok(
-    allow("https://partner.example.com/ok").startsWith(
-      "https://partner.example.com",
-    ),
-    "allowlisted hosts keep cross-origin redirects",
+test("a completed sign-in never leaves for another site", () => {
+  // As the server's own sign-in redirects (mosp's same_site_path), every
+  // destination is a path on this site.
+  for (const destination of [
+    "https://partner.example.com/ok",
+    "http://ospmae.test/index.html",
+    "javascript:alert(1)",
+  ])
+    assert.equal(sanitizeNext(destination), "/index.html", destination);
+  assert.equal(
+    sanitizeNext("https://ospmae.test/manifests.html?q=1#top"),
+    "/manifests.html?q=1#top",
   );
-  const deny = withStubs(match[0], []);
-  assert.equal(deny("https://partner.example.com/ok"), "/index.html");
 });
 
 // The destination helpers are plain functions in the same IIFE; they are

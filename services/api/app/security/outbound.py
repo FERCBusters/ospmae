@@ -9,7 +9,7 @@ ingestion transport pins its connections the same way.
 
 from __future__ import annotations
 
-import httpx
+import httpx2 as httpx
 
 from app.security.url_safety import public_https_addresses
 

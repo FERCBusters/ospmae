@@ -8,9 +8,10 @@ import {
   account,
   installBrowser,
   installLayout,
+  uuid,
 } from "./app-page.mjs";
 
-export { D3, FEATURES, FRAMEWORK, account };
+export { D3, FEATURES, FRAMEWORK, account, uuid };
 
 export const VERSIONS = [
   {
@@ -55,7 +56,7 @@ export const PROJECT = {
   supported_presentation_protocols: [],
   supported_key_managements: [],
   supported_signing_algorithms: ["ES256"],
-  created_by_user_id: 7,
+  created_by_user_id: uuid(7),
   owner_group_ids: [],
   is_subscribed: false,
   can_view_drafts: true,

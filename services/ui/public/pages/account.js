@@ -325,12 +325,14 @@
   }
 
   function roleOf(me) {
-    return me?.effective_role || me?.role || "viewer";
+    return me?.effective_role || me?.role || "normal";
   }
 
-  function canMaintainFrameworks(me) {
-    const role = roleOf(me);
-    return role === "admin" || role === "framework_admin";
+  // An administrator may do everything; an ordinary account what its
+  // permissions name.
+  function holds(me, code) {
+    if (roleOf(me) === "admin") return true;
+    return Array.isArray(me?.permissions) && me.permissions.includes(code);
   }
 
   function buildStartPageOptions(me) {
@@ -341,13 +343,11 @@
         opts.push(page);
         continue;
       }
-      if (page.permission === "framework_admin") {
-        if (canMaintainFrameworks(me)) opts.push(page);
-        continue;
-      }
       if (page.permission === "admin") {
         if (role === "admin") opts.push(page);
+        continue;
       }
+      if (holds(me, page.permission)) opts.push(page);
     }
     return opts;
   }
@@ -643,9 +643,9 @@
       return;
     }
 
-    await api("/api/v1/auth/change-password", {
+    await api("/api/v1/me/password", {
       method: "POST",
-      body: { current_password, new_password, confirm_password },
+      body: { current_password, new_password },
     });
 
     if (el.currentPassword) el.currentPassword.value = "";

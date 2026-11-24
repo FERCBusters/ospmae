@@ -2,7 +2,7 @@
 // exports, against an API fixture.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { account, projectPage } from "./support/project-page.mjs";
+import { account, projectPage, uuid } from "./support/project-page.mjs";
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -13,13 +13,13 @@ const THREADS = {
       id: 9,
       status: "answered",
       updated_at: "2026-03-05T10:00:00",
-      created_by: { id: 7, username: "ada" },
+      created_by: { id: uuid(7), username: "ada" },
       posts: [
         {
           id: 1,
           body: "Is it <b>audited</b>?",
           created_at: "2026-03-04T09:00:00",
-          created_by: { id: 7, username: "ada" },
+          created_by: { id: uuid(7), username: "ada" },
         },
         {
           id: 2,
@@ -33,7 +33,7 @@ const THREADS = {
       id: 8,
       status: null,
       updated_at: null,
-      created_by: { id: 99, username: "bob" },
+      created_by: { id: uuid(99), username: "bob" },
       posts: [],
     },
   ],

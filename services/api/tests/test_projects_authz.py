@@ -76,7 +76,7 @@ def test_unauthenticated_writes_are_refused(client):
 
 def test_ownership_constrains_every_non_admin_role(client):
     """A granted project.write never escapes the owner's scope (H1)."""
-    from app.db.models import Permission, UserPermission
+    from app.db.models import Permission, user_permissions
     from app.db.session import SessionLocal
     from app.security.permissions import seed_default_permissions
 
@@ -99,8 +99,8 @@ def test_ownership_constrains_every_non_admin_role(client):
         from app.db.models import User
 
         eng_user = seed_db.query(User).filter(User.username == "OtherB").one()
-        seed_db.add(
-            UserPermission(user_id=int(eng_user.id), permission_id=int(perm.id))
+        seed_db.execute(
+            user_permissions.insert().values(user_id=eng_user.id, permission_id=perm.id)
         )
         seed_db.commit()
     finally:

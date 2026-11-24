@@ -6,7 +6,7 @@ from __future__ import annotations
 import socket
 from datetime import datetime
 
-import httpx
+import httpx2 as httpx
 import pytest
 from app.core.config import settings
 from app.db.models import Project, ProjectVersion
@@ -410,7 +410,7 @@ def test_the_poll_stages_new_releases_as_drafts_and_tells_the_owners(
     assert {
         subject.count("v1.1.0") + subject.count("v1.2.0") for _, subject in mails
     } == {1}
-    assert "https://ospmae.example.com/project.html?id=" in outbox.messages()[0].body
+    assert "https://testserver/project.html?id=" in outbox.messages()[0].body
 
     # The next poll sends the validators and a 304 changes nothing.
     upstream.serve(FEED, status=304)
@@ -790,7 +790,8 @@ def test_atom_and_rss_entries_are_read_oldest_first():
         ("a", "a", None),
         ("b", "Second", "https://x.example/b"),
     ]
-    assert entries[2]["published_dt"].utcoffset().total_seconds() == 7200
+    # Dates are read as naive UTC.
+    assert entries[2]["published_dt"] == datetime(2026, 3, 1, 22, 0)
     assert entries[0]["published_dt"] is None
 
     items = rf._parse_feed_entries(
@@ -804,6 +805,7 @@ def test_atom_and_rss_entries_are_read_oldest_first():
         ("g2", None, True),
         ("https://x.example/1", "https://x.example/1", False),
     ]
+    assert items[1]["published_dt"] == datetime(2026, 3, 1)
     # A document that is neither feed shape has no entries.
     assert rf._parse_feed_entries(b"<rss><other/></rss>") == []
     assert rf._parse_feed_entries(b"<html><body/></html>") == []
@@ -1122,19 +1124,27 @@ def test_an_auto_publishing_poll_takes_nothing_from_a_draft_but_a_staging_one_ma
 
 
 @pytest.mark.parametrize(
-    "entry",
+    ("entry", "recorded"),
     [
-        # A date that cannot be moved to UTC.
-        "<entry><id>bad-date</id><updated>0001-01-01T00:00:00+01:00</updated>"
-        f'<link href="{REPO}/releases/tag/v9.0.0"/><title>Release v9.0.0</title></entry>',
+        # A date that cannot be moved to UTC is no date: the release is
+        # recorded without one.
+        (
+            "<entry><id>bad-date</id><updated>0001-01-01T00:00:00+01:00</updated>"
+            f'<link href="{REPO}/releases/tag/v9.0.0"/><title>Release v9.0.0</title>'
+            "</entry>",
+            {"1.0.0", "v9.0.0"},
+        ),
         # A number too long to compare with the published version's.
-        "<entry><id>bad-number</id><updated>2026-03-09T10:00:00Z</updated>"
-        f'<link href="{_NO_REPO}/x"/><title>Release {"9" * 5000}</title></entry>',
+        (
+            "<entry><id>bad-number</id><updated>2026-03-09T10:00:00Z</updated>"
+            f'<link href="{_NO_REPO}/x"/><title>Release {"9" * 5000}</title></entry>',
+            {"1.0.0"},
+        ),
     ],
     ids=["date", "number"],
 )
 def test_one_feeds_content_never_stops_the_poll_for_other_projects(
-    upstream, scans, owner, entry
+    upstream, scans, owner, entry, recorded
 ):
     client, _ = owner
     other_feed = "https://feeds.example.org/other.atom"
@@ -1153,7 +1163,7 @@ def test_one_feeds_content_never_stops_the_poll_for_other_projects(
         result = rf.poll_release_feeds.run()
         assert result["checked"] == 2
         assert "v1.1.0" in versions(quiet)
-        assert set(versions(hostile)) == {"1.0.0"}
+        assert set(versions(hostile)) == recorded
         # Both were looked at, so neither is asked again before the other.
         assert feed_state(hostile).release_rss_last_checked_at is not None
         assert feed_state(quiet).release_rss_last_checked_at is not None

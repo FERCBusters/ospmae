@@ -202,7 +202,7 @@ test("without a token the page only explains", async (t) => {
 
 test("a password change signs the browser out, as KEEN's does", async (t) => {
   const page = await account(t, [], {
-    "POST /api/v1/auth/change-password": () => [204, undefined],
+    "POST /api/v1/me/password": () => [200, { ok: true }],
   });
   const { document, window, requests } = page;
   document.getElementById("currentPassword").value = "Old-password-1";
@@ -212,11 +212,17 @@ test("a password change signs the browser out, as KEEN's does", async (t) => {
     .getElementById("changePasswordForm")
     .dispatchEvent(new window.Event("submit", { cancelable: true }));
   for (let i = 0; i < 5; i += 1) await page.settle();
-  assert.ok(
-    requests.some(
-      ([method, path]) =>
-        method === "POST" && path === "/api/v1/auth/change-password",
+  assert.deepEqual(
+    requests.filter(
+      ([method, path]) => method === "POST" && path === "/api/v1/me/password",
     ),
+    [
+      [
+        "POST",
+        "/api/v1/me/password",
+        { current_password: "Old-password-1", new_password: "New-password-2" },
+      ],
+    ],
   );
   assert.equal(
     document.getElementById("passwordMsg").textContent,

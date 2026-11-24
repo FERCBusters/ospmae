@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -8,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from celery.utils.log import get_task_logger
+from mosp.core.task_deadline import TIME_LIMITS
+from mosp.security.json_shape import decode_json
 
 from app.core.config import settings
 from app.depscan.ecosystems import ecosystem, purl_type
@@ -114,7 +115,9 @@ def scan_grype(repo_root: Path) -> list[VulnFinding] | None:
         return None
 
     try:
-        data = json.loads(proc.stdout or "{}")
+        data = decode_json(proc.stdout or "{}")
+    except TIME_LIMITS:
+        raise
     except Exception:
         log.warning("Grype returned non-JSON output")
         return None

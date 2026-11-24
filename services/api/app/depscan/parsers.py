@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import json
 import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from mosp.core.task_deadline import TIME_LIMITS
+from mosp.security.json_shape import decode_json
 
 try:
     import yaml  # type: ignore
@@ -20,15 +22,6 @@ class DiscoveredDependency:
     version: str
     is_indirect: bool
     source_file: str
-
-
-_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)([^/\s:@]+):([^/\s@]+)@")
-
-
-def redact_url(value: str) -> str:
-    """Mask userinfo credentials inside URL-shaped text for error output."""
-
-    return _CRED_RE.sub(r"\1***:***@", str(value or ""))
 
 
 def _bounded_read(path: Path, max_bytes: int) -> bytes | None:
@@ -58,7 +51,7 @@ def parse_package_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependen
     raw = _bounded_read(path, max_bytes)
     if raw is None:
         return []
-    data = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+    data = decode_json(raw.decode("utf-8", errors="replace") or "{}")
     out: list[DiscoveredDependency] = []
 
     root_direct = set()
@@ -259,7 +252,7 @@ def parse_pipfile_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDependen
     raw = _bounded_read(path, max_bytes)
     if raw is None:
         return []
-    data = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+    data = decode_json(raw.decode("utf-8", errors="replace") or "{}")
     out: list[DiscoveredDependency] = []
     for section_name in ("default", "develop"):
         section = data.get(section_name)
@@ -370,7 +363,7 @@ def parse_composer_lock(path: Path, *, max_bytes: int) -> list[DiscoveredDepende
     raw = _bounded_read(path, max_bytes)
     if raw is None:
         return []
-    data = json.loads(raw.decode("utf-8", errors="replace") or "{}")
+    data = decode_json(raw.decode("utf-8", errors="replace") or "{}")
     out: list[DiscoveredDependency] = []
     for key in ("packages", "packages-dev"):
         pkgs = data.get(key)
@@ -414,6 +407,8 @@ def parse_lockfile(path: Path, *, max_bytes: int) -> list[DiscoveredDependency]:
             return parse_go_sum(path, max_bytes=max_bytes)
         if name == "composer.lock":
             return parse_composer_lock(path, max_bytes=max_bytes)
+    except TIME_LIMITS:
+        raise
     except Exception:
         # Best-effort parsing; skip if malformed.
         return []

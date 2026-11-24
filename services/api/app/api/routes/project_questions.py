@@ -1,36 +1,34 @@
 from __future__ import annotations
 
-from datetime import datetime
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Depends, HTTPException, Query
+from mosp.api.routing import Router
+from mosp.core.datetime_utils import iso_or_none, utc_now_naive
+from mosp.security.auth import require_authenticated
+from mosp.security.permissions import has_permission
+from mosp.security.roles import (
+    ROLE_ADMIN,
+    attach_effective_role,
+)
 from sqlalchemy.orm import Session, joinedload
 
+from app.api.deps import DbId
 from app.api.payloads import ProjectQuestionCreatePayload, ProjectQuestionReplyPayload
 from app.core.config import settings
 from app.db.models import (
     Project,
-    ProjectOwnerGroup,
     ProjectQuestionPost,
     ProjectQuestionThread,
     ProjectSubscription,
     User,
-    UserGroup,
+    user_groups,
 )
 from app.db.session import get_db
-from app.realtime.notifications import hub
-from app.security.auth import get_current_user
-from app.security.permissions import (
-    PERM_PROJECT_ANSWER,
-    PERM_PROJECT_QUESTION,
-    has_permission,
-)
-from app.security.roles import (
-    ROLE_ADMIN,
-    ROLE_CONTRIBUTOR,
-    ROLE_MAINTAINER,
-    attach_effective_role,
-)
+from app.realtime.notifications import notify_users
+from app.security.permissions import PERM_PROJECT_ANSWER, PERM_PROJECT_QUESTION
+from app.security.project_access import owns_project, project_owner_group_ids
 from app.services.mailer import (
     send_project_question_created_email,
     send_project_question_replied_email,
@@ -41,7 +39,7 @@ from app.services.notification_recipients import (
 )
 from app.services.project_notifications import public_project_url
 
-router = APIRouter(tags=["project-questions"])
+router = Router(tags=["project-questions"])
 
 
 def _subscriber_emails_questions(db: Session, *, project_id: int) -> list[str]:
@@ -57,7 +55,7 @@ def _subscriber_emails_questions(db: Session, *, project_id: int) -> list[str]:
 
 
 def _owner_emails(db: Session, *, project: Project) -> list[str]:
-    users: dict[int, User] = {}
+    users: dict[uuid.UUID, User] = {}
 
     if project.created_by_user_id:
         owner = (
@@ -69,12 +67,12 @@ def _owner_emails(db: Session, *, project: Project) -> list[str]:
         if owner:
             users[owner.id] = owner
 
-    owner_group_ids = _get_project_owner_group_ids(db, project.id)
+    owner_group_ids = project_owner_group_ids(db, project.id)
     if owner_group_ids:
         group_users = (
             db.query(User)
-            .join(UserGroup, UserGroup.user_id == User.id)
-            .filter(UserGroup.group_id.in_(sorted(owner_group_ids)))
+            .join(user_groups, user_groups.c.user_id == User.id)
+            .filter(user_groups.c.group_id.in_(sorted(owner_group_ids)))
             .filter(User.is_active.is_(True))
             .all()
         )
@@ -136,48 +134,14 @@ def _notify_discussion_emails(
     commit_and_kick(db)
 
 
-def _get_user_group_ids(db: Session, user_id: int) -> set[int]:
-    return {
-        gid
-        for (gid,) in db.query(UserGroup.group_id)
-        .filter(UserGroup.user_id == user_id)
-        .all()
-    }
-
-
-def _get_project_owner_group_ids(db: Session, project_id: int) -> set[int]:
-    return {
-        gid
-        for (gid,) in db.query(ProjectOwnerGroup.group_id)
-        .filter(ProjectOwnerGroup.project_id == project_id)
-        .all()
-    }
-
-
 def _can_answer_project(db: Session, user: User, project: Project) -> bool:
-    eff = attach_effective_role(db, user)
-    if eff == ROLE_ADMIN:
+    """An administrator, or a holder of project.answer the project belongs to
+    (its creator, or a member of one of its owner groups)."""
+    if attach_effective_role(db, user) == ROLE_ADMIN:
         return True
-
-    if not has_permission(db, user, PERM_PROJECT_ANSWER):
-        return False
-
-    owner_group_ids = _get_project_owner_group_ids(db, project.id)
-    user_group_ids = _get_user_group_ids(db, user.id)
-    shares_group = bool(owner_group_ids & user_group_ids)
-
-    # Spec:
-    # - maintainer: can answer if they own the project OR share a group with the project creator
-    # - contributor: can answer if they share a group with the project creator
-    if eff == ROLE_MAINTAINER:
-        return project.created_by_user_id == user.id or shares_group
-
-    if eff == ROLE_CONTRIBUTOR:
-        return shares_group
-
-    # If the user has the permission via a direct/group permission assignment, apply the same
-    # group-based ownership rule.
-    return shares_group or project.created_by_user_id == user.id
+    return has_permission(db, user, PERM_PROJECT_ANSWER) and owns_project(
+        db, user, project
+    )
 
 
 def _serialize_thread(thread: ProjectQuestionThread) -> dict[str, Any]:
@@ -186,11 +150,9 @@ def _serialize_thread(thread: ProjectQuestionThread) -> dict[str, Any]:
         "project_id": thread.project_id,
         "status": thread.status,
         "project_display_name": thread.project.display_name if thread.project else None,
-        "last_answer_at": (
-            thread.last_answer_at.isoformat() if thread.last_answer_at else None
-        ),
-        "created_at": thread.created_at.isoformat() if thread.created_at else None,
-        "updated_at": thread.updated_at.isoformat() if thread.updated_at else None,
+        "last_answer_at": (iso_or_none(thread.last_answer_at)),
+        "created_at": iso_or_none(thread.created_at),
+        "updated_at": iso_or_none(thread.updated_at),
         "created_by": {
             "id": thread.created_by_user.id if thread.created_by_user else None,
             "username": (
@@ -201,7 +163,7 @@ def _serialize_thread(thread: ProjectQuestionThread) -> dict[str, Any]:
             {
                 "id": p.id,
                 "body": p.body,
-                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "created_at": iso_or_none(p.created_at),
                 "created_by": {
                     "id": p.created_by_user.id if p.created_by_user else None,
                     "username": (
@@ -237,8 +199,8 @@ def _serialize_unanswered_thread(thread: ProjectQuestionThread) -> dict[str, Any
                 thread.created_by_user.username if thread.created_by_user else None
             ),
         },
-        "asked_at": thread.created_at.isoformat() if thread.created_at else None,
-        "updated_at": thread.updated_at.isoformat() if thread.updated_at else None,
+        "asked_at": iso_or_none(thread.created_at),
+        "updated_at": iso_or_none(thread.updated_at),
         "question_preview": body_preview,
     }
 
@@ -246,7 +208,7 @@ def _serialize_unanswered_thread(thread: ProjectQuestionThread) -> dict[str, Any
 @router.get("/v1/questions/unanswered/summary")
 def unanswered_questions_summary(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     """Return the count of currently-unanswered project questions the user can answer."""
 
@@ -282,7 +244,7 @@ def unanswered_questions_summary(
 def list_unanswered_questions(
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     """List unanswered (open) project questions the user can answer."""
 
@@ -328,7 +290,7 @@ def list_unanswered_questions(
 def list_my_project_questions(
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     threads = (
         db.query(ProjectQuestionThread)
@@ -351,9 +313,9 @@ def list_my_project_questions(
 
 @router.get("/v1/projects/{project_id}/questions")
 def list_project_questions(
-    project_id: int,
+    project_id: DbId,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     project = db.query(Project).filter(Project.id == project_id).one_or_none()
     if not project:
@@ -386,10 +348,10 @@ def list_project_questions(
 
 @router.post("/v1/projects/{project_id}/questions")
 async def create_project_question(
-    project_id: int,
+    project_id: DbId,
     payload: ProjectQuestionCreatePayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     if not has_permission(db, user, PERM_PROJECT_QUESTION):
         raise HTTPException(
@@ -418,7 +380,7 @@ async def create_project_question(
     )
 
     # Notify admins + answerers for the project.
-    recipients: set[int] = set()
+    recipients: set = set()
     for u in db.query(User).filter(User.is_active == True).all():  # noqa: E712
         if (
             _can_answer_project(db, u, project)
@@ -429,14 +391,14 @@ async def create_project_question(
     # Always include the question author (for multi-tab usage).
     recipients.add(user.id)
 
-    await hub.broadcast(
+    await notify_users(
         recipients,
         {
             "kind": "project_question_created",
             "thread_id": thread.id,
             "project_id": project.id,
             "project_display_name": project.display_name,
-            "created_by_user_id": user.id,
+            "created_by_user_id": str(user.id),
         },
     )
 
@@ -457,10 +419,10 @@ async def create_project_question(
 
 @router.post("/v1/questions/{thread_id}/reply")
 async def reply_project_question(
-    thread_id: int,
+    thread_id: DbId,
     payload: ProjectQuestionReplyPayload,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_authenticated),
 ):
     thread = (
         db.query(ProjectQuestionThread)
@@ -490,7 +452,7 @@ async def reply_project_question(
     db.add(post)
 
     # If an answerer/admin replies, flip to answered; if author replies, flip back to open.
-    now = datetime.utcnow()
+    now = utc_now_naive()
     if eff == ROLE_ADMIN or can_answer:
         thread.status = "answered"
         thread.last_answer_at = now
@@ -508,7 +470,7 @@ async def reply_project_question(
     )
 
     # Notify the author and answerers/admins.
-    recipients: set[int] = set()
+    recipients: set = set()
     for u in db.query(User).filter(User.is_active == True).all():  # noqa: E712
         if (
             _can_answer_project(db, u, project)
@@ -518,14 +480,14 @@ async def reply_project_question(
 
     recipients.add(thread.created_by_user_id)
 
-    await hub.broadcast(
+    await notify_users(
         recipients,
         {
             "kind": "project_question_replied",
             "thread_id": thread.id,
             "project_id": project.id,
             "project_display_name": project.display_name,
-            "created_by_user_id": user.id,
+            "created_by_user_id": str(user.id),
         },
     )
 

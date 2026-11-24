@@ -3,8 +3,9 @@ administrator, the project's creator and its owner groups."""
 
 from __future__ import annotations
 
-from app.db.models import UserGroup
+from app.db.models import user_groups
 from app.db.session import SessionLocal
+from mosp.security.permissions import bump_authz_versions
 
 from tests.support import (
     csrf,
@@ -158,7 +159,13 @@ def test_a_shared_manifest_gives_a_draft_only_to_those_who_may_read_the_draft(db
     # Once the saver leaves the owner group the draft is closed to them too,
     # including what a scan adds afterwards.
     with SessionLocal() as s:
-        s.query(UserGroup).filter_by(user_id=architect_id, group_id=team).delete()
+        s.execute(
+            user_groups.delete().where(
+                user_groups.c.user_id == architect_id, user_groups.c.group_id == team
+            )
+        )
+        # As the administration routes do: the member's session picks it up.
+        bump_authz_versions(s, [architect_id])
         s.commit()
     record_dependency(draft, "pypi", "added-after-leaving", "1.2.3")
     assert _exported(architect, manifest_id) == []

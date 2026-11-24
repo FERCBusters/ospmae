@@ -1,13 +1,15 @@
+"""Addresses the server fetches: release feeds and repositories that users
+name. A URL's shape is checked when it is saved (validate_public_https_url);
+a fetch checks the addresses its host resolves to and connects to one of
+them (public_https_addresses, app.security.outbound)."""
+
 from __future__ import annotations
 
 import ipaddress
-import re
 import socket
-import xml.etree.ElementTree as ET
-from urllib.parse import unquote, urlparse
-from xml.parsers import expat
+from urllib.parse import urlparse
 
-_DISALLOWED_SCHEMES_RE = re.compile(r"^(?:javascript|data|vbscript):", re.IGNORECASE)
+from mosp.security.urls import external_url
 
 
 def _is_ip_literal(host: str) -> bool:
@@ -36,48 +38,6 @@ def _is_private_ip(host: str) -> bool:
     )
 
 
-def validate_safe_href(url: str, *, allow_relative: bool = True) -> str:
-    """Validate a user-controlled URL before storing it for UI use.
-
-    This is *not* an SSRF validator; it exists to prevent click-based XSS via
-    javascript:/data: URLs and protocol-relative URLs.
-
-    Returns a normalized string (trimmed). Raises ValueError on invalid input.
-    """
-
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
-    if len(raw) > 2048:
-        raise ValueError("URL too long")
-
-    if _DISALLOWED_SCHEMES_RE.match(raw):
-        raise ValueError("Disallowed URL scheme")
-
-    # Disallow protocol-relative URLs like //evil.example
-    if raw.startswith("//"):
-        raise ValueError("Protocol-relative URLs are not allowed")
-
-    # Allow same-origin relative URLs.
-    if allow_relative and raw.startswith("/"):
-        return raw
-
-    parsed = urlparse(raw)
-    scheme = (parsed.scheme or "").lower()
-    if scheme not in {"http", "https"}:
-        raise ValueError("Only http/https URLs are allowed")
-
-    # No credentials in URL
-    if parsed.username or parsed.password:
-        raise ValueError("Credentials in URL are not allowed")
-
-    host = (parsed.hostname or "").strip().lower()
-    if not host:
-        raise ValueError("URL host is required")
-
-    return raw
-
-
 def validate_public_http_url(url: str) -> str:
     """Validate the shape of a URL that names a public server.
 
@@ -87,7 +47,7 @@ def validate_public_http_url(url: str) -> str:
     Returns the trimmed string. Raises ValueError on invalid input.
     """
 
-    raw = validate_safe_href(url, allow_relative=False)
+    raw = external_url(url) or ""
     host = (urlparse(raw).hostname or "").strip().lower()
     if host in {"localhost", "localhost.localdomain"}:
         raise ValueError("Localhost is not allowed")
@@ -150,89 +110,3 @@ def public_https_addresses(url: str) -> list[str]:
     if any(_is_private_ip(address) for address in addresses):
         raise ValueError("Host resolves to a private/loopback IP")
     return addresses
-
-
-def contains_xml_dtd_or_entity(xml_bytes: bytes) -> bool:
-    """Cheap protection against XML entity-expansion DoS.
-
-    Python's stdlib ElementTree is not an XXE external-entity loader, but it can
-    still be forced into expensive work on pathological inputs. We block DTD/
-    ENTITY declarations before parsing. The payload is already bounded by the
-    caller (a few MiB), so the whole body is scanned: a declaration hidden
-    behind the first chunk must not evade the guard.
-    """
-
-    body = xml_bytes.lower()
-    return (b"<!doctype" in body) or (b"<!entity" in body)
-
-
-class _DeclarationFound(Exception):
-    """A document type or entity declaration was read."""
-
-
-class _RootReached(Exception):
-    """The root element began: declarations can only precede it."""
-
-
-def _refuse_declaration(*_args: object) -> None:
-    raise _DeclarationFound
-
-
-def _stop_at_root(*_args: object) -> None:
-    raise _RootReached
-
-
-def parse_xml_without_dtd(xml_bytes: bytes) -> ET.Element:
-    """Parse XML, refusing any document type or entity declaration.
-
-    ``contains_xml_dtd_or_entity`` reads bytes, so it sees a declaration only
-    in an ASCII-compatible encoding; a UTF-16 document spells ``<!DOCTYPE``
-    in other bytes and passes it. The parser decodes the document whatever
-    its encoding, so the refusal is made where a declaration is recognised:
-    the same parser (expat) reads the document up to its root element first,
-    and stops at a declaration.
-    """
-
-    probe = expat.ParserCreate()
-    probe.StartDoctypeDeclHandler = _refuse_declaration
-    probe.EntityDeclHandler = _refuse_declaration
-    probe.StartElementHandler = _stop_at_root
-    try:
-        probe.Parse(xml_bytes, True)
-    except _DeclarationFound:
-        raise ValueError("DTD/ENTITY not allowed in XML") from None
-    except (_RootReached, expat.ExpatError):
-        # No declaration precedes the root. Malformed XML is reported by the
-        # parse below, as it always was.
-        pass
-    return ET.fromstring(xml_bytes)  # noqa: S314 - declarations refused above
-
-
-# Characters that browsers resolve before a path reaches the server, plus all
-# ASCII control characters; a same-origin route must never contain them.
-_BAD_ROUTE_CHARS = {ord("\\")} | set(range(0x00, 0x20)) | {0x7F}
-
-
-def safe_relative_route_path(value: str | None) -> str | None:
-    """Return a safe same-origin relative path for redirects and stored links.
-
-    Rejects protocol-relative URLs (``//evil``), absolute URLs, backslashes
-    and control characters, any of which browsers treat as a different
-    authority. ``None`` means the caller must fall back to a fixed route.
-    """
-
-    raw = (value or "").strip()
-    if not raw:
-        return None
-    if not raw.startswith("/") or raw.startswith("//"):
-        return None
-    if "://" in raw:
-        return None
-    if any(ord(ch) in _BAD_ROUTE_CHARS for ch in raw):
-        return None
-    # A browser resolves dot segments before it navigates, so "/.//host"
-    # arrives as "//host": no route here is written with one, encoded or not.
-    path = raw.split("?", 1)[0].split("#", 1)[0]
-    if any(unquote(segment) in {".", ".."} for segment in path.split("/")):
-        return None
-    return raw

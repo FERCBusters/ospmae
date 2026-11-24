@@ -121,7 +121,14 @@ test("without local passwords only the providers remain", async (t) => {
     methods: {
       local_enabled: false,
       oidc_enabled: true,
-      oidc: { label: "Company login" },
+      sso_providers: [
+        {
+          key: "oidc",
+          label: "Company login",
+          kind: "oidc",
+          start_url: "/api/v1/auth/sso/oidc/start",
+        },
+      ],
     },
   });
   assert.ok(document.getElementById("loginForm").classList.contains("d-none"));

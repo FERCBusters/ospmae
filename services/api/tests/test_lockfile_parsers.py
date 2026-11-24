@@ -10,7 +10,6 @@ from app.depscan.parsers import (
     DiscoveredDependency,
     is_supported_lockfile,
     parse_lockfile,
-    redact_url,
 )
 
 MAX = 1_000_000
@@ -52,6 +51,22 @@ def test_package_lock_v3_names_direct_and_nested_packages(tmp_path):
         ("npm", "@scope/pkg", "2.0.0", False),
         ("npm", "b", "0.1.0", True),
     ]
+
+
+def test_a_deeply_nested_value_costs_only_itself(tmp_path):
+    # A repository's lockfile can nest one value past the interpreter's
+    # recursion limit; the packages beside it are still read.
+    deep = "[" * 100_000 + "]" * 100_000
+    path = tmp_path / "package-lock.json"
+    path.write_text(
+        '{"lockfileVersion": 3, "packages": {'
+        '"": {"dependencies": {"left-pad": "^1"}}, '
+        f'"node_modules/left-pad": {{"version": "1.3.0", "junk": {deep}}}'
+        "}}"
+    )
+    assert [
+        (d.name, d.version, d.is_indirect) for d in parse_lockfile(path, max_bytes=MAX)
+    ] == [("left-pad", "1.3.0", False)]
 
 
 def test_package_lock_v1_lists_top_level_dependencies(tmp_path):
@@ -225,22 +240,6 @@ def test_records_name_their_source_file(tmp_path):
     assert parse_lockfile(path, max_bytes=MAX) == [
         DiscoveredDependency("python", "flask", "==3.0.0", False, str(path))
     ]
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        (
-            "fatal: https://user:tok3n@github.com/org/repo.git",
-            "fatal: https://***:***@github.com/org/repo.git",
-        ),
-        ("git+ssh://git:pw@host/x", "git+ssh://***:***@host/x"),
-        ("https://github.com/org/repo", "https://github.com/org/repo"),
-        (None, ""),
-    ],
-)
-def test_credentials_in_urls_are_masked(text, expected):
-    assert redact_url(text) == expected
 
 
 def _nested_merge_keys(levels: int) -> str:

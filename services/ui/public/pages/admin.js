@@ -184,16 +184,10 @@
   }
 
   function roleOptions(selected) {
-    const roles = [
-      "viewer",
-      "engineer",
-      "contributor",
-      "product_owner",
-      "architect",
-      "maintainer",
-      "admin",
-      "inherit",
-    ];
+    // Administrators, ordinary accounts, and accounts that take their role
+    // from their groups; what an ordinary account may do comes from its
+    // permissions.
+    const roles = ["normal", "admin", "inherit"];
     return roles
       .map(
         (r) =>
@@ -522,7 +516,7 @@
       <div class="card mt-2">
         <div class="card-body p-3">
           <div class="d-flex align-items-center justify-content-between mb-2">
-            <div class="fw-semibold">Edit access for user #${userId}</div>
+            <div class="fw-semibold">Edit access</div>
             <button type="button" class="btn btn-sm btn-outline-secondary" data-action="cancel-user-access">Close</button>
           </div>
           <div class="row g-3">
@@ -549,7 +543,7 @@
       .map((u) => {
         const username = OSPMAE.escapeHtml(u.username);
         const role = String(u.role || "inherit");
-        const effective = OSPMAE.escapeHtml(u.effective_role || "viewer");
+        const effective = OSPMAE.escapeHtml(u.effective_role || "normal");
         const disableSelfToggle =
           OSPMAE.state.me?.id === u.id ? "disabled" : "";
         const disableSelfDelete =
@@ -624,7 +618,7 @@
       <div class="card mt-2">
         <div class="card-body p-3">
           <div class="d-flex align-items-center justify-content-between mb-2">
-            <div class="fw-semibold">Edit permissions for group #${groupId}</div>
+            <div class="fw-semibold">Edit group permissions</div>
             <button type="button" class="btn btn-sm btn-outline-secondary" data-action="cancel-group-perms">Close</button>
           </div>
           <div style="max-height:240px;overflow:auto;">${checks || '<span class="small text-muted">No permissions</span>'}</div>
@@ -652,12 +646,7 @@
             <td>
               <select class="form-select form-select-sm" data-field="group-role" data-group-id="${g.id}">
                 <option value="" ${!g.role ? "selected" : ""}>(no role)</option>
-                <option value="viewer" ${g.role === "viewer" ? "selected" : ""}>viewer</option>
-                <option value="engineer" ${g.role === "engineer" ? "selected" : ""}>engineer</option>
-                <option value="contributor" ${g.role === "contributor" ? "selected" : ""}>contributor</option>
-                <option value="product_owner" ${g.role === "product_owner" ? "selected" : ""}>product_owner</option>
-                <option value="architect" ${g.role === "architect" ? "selected" : ""}>architect</option>
-                <option value="maintainer" ${g.role === "maintainer" ? "selected" : ""}>maintainer</option>
+                <option value="normal" ${g.role === "normal" ? "selected" : ""}>normal</option>
                 <option value="admin" ${g.role === "admin" ? "selected" : ""}>admin</option>
               </select>
             </td>
@@ -710,7 +699,7 @@
       username: String(fd.get("username") || "").trim(),
       email: String(fd.get("email") || "").trim() || null,
       password: String(fd.get("password") || ""),
-      role: String(fd.get("role") || "viewer"),
+      role: String(fd.get("role") || "normal"),
     };
 
     await OSPMAE.api("/api/v1/admin/users", { method: "POST", body: payload });
@@ -737,7 +726,7 @@
     if (!button) return;
 
     const action = button.dataset.action;
-    const userId = Number(button.dataset.userId || 0);
+    const userId = String(button.dataset.userId || "");
 
     if (action === "save-user" && userId) {
       const emailEl = el.usersTable.querySelector(
@@ -751,7 +740,7 @@
       );
       // An empty address clears the account's email, as in KEEN.
       const payload = {
-        role: roleEl?.value || "viewer",
+        role: roleEl?.value || "normal",
         is_active: Boolean(activeEl?.checked),
         email: String(emailEl?.value || "").trim(),
       };
@@ -759,14 +748,14 @@
         method: "PATCH",
         body: payload,
       });
-      setMessage(`User #${userId} updated.`, "success");
+      setMessage("User updated.", "success");
       await refreshAll();
       return;
     }
 
     if (action === "reset-password" && userId) {
-      const target = state.users.find((x) => Number(x.id) === Number(userId));
-      const label = target?.username || `#${userId}`;
+      const target = state.users.find((x) => String(x.id) === userId);
+      const label = target?.username || "this user";
       const password = window.prompt(`Set a new password for ${label}:`);
       if (!password) return;
       await OSPMAE.api(`/api/v1/admin/users/${userId}/password`, {
@@ -778,8 +767,8 @@
     }
 
     if (action === "delete-user" && userId) {
-      const target = state.users.find((x) => Number(x.id) === Number(userId));
-      const label = target?.username ? `“${target.username}”` : `#${userId}`;
+      const target = state.users.find((x) => String(x.id) === userId);
+      const label = target?.username ? `“${target.username}”` : "this user";
       if (
         !window.confirm(
           `Delete user ${label}? This is permanent and will remove their sessions, preferences, shortcuts, and question posts.`,
@@ -810,10 +799,10 @@
       const panel = button.closest(".card");
       const groupIds = Array.from(
         panel.querySelectorAll('input[data-kind="group"]:checked'),
-      ).map((cb) => Number(cb.value));
+      ).map((cb) => String(cb.value));
       const permissionIds = Array.from(
         panel.querySelectorAll('input[data-kind="perm"]:checked'),
-      ).map((cb) => Number(cb.value));
+      ).map((cb) => String(cb.value));
       await OSPMAE.api(`/api/v1/admin/users/${userId}/access`, {
         method: "PUT",
         body: {
@@ -822,7 +811,7 @@
         },
       });
       state.editingUserAccess = null;
-      setMessage(`Access updated for user #${userId}.`, "success");
+      setMessage("Access updated.", "success");
       await refreshAll();
     }
   }
@@ -832,7 +821,7 @@
     if (!button) return;
 
     const action = button.dataset.action;
-    const groupId = Number(button.dataset.groupId || 0);
+    const groupId = String(button.dataset.groupId || "");
 
     if (action === "save-group" && groupId) {
       const roleEl = el.groupsTable.querySelector(
@@ -852,14 +841,14 @@
           role: String(roleEl?.value || "").trim() || null,
         },
       });
-      setMessage(`Group #${groupId} updated.`, "success");
+      setMessage("Group updated.", "success");
       await refreshAll();
       return;
     }
 
     if (action === "delete-group" && groupId) {
-      const target = state.groups.find((x) => Number(x.id) === Number(groupId));
-      const label = target?.name ? `“${target.name}”` : `#${groupId}`;
+      const target = state.groups.find((x) => String(x.id) === groupId);
+      const label = target?.name ? `“${target.name}”` : "this group";
       if (
         !window.confirm(
           `Delete group ${label}? This is permanent and will remove its memberships and permissions.`,
@@ -890,13 +879,13 @@
       const panel = button.closest(".card");
       const permissionIds = Array.from(
         panel.querySelectorAll('input[data-kind="perm"]:checked'),
-      ).map((cb) => Number(cb.value));
+      ).map((cb) => String(cb.value));
       await OSPMAE.api(`/api/v1/admin/groups/${groupId}/permissions`, {
         method: "PUT",
         body: { permission_ids: permissionIds },
       });
       state.editingGroupPerms = null;
-      setMessage(`Permissions updated for group #${groupId}.`, "success");
+      setMessage("Group permissions updated.", "success");
       await refreshAll();
     }
   }

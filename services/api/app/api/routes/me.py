@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-from datetime import datetime
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
+from mosp.api.routing import Router
+from mosp.core.datetime_utils import utc_now_naive
+from mosp.core.valkey import get_valkey
+from mosp.security.auth import cookie_name
+from mosp.security.csrf import get_csrf_token_from_request
+from mosp.security.oidc import configured_sso_providers
+from mosp.security.permissions import get_effective_permission_codes, has_permission
+from mosp.security.regex import scan_pattern
+from mosp.security.roles import attach_effective_role
+from mosp.security.sessions import get_session
+from mosp.security.urls import same_site_path
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from app.api.deps import DbId, PageLimit
 from app.api.payloads import (
     UserPreferencesUpdatePayload,
     UserShortcutCreatePayload,
@@ -17,20 +29,14 @@ from app.db.models import (
     Project,
     ProjectSubscription,
     User,
-    UserGroup,
     UserPreference,
     UserShortcut,
+    user_groups,
 )
 from app.db.session import get_db
-from app.security.auth import get_current_user, session_cookie_name
-from app.security.client_addr import request_client_address
-from app.security.csrf import get_csrf_token_from_request, session_csrf_token
-from app.security.oidc import any_sso_enabled, get_sso_provider
-from app.security.roles import attach_effective_role
-from app.security.sessions import session_row
-from app.services import sso_emails
+from app.security.permissions import PERM_FRAMEWORK_WRITE
 
-router = APIRouter()
+router = Router()
 
 
 ALLOWED_START_PAGES = {
@@ -49,13 +55,21 @@ def _password_features_enabled() -> bool:
     return (
         bool(getattr(settings, "local_auth_enabled", True))
         and not bool(settings.trust_remote_user)
-        and not any_sso_enabled()
+        and not configured_sso_providers()
     )
 
 
-def _session_auth_method(request: Request, db: Session) -> str:
-    row = session_row(db, request.cookies.get(session_cookie_name()))
-    return row.auth_method if row else ""
+def _session_auth_method(request: Request) -> str:
+    """How the request's session signed in: local, ldap, oidc or an SSO
+    provider's key; empty for a browser a trusted proxy signs in."""
+    sid = request.cookies.get(cookie_name())
+    if not sid:
+        return ""
+    try:
+        session = get_session(get_valkey(), sid, refresh_ttl_seconds=None)
+    except Exception:
+        return ""
+    return str((session or {}).get("auth_method") or "")
 
 
 def _normalize_color(value: str | None) -> str | None:
@@ -71,6 +85,10 @@ def _normalize_color(value: str | None) -> str | None:
     return raw
 
 
+# A preference row holds at most this many colour overrides.
+_MAX_NODE_COLOURS = 200
+
+
 def _normalize_node_colors(value: dict | None) -> dict[str, str]:
     """Normalize node color overrides.
 
@@ -84,7 +102,7 @@ def _normalize_node_colors(value: dict | None) -> dict[str, str]:
 
     out: dict[str, str] = {}
 
-    for raw_key, raw_val in value.items():
+    for raw_key, raw_val in list(value.items())[:_MAX_NODE_COLOURS]:
         # Flattened form
         if isinstance(raw_val, str) or raw_val is None:
             full_key = str(raw_key or "").strip()
@@ -99,7 +117,7 @@ def _normalize_node_colors(value: dict | None) -> dict[str, str]:
             fw, nk = full_key.split(":", 1)
             fw = fw.strip().lower()
             nk = nk.strip()
-            if not fw or not nk:
+            if not fw or not nk or len(fw) > 80 or len(nk) > 160:
                 continue
             out[f"{fw}:{nk}"] = color
             continue
@@ -111,7 +129,7 @@ def _normalize_node_colors(value: dict | None) -> dict[str, str]:
                 continue
             for node_key, node_color in raw_val.items():
                 nk = str(node_key or "").strip()
-                if not nk:
+                if not nk or len(fw) > 80 or len(nk) > 160:
                     continue
                 color = _normalize_color(str(node_color))
                 if not color:
@@ -122,7 +140,7 @@ def _normalize_node_colors(value: dict | None) -> dict[str, str]:
     return out
 
 
-def _pages_allowed_for_role(user: User) -> set[str]:
+def _pages_allowed_for_role(db: Session, user: User) -> set[str]:
     role = str(getattr(user, "effective_role", "") or "").lower()
     allowed = {
         "/index.html",
@@ -132,7 +150,7 @@ def _pages_allowed_for_role(user: User) -> set[str]:
         "/preferences.html",
     }
 
-    if role in {"admin", "framework_admin"}:
+    if has_permission(db, user, PERM_FRAMEWORK_WRITE):
         allowed.add("/framework-manage.html")
 
     if role == "admin":
@@ -206,8 +224,8 @@ def _serialize_preferences(
             pref.default_start_page, allowed_pages
         ),
         "sticky_enabled": bool(getattr(pref, "sticky_enabled", False)),
-        "auto_apply_enabled": bool(getattr(pref, "auto_apply_enabled", True)),
-        "theme": _serialize_theme(getattr(pref, "theme", None)),
+        "auto_apply_enabled": pref.auto_apply_enabled,
+        "theme": _serialize_theme(pref.theme),
     }
 
 
@@ -218,7 +236,7 @@ def _serialize_theme(theme: str | None) -> str:
     return "ink"
 
 
-def _get_or_create_preferences(db: Session, user_id: int) -> UserPreference:
+def _get_or_create_preferences(db: Session, user_id: uuid.UUID) -> UserPreference:
     pref = (
         db.query(UserPreference).filter(UserPreference.user_id == user_id).one_or_none()
     )
@@ -244,28 +262,17 @@ def me(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     eff = attach_effective_role(db, user)
-    allowed_pages = _pages_allowed_for_role(user)
+    allowed_pages = _pages_allowed_for_role(db, user)
     pref = (
         db.query(UserPreference).filter(UserPreference.user_id == user.id).one_or_none()
     )
     # The session's own token; a browser signed in by a trusted proxy has no
     # session and repeats its cookie.
-    csrf_token = (
-        session_csrf_token(request) or get_csrf_token_from_request(request) or None
-    )
-
-    # Logout helpers consumed by the shared MOSP navbar.
-    # If the current session is an OIDC session and an end-session endpoint is
-    # configured, expose a browser-friendly logout URL that will clear the local
-    # session and then redirect to the provider for RP-initiated logout.
-    logout_url = None
-    auth_method = _session_auth_method(request, db) or "local"
-    if auth_method != "local" and get_sso_provider(auth_method):
-        # The browser's address: nginx serves the API under /api/.
-        logout_url = "/api/v1/auth/logout"
+    csrf_token = user.session_csrf or get_csrf_token_from_request(request) or None
+    auth_method = _session_auth_method(request) or "local"
 
     return {
-        "id": user.id,
+        "id": str(user.id),
         "username": user.username,
         # Set by an administrator; account mail goes only here, as in KEEN.
         "email": user.email,
@@ -273,74 +280,32 @@ def me(request: Request, db: Session = Depends(get_db)):
         "password_features_enabled": _password_features_enabled(),
         "role": user.role,
         "effective_role": eff,
+        # The permission codes the account holds, for the pages to choose
+        # what to offer; every route checks its own.
+        "permissions": sorted(get_effective_permission_codes(db, user)),
         "is_active": user.is_active,
         "last_login_at": user.last_login_at,
         "csrf_token": csrf_token,
         "app_title": settings.app_title,
         "preferences": _serialize_preferences(pref, allowed_pages),
         "available_themes": [{"id": t[0], "name": t[1]} for t in ALLOWED_THEMES],
-        "logout_url": logout_url,
+        # Signing out is a POST here; a provider's session's answer names the
+        # provider's end-session page.
+        "logout_url": (
+            "/api/v1/auth/logout"
+            if auth_method in ("local", "ldap")
+            else "/api/v1/auth/oidc/logout"
+        ),
         "logout_redirect": "/login.html",
         # The navbar renders only the links of features that are on.
         "features": public_dict(db),
     }
 
 
-@router.get("/v1/me/sso-emails")
-def list_sso_emails(
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    return sso_emails.list_addresses(user=user, db=db)
-
-
-@router.post("/v1/me/sso-emails/request")
-def request_sso_email(
-    payload: sso_emails.Address,
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    return sso_emails.request_address(
-        payload=payload,
-        ip=request_client_address(request),
-        user=user,
-        db=db,
-        session_id=request.cookies.get(session_cookie_name(), ""),
-    )
-
-
-@router.post("/v1/me/sso-emails/confirm")
-def confirm_sso_email(
-    payload: sso_emails.Proof,
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    return sso_emails.confirm_address(
-        payload=payload, ip=request_client_address(request), user=user, db=db
-    )
-
-
-@router.post("/v1/me/sso-emails/remove")
-def remove_sso_email(
-    payload: sso_emails.Address,
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    return sso_emails.remove_address(
-        payload=payload,
-        ip=request_client_address(request),
-        user=user,
-        db=db,
-        session_id=request.cookies.get(session_cookie_name(), ""),
-    )
-
-
 @router.get("/v1/me/notifications")
-def my_notifications(request: Request, db: Session = Depends(get_db), limit: int = 20):
+def my_notifications(
+    request: Request, db: Session = Depends(get_db), limit: PageLimit = 20
+):
     """The account's e-mail outbox history: what was mailed and its state."""
     user = getattr(request.state, "user", None)
     if not isinstance(user, User):
@@ -359,12 +324,12 @@ def my_groups(request: Request, db: Session = Depends(get_db)):
 
     rows = (
         db.query(Group.id, Group.name)
-        .join(UserGroup, UserGroup.group_id == Group.id)
-        .filter(UserGroup.user_id == user.id)
+        .join(user_groups, user_groups.c.group_id == Group.id)
+        .filter(user_groups.c.user_id == user.id)
         .order_by(Group.name.asc())
         .all()
     )
-    return {"items": [{"id": int(gid), "name": str(name)} for (gid, name) in rows]}
+    return {"items": [{"id": str(gid), "name": str(name)} for (gid, name) in rows]}
 
 
 @router.get("/v1/me/subscriptions")
@@ -410,7 +375,7 @@ def get_my_preferences(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     attach_effective_role(db, user)
-    allowed_pages = _pages_allowed_for_role(user)
+    allowed_pages = _pages_allowed_for_role(db, user)
 
     pref = (
         db.query(UserPreference).filter(UserPreference.user_id == user.id).one_or_none()
@@ -429,7 +394,7 @@ def update_my_preferences(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     attach_effective_role(db, user)
-    allowed_pages = _pages_allowed_for_role(user)
+    allowed_pages = _pages_allowed_for_role(db, user)
 
     pref = _get_or_create_preferences(db, user.id)
 
@@ -462,30 +427,23 @@ def update_my_preferences(
 # -----------------------------------------------------------------------------
 
 
-def _normalize_shortcut_url(value: str | None) -> str:
-    import re as _re
+_SCHEME_PATH = scan_pattern(r"/[A-Za-z][A-Za-z0-9+.\-]*:")
 
-    from app.security.url_safety import safe_relative_route_path
 
-    raw = str(value or "").strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="url is required")
+def _normalize_shortcut_url(value: str) -> str:
+    """A shortcut leads to a page of this site only.
 
-    # Only same-origin relative routes are safe to navigate to from the
-    # navbar: the shared helper rejects absolute URLs, protocol-relative URLs
-    # (//evil), backslashes and control characters. A prefix that would turn
-    # into a scheme-like path (//javascript:alert(1) aside, "/js:" shaped
-    # values) is refused too.
-    prefixed = raw if raw.startswith("/") else f"/{raw}"
-    safe = safe_relative_route_path(prefixed)
-    if not safe or safe != prefixed:
+    The payload has already refused anything but a path on this site or an
+    HTTP(S) URL without credentials (mosp.security.urls.external_url); an
+    absolute URL, and a path whose first segment reads as a scheme
+    ("/javascript:..."), are refused here.
+    """
+    raw = value.strip()
+    if same_site_path(raw) != raw:
         raise HTTPException(status_code=400, detail="url must be a same-origin path")
-    if _re.match(r"^/[A-Za-z][A-Za-z0-9+.\-]*:", safe):
+    if _SCHEME_PATH.match(raw):
         raise HTTPException(status_code=400, detail="url must not contain a scheme")
-
-    if len(raw) > 4000:
-        raise HTTPException(status_code=400, detail="url is too long")
-    return safe
+    return raw
 
 
 @router.get("/v1/me/shortcuts")
@@ -538,7 +496,7 @@ def upsert_my_shortcut(
 
     if existing:
         existing.url = url
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = utc_now_naive()
         db.add(existing)
         db.commit()
         db.refresh(existing)
@@ -548,8 +506,8 @@ def upsert_my_shortcut(
             user_id=user.id,
             name=name,
             url=url,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=utc_now_naive(),
+            updated_at=utc_now_naive(),
         )
         db.add(r)
         db.commit()
@@ -566,7 +524,7 @@ def upsert_my_shortcut(
 
 @router.delete("/v1/me/shortcuts/{shortcut_id}")
 def delete_my_shortcut(
-    shortcut_id: int, request: Request, db: Session = Depends(get_db)
+    shortcut_id: DbId, request: Request, db: Session = Depends(get_db)
 ) -> dict:
     user = getattr(request.state, "user", None)
     if not isinstance(user, User):

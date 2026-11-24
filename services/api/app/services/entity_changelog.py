@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from mosp.core.datetime_utils import iso_or_none, utc_now_naive
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
@@ -62,6 +63,8 @@ _ENTITY_LABELS = {
     "project_version": "Project version",
     "organisation": "Organisation",
 }
+# The entity types the changelog records, and so the only ones a filter names.
+CHANGELOG_ENTITY_TYPES = frozenset(_ENTITY_LABELS)
 
 
 def _clean_scalar(value: Any) -> Any:
@@ -216,16 +219,16 @@ def record_entity_changelog(
         changed_by_username=getattr(user, "username", None),
         request_method=request_method or None,
         request_path=request_path or None,
-        changed_at=datetime.utcnow(),
+        changed_at=utc_now_naive(),
     )
     db.add(entry)
     db.flush()
     return entry
 
 
-def _owner_group_ids(db: Session, project_id: int) -> list[int]:
+def _owner_group_ids(db: Session, project_id: int) -> list[str]:
     return [
-        int(gid)
+        str(gid)
         for (gid,) in (
             db.query(ProjectOwnerGroup.group_id)
             .filter(ProjectOwnerGroup.project_id == int(project_id))
@@ -289,8 +292,8 @@ def project_changelog_state(
             project.supported_signing_algorithms or []
         ),
         "owner_group_ids": _owner_group_ids(db, project.id),
-        "created_at": project.created_at.isoformat() if project.created_at else None,
-        "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+        "created_at": iso_or_none(project.created_at),
+        "updated_at": iso_or_none(project.updated_at),
     }
 
 
@@ -345,9 +348,7 @@ def project_version_changelog_state(
         "project_id": int(version.project_id),
         "display": f"{project.display_name if project else 'Project'} {version.version}".strip(),
         "version": version.version,
-        "release_date": (
-            version.release_date.isoformat() if version.release_date else None
-        ),
+        "release_date": (iso_or_none(version.release_date)),
         "status": version.status,
         "is_draft": bool(getattr(version, "is_draft", False)),
         "is_latest": bool(getattr(version, "is_latest", False)),
@@ -356,8 +357,8 @@ def project_version_changelog_state(
         "dependency_count": int(getattr(version, "dependency_count", 0) or 0),
         "vulnerability_count": int(getattr(version, "vulnerability_count", 0) or 0),
         "capability_nodes": _version_framework_nodes(db, version.id),
-        "created_at": version.created_at.isoformat() if version.created_at else None,
-        "updated_at": version.updated_at.isoformat() if version.updated_at else None,
+        "created_at": iso_or_none(version.created_at),
+        "updated_at": iso_or_none(version.updated_at),
     }
 
 
@@ -375,7 +376,7 @@ def _serialise_changelog(row: EntityChangelog) -> dict[str, Any]:
         "changes": row.changes or [],
         "changed_by_user_id": row.changed_by_user_id,
         "changed_by_username": row.changed_by_username,
-        "changed_at": row.changed_at.isoformat() if row.changed_at else None,
+        "changed_at": iso_or_none(row.changed_at),
         "request_method": row.request_method,
         "request_path": row.request_path,
     }

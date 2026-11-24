@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
-from app.db.models import Group, GroupPermission, Permission, UserGroup, UserPermission
+from app.db.models import Group, Permission, User
 from app.db.session import SessionLocal
 
 from tests.conftest import auth_client, make_user
@@ -30,15 +32,15 @@ def _permission_ids():
         rows = [Permission(code="test.first"), Permission(code="test.second")]
         db.add_all(rows)
         db.commit()
-        return [row.id for row in rows]
+        return [str(row.id) for row in rows]
 
 
 def test_groups_are_created_renamed_and_deleted(admin):
-    g = _group(admin, " Editors ", description=" Edit things ", role="viewer")
+    g = _group(admin, " Editors ", description=" Edit things ", role="normal")
     assert (g["name"], g["description"], g["role"]) == (
         "Editors",
         "Edit things",
-        "viewer",
+        "normal",
     )
     assert (
         admin.post(
@@ -113,7 +115,7 @@ def test_user_access_is_replaced_as_a_whole(admin):
     )
     assert r.json() == {
         "status": "ok",
-        "user_id": user.id,
+        "user_id": str(user.id),
         "group_ids": sorted([g1["id"], g2["id"]]),
         "permission_ids": [p1],
     }
@@ -121,12 +123,9 @@ def test_user_access_is_replaced_as_a_whole(admin):
         url, json={"group_ids": [g2["id"]], "permission_ids": [p2]}, headers=_h(admin)
     )
     with SessionLocal() as db:
-        assert [m.group_id for m in db.query(UserGroup).filter_by(user_id=user.id)] == [
-            g2["id"]
-        ]
-        assert [
-            m.permission_id for m in db.query(UserPermission).filter_by(user_id=user.id)
-        ] == [p2]
+        row = db.get(User, user.id)
+        assert [str(g.id) for g in row.groups] == [g2["id"]]
+        assert [str(p.id) for p in row.permissions] == [p2]
     shown = admin.get(url).json()
     assert (shown["group_ids"], shown["permission_ids"]) == ([g2["id"]], [p2])
 
@@ -135,14 +134,14 @@ def test_user_access_is_replaced_as_a_whole(admin):
     "body",
     [
         # A string must never be read character by character as identifiers.
-        {"group_ids": "12"},
+        {"group_ids": str(uuid.uuid4())},
         {"group_ids": ["1"]},
         {"permission_ids": [1.5]},
         {"permission_ids": [True]},
-        {"group_ids": list(range(501))},
+        {"group_ids": [str(uuid.uuid4()) for _ in range(501)]},
     ],
 )
-def test_user_access_bodies_hold_integer_lists(admin, body):
+def test_user_access_bodies_hold_identifier_lists(admin, body):
     user = make_user("typed", "Secret-passphrase-1!", role="viewer")
     _group(admin, "One")
     response = admin.put(
@@ -150,23 +149,27 @@ def test_user_access_bodies_hold_integer_lists(admin, body):
     )
     assert response.status_code == 422
     with SessionLocal() as db:
-        assert db.query(UserGroup).filter_by(user_id=user.id).count() == 0
+        assert db.get(User, user.id).groups == []
 
 
 def test_unknown_groups_and_permissions_are_refused(admin):
     user = make_user("unknowns", "Secret-passphrase-1!", role="viewer")
     url = f"/v1/admin/users/{user.id}/access"
     assert (
-        admin.put(url, json={"group_ids": [999999]}, headers=_h(admin)).status_code
-        == 400
-    )
-    assert (
-        admin.put(url, json={"permission_ids": [999999]}, headers=_h(admin)).status_code
+        admin.put(
+            url, json={"group_ids": [str(uuid.uuid4())]}, headers=_h(admin)
+        ).status_code
         == 400
     )
     assert (
         admin.put(
-            "/v1/admin/users/999999/access", json={}, headers=_h(admin)
+            url, json={"permission_ids": [str(uuid.uuid4())]}, headers=_h(admin)
+        ).status_code
+        == 400
+    )
+    assert (
+        admin.put(
+            f"/v1/admin/users/{uuid.uuid4()}/access", json={}, headers=_h(admin)
         ).status_code
         == 404
     )
@@ -187,21 +190,22 @@ def test_group_permissions_are_replaced_and_typed(admin):
         == 200
     )
     with SessionLocal() as db:
-        assert [
-            x.permission_id
-            for x in db.query(GroupPermission).filter_by(group_id=g["id"])
-        ] == [p2]
+        assert [str(p.id) for p in db.get(Group, uuid.UUID(g["id"])).permissions] == [
+            p2
+        ]
     assert (
         admin.put(url, json={"permission_ids": "7"}, headers=_h(admin)).status_code
         == 422
     )
     assert (
-        admin.put(url, json={"permission_ids": [999999]}, headers=_h(admin)).status_code
+        admin.put(
+            url, json={"permission_ids": [str(uuid.uuid4())]}, headers=_h(admin)
+        ).status_code
         == 400
     )
     assert (
         admin.put(
-            "/v1/admin/groups/999999/permissions", json={}, headers=_h(admin)
+            f"/v1/admin/groups/{uuid.uuid4()}/permissions", json={}, headers=_h(admin)
         ).status_code
         == 404
     )

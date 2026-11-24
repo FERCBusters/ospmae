@@ -6,22 +6,6 @@
   const ssoSection = document.getElementById("ssoSection");
   const ssoButtons = document.getElementById("ssoButtons");
 
-  let redirectAllowedHosts = [];
-
-  function _normalizeAllowedHosts(raw) {
-    if (!Array.isArray(raw)) return [];
-    const out = [];
-    for (const v of raw) {
-      const h = String(v || "")
-        .trim()
-        .toLowerCase();
-      if (!h) continue;
-      if (h.includes("://") || h.includes("/") || h.includes("\\")) continue;
-      out.push(h);
-    }
-    return out;
-  }
-
   function sanitizeNext(rawNext) {
     const raw = String(rawNext || "").trim();
     if (!raw) return "/index.html";
@@ -37,20 +21,13 @@
       return "/index.html";
     }
 
-    if (u.protocol !== "http:" && u.protocol !== "https:") return "/index.html";
-    if (u.origin === window.location.origin) {
-      // Dot segments are resolved by now, so "/.//host" has become "//host",
-      // which a navigation reads as another site: such a path never replays.
-      const path = u.pathname + u.search + u.hash;
-      return path.startsWith("//") ? "/index.html" : path;
-    }
-
-    const host = String(u.hostname || "")
-      .trim()
-      .toLowerCase();
-    if (u.protocol === "https:" && host && redirectAllowedHosts.includes(host))
-      return u.toString();
-    return "/index.html";
+    // A completed sign-in stays on OSPMAE, as the server's own sign-in
+    // redirects do.
+    if (u.origin !== window.location.origin) return "/index.html";
+    // Dot segments are resolved by now, so "/.//host" has become "//host",
+    // which a navigation reads as another site: such a path never replays.
+    const path = u.pathname + u.search + u.hash;
+    return path.startsWith("//") ? "/index.html" : path;
   }
 
   // Where a completed sign-in goes: an explicit ?next= first. Without one,
@@ -91,18 +68,9 @@
   function renderSsoButtons(methods) {
     if (!ssoSection || !ssoButtons) return;
 
-    let providers = Array.isArray(methods?.sso_providers)
+    const providers = Array.isArray(methods?.sso_providers)
       ? methods.sso_providers
       : [];
-    if (!providers.length && methods?.oidc_enabled && methods?.oidc) {
-      providers = [
-        {
-          key: "oidc",
-          label: methods.oidc.label || "Single sign-on",
-          start_url: methods.oidc.start_url || "/api/v1/auth/oidc/start",
-        },
-      ];
-    }
     if (!providers.length) return;
 
     ssoButtons.replaceChildren();
@@ -141,9 +109,6 @@
       });
       if (!methods) return null;
 
-      redirectAllowedHosts = _normalizeAllowedHosts(
-        methods.redirect_allowed_hosts,
-      );
       renderSsoButtons(methods);
 
       if (methods.local_enabled === false && form) {

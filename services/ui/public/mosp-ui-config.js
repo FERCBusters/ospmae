@@ -3,21 +3,20 @@
 
 (function () {
   function mapMe(me) {
-    // OSPMAE returns: { username, role, effective_role, ... }
     const role =
-      String(me?.effective_role || me?.role || "").toLowerCase() || "viewer";
+      String(me?.effective_role || me?.role || "").toLowerCase() || "normal";
     const isAdmin = role === "admin";
-    const isFrameworkAdmin = isAdmin || role === "framework_admin";
-    const canManageProjects = isAdmin || role === "maintainer";
-    const canExportManifests =
-      isAdmin || role === "architect" || role === "product_owner";
-    const canAnswerQuestions =
-      isAdmin || role === "maintainer" || role === "contributor";
-    const canAskQuestions =
-      canAnswerQuestions ||
-      role === "engineer" ||
-      role === "product_owner" ||
-      role === "architect";
+    // What an ordinary account may do comes from its permissions (the
+    // server's own checks decide; these only choose which links to show).
+    const permissions = new Set(
+      Array.isArray(me?.permissions) ? me.permissions : [],
+    );
+    const can = (code) => isAdmin || permissions.has(code);
+    const isFrameworkAdmin = can("framework.write");
+    const canManageProjects = can("project.write");
+    const canExportManifests = can("manifest.export");
+    const canAnswerQuestions = can("project.answer");
+    const canAskQuestions = can("project.question");
 
     // Installation features from /api/v1/me decide which links the navbar
     // renders; an unknown or missing switch counts as on.

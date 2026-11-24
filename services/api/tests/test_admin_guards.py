@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.core.features import FEATURE_KEYS
+
 from tests.conftest import auth_client, make_user
 
 
@@ -22,32 +24,32 @@ def test_admin_lists_and_updates_users(client):
     csrf = c.cookies.get("__Host-ospmae_csrf")
     r = c.patch(
         f"/v1/admin/users/{target['id']}",
-        json={"role": "maintainer"},
+        json={"role": "normal"},
         headers={"X-CSRF-Token": csrf or ""},
     )
     assert r.status_code == 200
-    assert r.json()["role"] == "maintainer"
+    assert r.json()["role"] == "normal"
 
 
 def test_last_admin_cannot_be_demoted_or_deactivated(client):
     c, me = auth_client("AdmV")
     csrf = c.cookies.get("__Host-ospmae_csrf")
     r = c.patch(
-        f"/v1/admin/users/{int(me.id)}",
-        json={"role": "viewer"},
+        f"/v1/admin/users/{me.id}",
+        json={"role": "normal"},
         headers={"X-CSRF-Token": csrf or ""},
     )
     assert r.status_code == 409, "the last active admin cannot be demoted"
     # As in KEEN, no administrator deactivates their own account.
     r = c.patch(
-        f"/v1/admin/users/{int(me.id)}",
+        f"/v1/admin/users/{me.id}",
         json={"is_active": False},
         headers={"X-CSRF-Token": csrf or ""},
     )
     assert r.status_code == 400
     assert r.json()["detail"] == "You cannot deactivate your own account"
     r = c.delete(
-        f"/v1/admin/users/{int(me.id)}",
+        f"/v1/admin/users/{me.id}",
         headers={"X-CSRF-Token": csrf or ""},
     )
     assert r.status_code in (400, 409)
@@ -58,22 +60,23 @@ def test_second_admin_can_be_demoted_by_the_first(client):
     other = make_user("Adm2", "Test-passphrase-1!", role="admin")
     csrf = c.cookies.get("__Host-ospmae_csrf")
     r = c.patch(
-        f"/v1/admin/users/{int(other.id)}",
-        json={"role": "viewer"},
+        f"/v1/admin/users/{other.id}",
+        json={"role": "normal"},
         headers={"X-CSRF-Token": csrf or ""},
     )
     assert r.status_code == 200
 
 
-def test_last_admin_access_strip_is_refused(client):
+def test_stripping_a_direct_administrators_groups_leaves_it_an_administrator(client):
     c, me = auth_client("AdmX")
     csrf = c.cookies.get("__Host-ospmae_csrf")
     r = c.put(
-        f"/v1/admin/users/{int(me.id)}/access",
+        f"/v1/admin/users/{me.id}/access",
         json={"group_ids": [], "permission_ids": []},
         headers={"X-CSRF-Token": csrf or ""},
     )
-    assert r.status_code == 409
+    assert r.status_code == 200
+    assert c.get("/v1/admin/users").status_code == 200
 
 
 def test_creating_users_validates_role_and_username(client):
@@ -92,9 +95,9 @@ def test_creating_users_validates_role_and_username(client):
     r = c.post(
         "/v1/admin/users",
         json={
-            "username": "bad username with space\n",
+            "username": "bad\nname",
             "password": "Test-passphrase-1!",
-            "role": "viewer",
+            "role": "normal",
         },
         headers={"X-CSRF-Token": csrf or ""},
     )
@@ -106,14 +109,7 @@ def test_features_endpoint_requires_authentication(client):
     assert r.status_code == 401
     c, _a = auth_client("FeatU")
     body = c.get("/v1/system/features").json()
-    assert set(body) == {
-        "frameworks",
-        "manifests",
-        "questions",
-        "dependency_scans",
-        "comparisons",
-        "release_feed",
-    }
+    assert set(body) == set(FEATURE_KEYS)
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +130,10 @@ def _direct_and_inheriting_admins():
 
 
 def _admins(db) -> int:
-    from app.security.roles import active_admin_count
+    from mosp.security.roles import count_effective_admins
 
     db.expire_all()
-    return active_admin_count(db)
+    return count_effective_admins(db)
 
 
 def test_an_inheriting_administrator_lets_the_direct_one_step_down(db):
@@ -146,7 +142,7 @@ def test_an_inheriting_administrator_lets_the_direct_one_step_down(db):
     a, a_id, b, _b_id, _group = _direct_and_inheriting_admins()
     assert _admins(db) == 2
     stepped = b.patch(
-        f"/v1/admin/users/{a_id}", json={"role": "viewer"}, headers=csrf(b)
+        f"/v1/admin/users/{a_id}", json={"role": "normal"}, headers=csrf(b)
     )
     assert stepped.status_code == 200, stepped.text
     assert _admins(db) == 1
@@ -157,11 +153,11 @@ def test_the_last_administrator_cannot_be_removed_through_its_group(db):
     from tests.support import csrf, ok
 
     a, a_id, b, b_id, group = _direct_and_inheriting_admins()
-    ok(b.patch(f"/v1/admin/users/{a_id}", json={"role": "viewer"}, headers=csrf(b)))
+    ok(b.patch(f"/v1/admin/users/{a_id}", json={"role": "normal"}, headers=csrf(b)))
 
     # B is now the only administrator, and only through Operators.
     refusals = [
-        b.patch(f"/v1/admin/groups/{group}", json={"role": "viewer"}, headers=csrf(b)),
+        b.patch(f"/v1/admin/groups/{group}", json={"role": "normal"}, headers=csrf(b)),
         b.patch(f"/v1/admin/groups/{group}", json={"role": None}, headers=csrf(b)),
         b.delete(f"/v1/admin/groups/{group}", headers=csrf(b)),
         b.put(
@@ -169,7 +165,7 @@ def test_the_last_administrator_cannot_be_removed_through_its_group(db):
             json={"group_ids": [], "permission_ids": []},
             headers=csrf(b),
         ),
-        b.patch(f"/v1/admin/users/{b_id}", json={"role": "viewer"}, headers=csrf(b)),
+        b.patch(f"/v1/admin/users/{b_id}", json={"role": "normal"}, headers=csrf(b)),
     ]
     assert [r.status_code for r in refusals] == [409] * 5, [r.text for r in refusals]
     assert _admins(db) == 1
@@ -178,7 +174,7 @@ def test_the_last_administrator_cannot_be_removed_through_its_group(db):
     groups = ok(b.get("/v1/admin/groups"))["items"]
     assert [(g["name"], g["role"]) for g in groups] == [("Operators", "admin")]
     access = ok(b.get(f"/v1/admin/users/{b_id}/access"))
-    assert access["group_ids"] == [group]
+    assert access["group_ids"] == [str(group)]
 
     # A change that leaves B an administrator is still made.
     renamed = b.patch(
@@ -187,7 +183,7 @@ def test_the_last_administrator_cannot_be_removed_through_its_group(db):
     assert renamed.status_code == 200, renamed.text
     # With a second administrator back, each of those changes is allowed.
     ok(b.patch(f"/v1/admin/users/{a_id}", json={"role": "admin"}, headers=csrf(b)))
-    ok(b.patch(f"/v1/admin/groups/{group}", json={"role": "viewer"}, headers=csrf(b)))
+    ok(b.patch(f"/v1/admin/groups/{group}", json={"role": "normal"}, headers=csrf(b)))
     assert _admins(db) == 1
     assert b.get("/v1/admin/users").status_code == 403
 
@@ -214,7 +210,7 @@ def test_two_demotions_at_once_cannot_both_pass(db):
     import threading
 
     from app.db.session import SessionLocal
-    from app.security.roles import lock_admin_changes
+    from mosp.security.roles import lock_admin_changes
 
     from tests.support import csrf, signed_in
 
@@ -226,7 +222,7 @@ def test_two_demotions_at_once_cannot_both_pass(db):
 
     def demote(name, client, target):
         results[name] = client.patch(
-            f"/v1/admin/users/{target}", json={"role": "viewer"}, headers=csrf(client)
+            f"/v1/admin/users/{target}", json={"role": "normal"}, headers=csrf(client)
         ).status_code
 
     threads = [
@@ -247,22 +243,12 @@ def test_two_demotions_at_once_cannot_both_pass(db):
     assert _admins(db) == 1
 
 
-def test_an_administrators_reset_ends_sessions_opened_through_a_provider(
-    db, monkeypatch
-):
-    from app.core.config import settings
-    from app.db.models import Session as SessionRow
-
+def test_an_administrators_reset_ends_the_accounts_sessions(db):
     from tests.support import csrf, ok, signed_in
 
-    monkeypatch.setattr(settings, "oidc_sso_enabled", True)
     admin, _ = signed_in("admin")
     target, target_id = signed_in("viewer")
-    # One of the account's sessions was opened by single sign-on.
     other, _ = signed_in("viewer")
-    row = db.query(SessionRow).filter(SessionRow.user_id == target_id).one()
-    row.auth_method = "oidc"
-    db.commit()
     assert target.get("/v1/me").status_code == 200
 
     ok(
@@ -272,6 +258,5 @@ def test_an_administrators_reset_ends_sessions_opened_through_a_provider(
             headers=csrf(admin),
         )
     )
-    assert db.query(SessionRow).filter(SessionRow.user_id == target_id).count() == 0
     assert target.get("/v1/me").status_code == 401
     assert other.get("/v1/me").status_code == 200

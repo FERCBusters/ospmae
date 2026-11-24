@@ -363,7 +363,7 @@ def test_group_members_manage_what_their_group_owns(admin):
     team = make_group("Team", members=[owner_id, colleague_id])
 
     project = make_project(owner, "shared")
-    assert project["owner_group_ids"] == [team]
+    assert project["owner_group_ids"] == [str(team)]
     pid = project["id"]
     draft = make_version(owner, pid, "1.0.0", is_draft=True)
 

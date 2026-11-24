@@ -506,20 +506,22 @@ async function saveProjectManifest() {
 }
 
 function roleOf(me) {
-  return me?.effective_role || me?.role || "viewer";
+  return me?.effective_role || me?.role || "normal";
 }
 
 // Local helper (app.js also has a role() helper, but it's inside an IIFE and not global).
 function role() {
-  return String(roleOf(state.me) || "viewer").toLowerCase();
+  return String(roleOf(state.me) || "normal").toLowerCase();
 }
 
 function canRunDependencyDiscovery() {
   const r = role();
   if (r === "admin") return true;
-  const ownerId = Number(state.project?.created_by_user_id || 0);
-  const meId = Number(state.me?.id || 0);
-  if (ownerId > 0 && meId > 0 && ownerId === meId) return true;
+  // Scans are started by those who may edit the project.
+  if (!holds("project.write")) return false;
+  const ownerId = String(state.project?.created_by_user_id || "");
+  const meId = String(state.me?.id || "");
+  if (ownerId && meId && ownerId === meId) return true;
 
   // The API also permits project owner groups. /api/v1/me does not expose group
   // membership, so the client can only positively identify direct owners here.
@@ -2373,14 +2375,15 @@ async function loadProject() {
   }
 }
 
+// An administrator, or an account holding the permission.
+function holds(code) {
+  if (role() === "admin") return true;
+  const granted = state.me?.permissions;
+  return Array.isArray(granted) && granted.includes(code);
+}
+
 function canAskQuestions() {
-  const r = role();
-  return (
-    r === "admin" ||
-    r === "engineer" ||
-    r === "product_owner" ||
-    r === "architect"
-  );
+  return holds("project.question");
 }
 
 function fmtDateTime(iso) {
@@ -2482,7 +2485,7 @@ function renderQuestions() {
       cardBody.appendChild(row);
     });
 
-    const isAuthor = Number(t.created_by?.id) === Number(meId);
+    const isAuthor = !!meId && String(t.created_by?.id || "") === String(meId);
     const canReply = canAnswer || isAuthor;
 
     if (canReply) {

@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from app.api.routes.dependencies import _dependency_namespace
 from app.core.config import settings
-from app.db.models import Group, ProjectVersion, ProjectVersionDependency, UserGroup
+from app.db.models import Group, ProjectVersion, ProjectVersionDependency, user_groups
 from app.db.session import SessionLocal
 
 from tests.support import (
@@ -276,21 +276,25 @@ def test_only_owners_start_scans_and_only_where_there_is_source(
     assert "OSPMAE_DEPENDENCY_DISCOVERY_ALLOWED_HOSTS" in no_source.json()["detail"]
     set_scan_state(version["id"], "not_run", link_to_source_code=SOURCE)
 
+    # An editor outside the owning groups cannot have the project cloned.
     stranger, _ = signed_in("maintainer")
-    assert stranger.post(path, headers=csrf(stranger)).status_code == 403
-    # A member of the owning group who cannot edit the project cannot have
-    # it cloned either.
+    outsider = stranger.post(path, headers=csrf(stranger))
+    assert (outsider.status_code, outsider.json()["detail"]) == (
+        403,
+        "Scans are started by those who can edit the project",
+    )
+    # Nor can a member of the owning group who cannot edit projects.
     refused = colleague.post(path, headers=csrf(colleague))
-    assert refused.status_code == 403
-    assert refused.json()["detail"] == (
-        "Scans are started by those who can edit the project"
+    assert (refused.status_code, refused.json()["detail"]) == (
+        403,
+        "project.write permission required",
     )
     assert scans.launched == []
     # The owner, an editor in the owning group and an administrator may.
     editor, editor_id = signed_in("maintainer")
     with SessionLocal() as s:
         team = s.query(Group).filter_by(name="Team").one()
-        s.add(UserGroup(user_id=editor_id, group_id=team.id))
+        s.execute(user_groups.insert().values(user_id=editor_id, group_id=team.id))
         s.commit()
     for client in (owner, editor, admin):
         assert client.post(path, headers=csrf(client)).status_code == 200

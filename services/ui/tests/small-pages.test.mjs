@@ -39,7 +39,7 @@ test("the inbox lists open questions with links to their projects", async (t) =>
   const page = await inbox(t);
   assert.equal(page.$("questionsCount").textContent, "2 open");
   assert.equal(page.$("notPermitted").style.display, "none");
-  assert.equal(page.$("whoami").textContent, "ada (maintainer)");
+  assert.equal(page.$("whoami").textContent, "ada (normal)");
   const rows = [...page.doc.querySelectorAll("#questionsList tbody tr")];
   assert.equal(rows.length, 2);
   const first = [...rows[0].children];

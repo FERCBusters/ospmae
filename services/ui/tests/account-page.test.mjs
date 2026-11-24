@@ -167,13 +167,13 @@ test("the profile shows who is signed in and their role", async (t) => {
     ["profileUser", "profileUsername", "profileRole", "profileEmail"].map(
       (id) => page.$(id).textContent,
     ),
-    ["ada", "ada", "engineer", "ada@example.org"],
+    ["ada", "ada", "normal", "ada@example.org"],
   );
   const bare = await accountPage(t, {
     me: local_account("viewer", { email: null, effective_role: undefined }),
   });
   assert.equal(bare.$("profileEmail").textContent, "Not set");
-  assert.equal(bare.$("profileRole").textContent, "viewer");
+  assert.equal(bare.$("profileRole").textContent, "normal");
 });
 
 test("a signed-out visitor is sent to sign in", async (t) => {
@@ -742,9 +742,9 @@ test("the password form checks its fields before sending", async (t) => {
     (await attempt("old", "longer than eight", "different"))[0],
     "Passwords do not match.",
   );
-  assert.deepEqual(page.sent("POST", "/api/v1/auth/change-password"), []);
+  assert.deepEqual(page.sent("POST", "/api/v1/me/password"), []);
 
-  page.world.fail["POST /api/v1/auth/change-password"] = [
+  page.world.fail["POST /api/v1/me/password"] = [
     400,
     "Current password is wrong",
   ];

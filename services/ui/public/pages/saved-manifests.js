@@ -394,14 +394,15 @@
     }
 
     const groups = Array.isArray(state.userGroups) ? state.userGroups : [];
-    const currentGroupId = m.owner_group_id ? Number(m.owner_group_id) : 0;
+    // Group ids are UUIDs, compared as text.
+    const currentGroupId = m.owner_group_id ? String(m.owner_group_id) : "";
     const isPublic = !!m.is_public;
 
     let groupControl =
       '<div class="text-secondary small">You are not a member of any group.</div>';
     if (groups.length === 1) {
       const g = groups[0];
-      const checked = currentGroupId === Number(g.id) ? "checked" : "";
+      const checked = currentGroupId === String(g.id) ? "checked" : "";
       groupControl = `
         <div class="form-check">
           <input class="form-check-input" type="checkbox" id="shareWithGroupChk" ${checked}>
@@ -409,12 +410,10 @@
         </div>
       `;
     } else if (groups.length > 1) {
-      const options = [
-        '<option value="0">Not shared (private)</option>',
-      ].concat(
+      const options = ['<option value="">Not shared (private)</option>'].concat(
         groups.map(
           (g) =>
-            `<option value="${Number(g.id)}" ${Number(g.id) === currentGroupId ? "selected" : ""}>${escapeHtml(g.name)}</option>`,
+            `<option value="${escapeHtml(String(g.id))}" ${String(g.id) === currentGroupId ? "selected" : ""}>${escapeHtml(g.name)}</option>`,
         ),
       );
       groupControl = `
@@ -460,11 +459,10 @@
     const groups = Array.isArray(state.userGroups) ? state.userGroups : [];
     if (groups.length === 1) {
       const chk = document.getElementById("shareWithGroupChk");
-      owner_group_id = chk && chk.checked ? Number(groups[0].id) : null;
+      owner_group_id = chk && chk.checked ? String(groups[0].id) : null;
     } else if (groups.length > 1) {
       const sel = document.getElementById("shareGroupSelect");
-      const v = sel ? Number(sel.value) : 0;
-      owner_group_id = v && v > 0 ? v : null;
+      owner_group_id = (sel && sel.value) || null;
     }
 
     const pub = document.getElementById("makePublicChk");
@@ -557,7 +555,7 @@
     if (!canExportManifests()) return;
 
     if (el.whoami) {
-      const role = state.me?.effective_role || state.me?.role || "viewer";
+      const role = state.me?.effective_role || state.me?.role || "normal";
       el.whoami.textContent = state.me?.username
         ? `${state.me.username} (${role})`
         : role;
