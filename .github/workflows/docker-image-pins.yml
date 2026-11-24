@@ -79,15 +79,26 @@ jobs:
           GH_REPO: ${{ github.repository }}
           KEY: ${{ steps.pins.outputs.key }}
           TITLE: ${{ steps.pins.outputs.title }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
         run: |
           set -euo pipefail
+          : "${APP_SLUG:?The GitHub App token step gave no app-slug}"
           report="$RUNNER_TEMP/image-pins"
           branch="${BRANCH_PREFIX}${KEY}"
 
           # A pull request for exactly these digests already settles them,
           # including one a maintainer closed.
-          existing=$(gh pr list --state all --head "$branch" --json number,state \
-            --jq 'first // empty | "\(.number) \(.state)"')
+          # Only a pull request the App opened from a branch here counts: the
+          # branch name comes from public values, so anyone can open a pull
+          # request from a fork with the same head branch name, and --head
+          # matches the name alone. gh names an App author app/<slug>; the
+          # GitHub API names it <slug>[bot].
+          existing=$(gh pr list --state all --head "$branch" --limit 100 \
+              --json number,state,isCrossRepository,author \
+            | jq -r --arg app "$APP_SLUG" \
+              '[.[] | select(.isCrossRepository == false and .author.is_bot
+                  and (.author.login | ltrimstr("app/") | rtrimstr("[bot]")) == $app)]
+                | first // empty | "\(.number) \(.state)"')
           if [ -n "$existing" ]; then
             read -r number state <<< "$existing"
             echo "Pull request #$number ($state) already proposes these digests."
@@ -124,10 +135,14 @@ jobs:
             echo "Opened $url for review."
           fi
 
-          gh pr list --state open --limit 100 --json number,headRefName,author \
-            | jq -r --arg prefix "$BRANCH_PREFIX" --arg branch "$branch" \
-              '.[] | select(.author.is_bot and (.headRefName | startswith($prefix))
-                and .headRefName != $branch) | .number' \
+          gh pr list --state open --limit 100 \
+              --json number,headRefName,isCrossRepository,author \
+            | jq -r --arg app "$APP_SLUG" --arg prefix "$BRANCH_PREFIX" \
+              --arg branch "$branch" \
+              '.[] | select(.isCrossRepository == false and .author.is_bot
+                and (.author.login | ltrimstr("app/") | rtrimstr("[bot]")) == $app
+                and (.headRefName | startswith($prefix)) and .headRefName != $branch)
+                | .number' \
             | while read -r older; do
                 gh pr close "$older" --delete-branch --comment "Superseded by #$number."
               done

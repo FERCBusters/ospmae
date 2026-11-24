@@ -103,6 +103,57 @@ def test_deactivation_ends_sessions_for_good(admin):
     assert client.get("/v1/me").status_code == 401
 
 
+def _sso_session(user_id):
+    """A browser signed in through an SSO provider, as mosp issues one."""
+    from app.main import app as application
+    from fastapi.testclient import TestClient
+    from mosp.core.valkey import get_valkey
+    from mosp.security.auth import cookie_name
+    from mosp.security.sessions import create_session
+
+    from tests.conftest import peer_wrapper
+
+    with SessionLocal() as s:
+        version = s.get(User, user_id).session_version
+    browser = TestClient(peer_wrapper(application), base_url="https://testserver")
+    browser.cookies.set(
+        cookie_name(),
+        create_session(
+            get_valkey(),
+            user_id=str(user_id),
+            ttl_seconds=600,
+            auth_method="oidc",
+            session_version=version,
+        ),
+    )
+    return browser
+
+
+@pytest.mark.parametrize("change", ["reset", "deactivate"])
+def test_sessions_opened_through_sso_end_too(admin, monkeypatch, change):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "oidc_enabled", True)
+    _, user = auth_client(role="viewer")
+    browser = _sso_session(user.id)
+    assert browser.get("/v1/me").status_code == 200
+    url = f"/v1/admin/users/{user.id}"
+    if change == "reset":
+        ok(
+            admin.post(
+                url + "/password",
+                json={"new_password": generated_password()},
+                headers=csrf(admin),
+            )
+        )
+    else:
+        ok(admin.patch(url, json={"is_active": False}, headers=csrf(admin)))
+        # A session not presented while the account was inactive does not
+        # return when it is activated again.
+        ok(admin.patch(url, json={"is_active": True}, headers=csrf(admin)))
+    assert browser.get("/v1/me").status_code == 401
+
+
 def test_a_reset_mails_the_owner_and_hands_delivery_to_the_worker(admin, mail):
     target = make_user("resetme", generated_password(), role="viewer")
     with SessionLocal() as db:

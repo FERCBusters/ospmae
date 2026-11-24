@@ -149,9 +149,11 @@ def _find(db: Session, model, row_id: uuid.UUID, detail: str):
 
 
 def _end_sessions(user: User) -> None:
-    """End every session of the account: the enrolment version moves on, so
-    its sessions, pending ceremonies and address proofs end for good."""
+    """End every session of the account, however it was opened: the session
+    version moves on, which every session is checked against, and so does the
+    enrolment version, so pending ceremonies and address proofs end for good."""
     user.mfa_version += 1
+    user.session_version += 1
 
 
 @router.post("/v1/admin/users")
