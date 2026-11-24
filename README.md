@@ -69,6 +69,8 @@ When a local account has lost its authenticators and recovery codes, an operator
 docker compose exec component-api python scripts/mfa_admin.py USERNAME --reset --confirm-username USERNAME
 ```
 
+For an account that signs in only through SSO, `--list-identities` lists its SSO identities, and `--keep-identity ID` with `--reset` keeps the one the owner confirms and removes every other SSO identity and SSO email address.
+
 ### Environment settings worth knowing
 
 | Setting | Purpose |

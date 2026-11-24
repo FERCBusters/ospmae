@@ -53,6 +53,8 @@
     ssoEmailList: document.getElementById("ssoEmailList"),
     ssoEmailForm: document.getElementById("ssoEmailForm"),
     ssoEmail: document.getElementById("ssoEmail"),
+    ssoIdentityStatus: document.getElementById("ssoIdentityStatus"),
+    ssoIdentityList: document.getElementById("ssoIdentityList"),
     prefTheme: document.getElementById("prefTheme"),
     prefSticky: document.getElementById("prefSticky"),
     prefAutoApply: document.getElementById("prefAutoApply"),
@@ -157,7 +159,7 @@
       button.addEventListener("click", async () => {
         if (
           !window.confirm(
-            "Remove this address from future SSO linking? Existing linked sign-in identities will remain active.",
+            "Remove this address from future SSO linking? An identity already linked through it keeps signing in until you remove it under Linked sign-in identities.",
           )
         )
           return;
@@ -181,6 +183,52 @@
       const item = document.createElement("li");
       item.textContent = "No verified SSO email addresses.";
       el.ssoEmailList.append(item);
+    }
+  }
+
+  // The SSO identities linked to the account, which its holder can remove.
+  async function loadSsoIdentities() {
+    if (!el.ssoIdentityList) return;
+    const data = await api("/api/v1/me/sso-identities");
+    const identities = data.identities || [];
+    el.ssoIdentityList.replaceChildren();
+    if (el.ssoIdentityStatus)
+      el.ssoIdentityStatus.textContent = identities.length
+        ? "Removing an identity needs a sign-in within the last five minutes."
+        : "No sign-in identities are linked.";
+    for (const identity of identities) {
+      const item = document.createElement("li");
+      item.className =
+        "d-flex align-items-center justify-content-between gap-3 py-2";
+      const label = document.createElement("span");
+      const who = identity.email || identity.name || "unnamed identity";
+      label.textContent = `${identity.provider}: ${who} - linked ${String(identity.linked_at).slice(0, 10)}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-sm btn-outline-danger";
+      button.textContent = "Remove";
+      button.addEventListener("click", async () => {
+        if (
+          !window.confirm(
+            "Remove this identity? It stops signing in to your account, the address it was linked through is removed, and every session ends, this one included.",
+          )
+        )
+          return;
+        button.disabled = true;
+        try {
+          await api("/api/v1/me/sso-identities/remove", {
+            method: "POST",
+            body: { id: identity.id },
+          });
+          window.location.assign("/login.html");
+        } catch (error) {
+          if (el.ssoIdentityStatus)
+            el.ssoIdentityStatus.textContent = error?.message || String(error);
+          button.disabled = false;
+        }
+      });
+      item.append(label, button);
+      el.ssoIdentityList.append(item);
     }
   }
 
@@ -996,6 +1044,10 @@
     await loadSsoEmails().catch((error) => {
       if (el.ssoEmailStatus)
         el.ssoEmailStatus.textContent = error?.message || String(error);
+    });
+    await loadSsoIdentities().catch((error) => {
+      if (el.ssoIdentityStatus)
+        el.ssoIdentityStatus.textContent = error?.message || String(error);
     });
 
     await loadShortcuts();

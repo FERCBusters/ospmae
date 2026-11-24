@@ -287,7 +287,7 @@
         <div class="card mb-3" id="ssoEmailCard">
           <div class="card-header">
             <div class="fw-bold">SSO email addresses</div>
-            <div class="small-muted">SSO providers must report a verified email that exactly matches an address verified here. Verify your primary address or additional addresses you own. Existing linked SSO identities continue working independently of this list.</div>
+            <div class="small-muted">SSO providers must report a verified email that exactly matches an address verified here. Verify your primary address or additional addresses you own. An identity linked through an address keeps signing in until you remove it below.</div>
           </div>
           <div class="card-body">
             <p id="ssoEmailStatus" role="status">Loading</p>
@@ -301,6 +301,10 @@
                 <button class="btn btn-primary" type="submit">Send verification link</button>
               </div>
             </form>
+            <div class="fw-bold mt-4">Linked sign-in identities</div>
+            <p class="small-muted">These SSO identities can sign in to your account. Remove any you do not recognise; removing one also removes the address it was linked through and signs you out everywhere.</p>
+            <p id="ssoIdentityStatus" role="status">Loading</p>
+            <ul id="ssoIdentityList" class="list-unstyled"></ul>
           </div>
         </div>
 

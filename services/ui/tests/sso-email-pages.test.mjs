@@ -133,6 +133,90 @@ test("a refused request shows the server's reason", async (t) => {
   );
 });
 
+const IDENTITIES = [
+  {
+    id: 7,
+    provider: "github",
+    email: "<i>planted</i>@x.test",
+    name: "Octo",
+    linked_at: "2026-11-20T10:00:00",
+  },
+  {
+    id: 8,
+    provider: "oidc",
+    email: null,
+    name: null,
+    linked_at: "2026-11-21T00:00:00",
+  },
+];
+
+test("linked sign-in identities are listed as text and removed after confirmation", async (t) => {
+  const removed = [];
+  const page = await account(t, [], {
+    "GET /api/v1/me/sso-identities": () => [200, { identities: IDENTITIES }],
+    "POST /api/v1/me/sso-identities/remove": (body) => {
+      removed.push(body.id);
+      return [200, { ok: true }];
+    },
+  });
+  const { document, window } = page;
+  const items = [...document.querySelectorAll("#ssoIdentityList li")];
+  assert.deepEqual(
+    items.map((li) => li.querySelector("span").textContent),
+    [
+      "github: <i>planted</i>@x.test - linked 2026-11-20",
+      "oidc: unnamed identity - linked 2026-11-21",
+    ],
+  );
+  assert.equal(document.querySelector("#ssoIdentityList i"), null);
+  const asked = [];
+  window.confirm = (message) => (asked.push(message), true);
+  items[0].querySelector("button").click();
+  for (let i = 0; i < 5; i += 1) await page.settle();
+  assert.deepEqual(removed, [7]);
+  assert.match(asked[0], /every session ends/);
+  // Every session has ended, this one included, so the page goes to sign in.
+  assert.ok(
+    page.errors.some((e) => /navigation/i.test(String(e?.message || e))),
+  );
+});
+
+test("identity removal can be declined, and a refusal or a failed load is shown", async (t) => {
+  const empty = await account(t, []);
+  assert.equal(
+    empty.document.getElementById("ssoIdentityStatus").textContent,
+    "No sign-in identities are linked.",
+  );
+  const page = await account(t, [], {
+    "GET /api/v1/me/sso-identities": () => [200, { identities: IDENTITIES }],
+    "POST /api/v1/me/sso-identities/remove": () => [
+      403,
+      { detail: "Sign out and sign in again" },
+    ],
+  });
+  const { document, window, requests } = page;
+  const button = document.querySelector("#ssoIdentityList button");
+  window.confirm = () => false;
+  button.click();
+  for (let i = 0; i < 3; i += 1) await page.settle();
+  assert.ok(!requests.some(([m, p]) => m === "POST" && p.endsWith("/remove")));
+  window.confirm = () => true;
+  button.click();
+  for (let i = 0; i < 5; i += 1) await page.settle();
+  assert.match(
+    document.getElementById("ssoIdentityStatus").textContent,
+    /sign in again/,
+  );
+  assert.equal(button.disabled, false);
+  const failed = await account(t, [], {
+    "GET /api/v1/me/sso-identities": () => [500, { detail: "Store offline" }],
+  });
+  assert.match(
+    failed.document.getElementById("ssoIdentityStatus").textContent,
+    /Store offline/,
+  );
+});
+
 async function confirmPage(t, url, api) {
   const page = await loadPage("sso-email.html", "pages/sso-email-confirm.js", {
     url,
